@@ -1,0 +1,73 @@
+name: Build Windows Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build Windows x64 package
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Audit public tree
+        run: node scripts/audit-public-tree.mjs
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Test desktop application
+        run: dotnet test desktop\OrionTV.Desktop.sln -c Release
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Publish self-contained application
+        run: >-
+          dotnet publish desktop\OrionTV.Desktop.App\OrionTV.Desktop.App.csproj
+          -c Release -r win-x64 --self-contained true
+          -o desktop\publish\win-x64-self-contained
+
+      - name: Create ZIP package
+        shell: pwsh
+        run: |
+          $publishDirectory = "desktop\publish\win-x64-self-contained"
+          $archive = "artifacts\OpaiTV-${{ steps.version.outputs.value }}-win-x64-self-contained.zip"
+          if (-not (Test-Path "$publishDirectory\OpaiTV.exe")) {
+            throw "Published application does not contain OpaiTV.exe"
+          }
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          Compress-Archive -Path "$publishDirectory\*" -DestinationPath $archive -CompressionLevel Optimal
+
+      - name: Create release and upload Windows package
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.value }}
+          target_commitish: ${{ github.sha }}
+          name: OpaiTV v${{ steps.version.outputs.value }}
+          body: |
+            OpaiTV v${{ steps.version.outputs.value }}.
+
+            Windows 包为 win-x64 自包含版本，解压后运行 OpaiTV.exe，无需另外安装 .NET。
+          draft: false
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: artifacts/OpaiTV-${{ steps.version.outputs.value }}-win-x64-self-contained.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

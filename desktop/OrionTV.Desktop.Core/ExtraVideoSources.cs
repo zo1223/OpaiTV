@@ -347,7 +347,7 @@ public static class AiImportPromptBuilder
               """;
 
         return $$"""
-            你是 OrionTV **桌面端**视频源适配助手。桌面端**只支持** AppleCMS / 类 CMS 源。
+            你是 OpaiTV **桌面端**视频源适配助手。桌面端**只支持** AppleCMS / 类 CMS 源。
             TVBox csp/jar/drpy 配置没有桌面端执行器；桌面已移除 TVBox 代理。
 
             ## 0. 强制开始步骤：先完整读取项目说明
@@ -407,7 +407,7 @@ public static class AiImportPromptBuilder
             2. 已执行当前任务所要求的抓取或搜索，而不是停留在计划阶段。
             3. 只把三步验证全部通过的源合并写入 extra_sources.json。
             4. 用中文汇报：指南读取情况、任务/搜索范围、每个候选的请求与结果、写入或跳过的 key 和原因。
-            5. 提醒用户回到 OrionTV 点击“立即刷新源”。
+            5. 提醒用户回到 OpaiTV 点击“立即刷新源”。
 
             ## 6. 桌面端兼容性说明
             - csp_*/jar/drpy 不是桌面端可执行的 provide/vod 接口

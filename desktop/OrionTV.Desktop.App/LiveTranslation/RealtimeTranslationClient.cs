@@ -78,7 +78,7 @@ internal sealed class RealtimeTranslationClient : ILiveTranslationSession
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
         socket.Options.SetRequestHeader("Authorization", $"Bearer {_apiKey}");
         socket.Options.SetRequestHeader("OpenAI-Safety-Identifier", CreateSafetyIdentifier());
-        socket.Options.SetRequestHeader("User-Agent", "OrionTV-Desktop/1.3.13");
+        socket.Options.SetRequestHeader("User-Agent", "OpaiTV-Desktop/1.3.13");
         _socket = socket;
 
         try

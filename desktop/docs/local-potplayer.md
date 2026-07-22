@@ -4,13 +4,13 @@
 
 | 内容 | 播放方式 |
 |------|----------|
-| 在线 HTTP/HLS | Orion 内置 **LibVLC**（本窗口） |
-| 本地文件（`file://`、本地下载 `merged.ts` 等） | 外部 **PotPlayer**（默认开启） |
+| 在线 HTTP/HLS | OpaiTV 内置 **LibVLC**（本窗口） |
+| 本地文件（`file://`、本地下载 `merged.ts` 等） | 外部 **PotPlayer**（可选） |
 | 未找到 PotPlayer 或开关关闭 | 本地也回退 **LibVLC** |
 
 ## 设置
 
-- **本地文件用 PotPlayer 播放**：总开关（默认开）
+- **本地文件用 PotPlayer 播放**：总开关（默认关）
 - **PotPlayer 路径**：`PotPlayerMini64.exe`；可留空自动探测  
   默认探测包含：`E:\potPlayer\PotPlayerMini64.exe`
 
@@ -21,7 +21,7 @@ PotPlayerMini64.exe "C:\path\file.ts" /current /seek=hh:mm:ss.ms
 ```
 
 - `/current`：尽量复用已打开实例  
-- `/seek`：带上 Orion 续播进度  
+- `/seek`：带上 OpaiTV 续播进度
 
 ## 代码
 
@@ -32,5 +32,5 @@ PotPlayerMini64.exe "C:\path\file.ts" /current /seek=hh:mm:ss.ms
 ## 说明
 
 - 本地片会打开/激活 PotPlayer 窗口（非窗口内嵌）。  
-- 在线片不受影响，仍在 Orion 内播放。  
+- 在线片不受影响，仍在 OpaiTV 内播放。
 - 不依赖 mpv，不逆向 PotPlayer 私有 DLL。

@@ -45,16 +45,16 @@ jobs:
       - name: Rename APK file
         run: |
           mkdir -p artifacts
-          cp android/app/build/outputs/apk/release/app-release.apk artifacts/orionTV.${{ steps.package-version.outputs.version }}.apk
+          cp android/app/build/outputs/apk/release/app-release.apk artifacts/OpaiTV.${{ steps.package-version.outputs.version }}.apk
 
       - name: Create Release and Upload APK
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.package-version.outputs.version }}
-          name: Release v${{ steps.package-version.outputs.version }}
-          body: Automated release for version v${{ steps.package-version.outputs.version }}.
+          name: OpaiTV v${{ steps.package-version.outputs.version }}
+          body: OpaiTV release v${{ steps.package-version.outputs.version }}.
           draft: false
           prerelease: false
-          files: artifacts/orionTV.${{ steps.package-version.outputs.version }}.apk
+          files: artifacts/OpaiTV.${{ steps.package-version.outputs.version }}.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

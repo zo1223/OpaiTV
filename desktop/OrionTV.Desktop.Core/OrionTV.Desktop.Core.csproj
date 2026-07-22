@@ -2,6 +2,11 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>OpaiTV.Desktop.Core</AssemblyName>
+    <RootNamespace>OrionTV.Desktop.Core</RootNamespace>
+    <Product>OpaiTV</Product>
+    <AssemblyTitle>OpaiTV Desktop Core</AssemblyTitle>
+    <Version>1.3.13</Version>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>

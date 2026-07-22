@@ -11,7 +11,7 @@ export const UPDATE_CONFIG = {
 
   // 获取平台特定的下载URL
   getDownloadUrl(version: string): string {
-    return `https://github.com/zo1223/OrionTV/releases/download/v${version}/orionTV.${version}.apk`;
+    return `https://github.com/zo1223/OrionTV/releases/download/v${version}/OpaiTV.${version}.apk`;
   },
 
   // 是否显示更新日志
@@ -29,7 +29,7 @@ export const UPDATE_CONFIG = {
   // 更新通知设置
   NOTIFICATION: {
     ENABLED: true,
-    TITLE: "OrionTV 更新",
+    TITLE: "OpaiTV 更新",
     DOWNLOADING_TEXT: "正在下载新版本...",
     DOWNLOAD_COMPLETE_TEXT: "下载完成，点击安装",
   },

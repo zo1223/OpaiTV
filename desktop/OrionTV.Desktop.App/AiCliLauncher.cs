@@ -79,8 +79,8 @@ public static class AiCliLauncher
         if (resolved is null)
         {
             var tip = tool == AiCliTool.ClaudeCode
-                ? "未找到 claude 命令。请先安装 Claude Code 并确保已加入 PATH，然后重启 OrionTV。"
-                : "未找到 codex 命令。请先安装 Codex CLI 并确保已加入 PATH，然后重启 OrionTV。";
+                ? "未找到 claude 命令。请先安装 Claude Code 并确保已加入 PATH，然后重启 OpaiTV。"
+                : "未找到 codex 命令。请先安装 Codex CLI 并确保已加入 PATH，然后重启 OpaiTV。";
             tip += $"\n提示词已保存：{promptFile}";
             if (!string.IsNullOrEmpty(docsDir))
             {
@@ -256,7 +256,7 @@ public static class AiCliLauncher
             sb.AppendLine($"$guideFile = {QuotePs(guidePath)}");
         }
 
-        sb.AppendLine($"Write-Host 'OrionTV · AI 源站适配 ({label})' -ForegroundColor Cyan");
+        sb.AppendLine($"Write-Host 'OpaiTV · AI 源站适配 ({label})' -ForegroundColor Cyan");
         sb.AppendLine($"Write-Host '任务: {taskLabel}' -ForegroundColor Cyan");
         sb.AppendLine("Write-Host (\"提示词: \" + $promptFile) -ForegroundColor DarkGray");
         sb.AppendLine("Write-Host (\"CMS 输出: \" + $outputFile) -ForegroundColor DarkGray");
@@ -284,7 +284,7 @@ public static class AiCliLauncher
         sb.AppendLine("}");
         sb.AppendLine("Write-Host ''");
         sb.AppendLine("if (Test-Path -LiteralPath $outputFile) {");
-        sb.AppendLine("  Write-Host '已检测到 extra_sources.json。可在 OrionTV 点「立即刷新源」。' -ForegroundColor Green");
+        sb.AppendLine("  Write-Host '已检测到 extra_sources.json。可在 OpaiTV 点「立即刷新源」。' -ForegroundColor Green");
         sb.AppendLine("}");
         return sb.ToString();
     }

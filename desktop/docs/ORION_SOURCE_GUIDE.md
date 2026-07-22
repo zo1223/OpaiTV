@@ -1,8 +1,8 @@
-# OrionTV 桌面端 AI 源站适配指南
+# OpaiTV 桌面端 AI 源站适配指南
 
 > 契约版本：1.4
 >
-> 本文件随桌面发布包内置，是 OrionTV 的源适配契约。每次启动新的 Claude Code / Codex 会话，第一项操作必须完整读取本文件；不要只依赖提示词中的摘要。
+> 本文件随桌面发布包内置，是 OpaiTV 的源适配契约。每次启动新的 Claude Code / Codex 会话，第一项操作必须完整读取本文件；不要只依赖提示词中的摘要。
 
 ## 0. 执行要点
 
@@ -15,7 +15,7 @@
 
 ## 1. 产品和文件位置
 
-OrionTV 桌面端（WPF）是订阅模式影视播放器：
+OpaiTV 桌面端（WPF）是订阅模式影视播放器：
 
 - 点播：AppleCMS 兼容 JSON、MacCMS JSON/XML（订阅源 + `extra_sources.json`）
 - 直播：M3U
@@ -25,12 +25,12 @@ OrionTV 桌面端（WPF）是订阅模式影视播放器：
 发布包典型结构：
 
 ```
-OrionTV.Desktop.App.exe
+OpaiTV.exe
 docs/
   ORION_SOURCE_GUIDE.md
 ```
 
-用户数据目录（可写）：
+用户数据目录（可写；为兼容旧版保留原目录名）：
 
 ```
 %AppData%\OrionTV.Desktop\
@@ -183,7 +183,7 @@ docs/
 候选与验证：API、协议、请求、HTTP/结构结果、播放地址结果
 写入：extra_sources.json 的路径、写入/更新的 key
 跳过：未写入候选及具体原因
-下一步：回到 OrionTV 点击“立即刷新源”
+下一步：回到 OpaiTV 点击“立即刷新源”
 ```
 
 ## 9. 桌面端兼容性说明

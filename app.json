@@ -34,8 +34,8 @@
     "experiments": {
       "typedRoutes": true
     },
-    "name": "OrionTV",
-    "slug": "OrionTV",
+    "name": "OpaiTV",
+    "slug": "OpaiTV",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "userInterfaceStyle": "dark",

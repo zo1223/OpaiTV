@@ -16,7 +16,7 @@ public sealed class AppServices : IDisposable
     public AppServices()
     {
         Http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-        Http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OrionTV-Desktop");
+        Http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OpaiTV-Desktop");
         VodClients = new VodSourceClientFactory(Http);
         AppleCms = VodClients.AppleCms;
         Douban = new DoubanClient(Http);

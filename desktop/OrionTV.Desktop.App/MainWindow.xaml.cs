@@ -263,8 +263,8 @@ public partial class MainWindow : Window, IAppHost
 
             _lastNotifiedSourceCount = after;
             Title = after > before
-                ? $"OrionTV · 已导入 AI 源（共 {after} 个）"
-                : $"OrionTV · 视频源已更新（共 {after} 个）";
+                ? $"OpaiTV · 已导入 AI 源（共 {after} 个）"
+                : $"OpaiTV · 视频源已更新（共 {after} 个）";
         }
         catch
         {

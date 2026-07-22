@@ -548,7 +548,7 @@ internal sealed class ChatLiveTranslationClient : ILiveTranslationSession
         // 单次请求超时由调用方 CancelAfter 控制；这里只做整体兜底。
         // pro 模型在思考未关闭时可达 40s+，HttpClient.Timeout 必须更大。
         var client = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("OrionTV-Desktop/1.3.13");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("OpaiTV-Desktop/1.3.13");
         return client;
     }
 

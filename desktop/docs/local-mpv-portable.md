@@ -9,20 +9,20 @@
 
 ## 便携目录
 
-构建/发布后应存在：
+本机存在 `desktop/tools/mpv-extract` 时，构建/发布后会包含：
 
 ```text
 …/OrionTV.Desktop.App/bin/…/mpv/mpv.exe
 …/desktop/publish/win-x64-self-contained/mpv/mpv.exe
 ```
 
-源文件在仓库：
+可选源文件目录：
 
 ```text
-desktop/tools/mpv-extract/   （绿色版解压结果，csproj 会复制到输出 mpv\）
+desktop/tools/mpv-extract/   （本地放置绿色版解压结果，csproj 会复制到输出 mpv\）
 ```
 
-当前便携包约 **118 MB**（mpv.exe ~112 MB）。
+公开仓库和标准 Release 不捆绑第三方 mpv 二进制；未提供时自动回退 LibVLC。
 
 ## 用户侧（方式 A）
 
@@ -35,9 +35,9 @@ desktop/tools/mpv-extract/   （绿色版解压结果，csproj 会复制到输�
 desktop\publish\win-x64-self-contained\mpv\mpv.exe
 ```
 
-3. 重启 Orion，播本地 `merged.ts`
+3. 重启 OpaiTV，播本地 `merged.ts`
 
-本仓库发布时会自动带上 `desktop/tools/mpv-extract` 内容，一般**不用再手动拷**。
+本地构建时若已准备 `desktop/tools/mpv-extract`，发布命令会自动复制其内容。
 
 ## 设置
 

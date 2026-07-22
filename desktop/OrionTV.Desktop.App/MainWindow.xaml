@@ -4,7 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
-        Title="OrionTV" Height="820" Width="1280" MinHeight="680" MinWidth="1040"
+        Title="OpaiTV" Height="820" Width="1280" MinHeight="680" MinWidth="1040"
         Background="{StaticResource AppBackgroundBrush}"
         FontFamily="Microsoft YaHei UI">
     <Grid>
@@ -32,7 +32,7 @@
                                        HorizontalAlignment="Center"
                                        VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="OrionTV"
+                        <TextBlock Text="OpaiTV"
                                    Foreground="{StaticResource TextBrush}"
                                    FontSize="19"
                                    FontWeight="Bold"

@@ -79,7 +79,7 @@ class UpdateService {
         throw new Error('Document directory is not available');
       }
       const listing = await FileSystem.readDirectoryAsync(dirUri);
-      const apkFiles = listing.filter(name => name.startsWith('OrionTV_v') && name.endsWith('.apk'));
+      const apkFiles = listing.filter(name => name.startsWith('OpaiTV_v') && name.endsWith('.apk'));
 
       if (apkFiles.length <= 2) return;
 
@@ -117,7 +117,7 @@ class UpdateService {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const timestamp = Date.now();
-        const fileName = `OrionTV_v${timestamp}.apk`;
+        const fileName = `OpaiTV_v${timestamp}.apk`;
         const fileUri = `${FileSystem.documentDirectory}${fileName}`;
 
         // expo-file-system 把下载进度回调参数统一为 `{totalBytesWritten, totalBytesExpectedToWrite}`

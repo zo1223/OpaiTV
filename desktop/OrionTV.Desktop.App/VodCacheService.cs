@@ -2097,7 +2097,7 @@ public sealed class VodCacheService : IDisposable
             }
             catch
             {
-                // 普通媒体目录或无权限目录不影响 Orion 缓存扫描。
+                // 普通媒体目录或无权限目录不影响 OpaiTV 缓存扫描。
             }
         }
 

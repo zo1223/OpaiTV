@@ -11,7 +11,7 @@ assignees: ''
 A clear and concise description of what the bug is.
 
 **Version**
-- OrionTV:
+- OpaiTV:
 
 **Platform**
 - React Native TV/Android or Windows:

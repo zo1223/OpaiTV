@@ -1,8 +1,8 @@
-# OrionTV 手机端和平板端适配方案
+# OpaiTV 手机端和平板端适配方案
 
 ## 项目概述
 
-OrionTV 是一个基于 React Native TVOS 的视频流媒体应用，目前专为 Android TV 和 Apple TV 平台设计。本文档详细描述了将应用适配到 Android 手机和平板设备的完整方案。
+OpaiTV 是一个基于 React Native TVOS 的视频流媒体应用，目前专为 Android TV 和 Apple TV 平台设计。本文档详细描述了将应用适配到 Android 手机和平板设备的完整方案。
 
 ## 当前状态分析
 

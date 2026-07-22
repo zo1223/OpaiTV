@@ -1,6 +1,6 @@
-# OrionTV
+# OpaiTV
 
-OrionTV 是一个跨平台视频播放器项目，包含 React Native TV/Android 客户端和 Windows 桌面客户端。项目提供播放器、搜索、收藏、播放记录、直播 M3U、本地视频和用户自定义 AppleCMS/MacCMS 订阅等通用能力。
+OpaiTV 是一个跨平台视频播放器项目，包含 React Native TV/Android 客户端和 Windows 桌面客户端。项目提供播放器、搜索、收藏、播放记录、直播 M3U、本地视频和用户自定义 AppleCMS/MacCMS 订阅等通用能力。
 
 ## 公开仓库说明
 
@@ -17,6 +17,10 @@ OrionTV 是一个跨平台视频播放器项目，包含 React Native TV/Android
 
 - React Native TV/Android：Expo、React Native TVOS、TypeScript、Zustand
 - Windows：WPF、.NET 8、LibVLCSharp
+
+## 下载
+
+Windows 自包含版本发布在 [GitHub Releases](https://github.com/zo1223/OrionTV/releases)。下载 `OpaiTV-*-win-x64-self-contained.zip`，解压后运行 `OpaiTV.exe`，无需另外安装 .NET。
 
 ## 环境要求
 
@@ -91,4 +95,4 @@ yarn audit:public
 
 ## 免责声明
 
-OrionTV 只提供通用客户端代码，不存储、上传或分发视频内容。使用者应确保其配置和访问的内容符合适用法律及服务条款。
+OpaiTV 只提供通用客户端代码，不存储、上传或分发视频内容。使用者应确保其配置和访问的内容符合适用法律及服务条款。
