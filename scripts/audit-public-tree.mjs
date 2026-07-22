@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
-const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-  encoding: "utf8",
-}).trim();
-const trackedFiles = execFileSync("git", ["ls-files", "-z"], {
+const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(scriptDirectory, "..");
+const trackedFiles = execFileSync("git", ["-C", root, "ls-files", "-z"], {
   cwd: root,
   encoding: "utf8",
 })
