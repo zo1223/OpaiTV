@@ -2,7 +2,7 @@
 ; 编译: "C:\Users\admin\AppData\Local\Programs\Inno Setup 6\ISCC.exe" desktop\installer\OpaiTV.iss
 
 #define MyAppName "OpaiTV"
-#define MyAppVersion "1.3.13"
+#define MyAppVersion "1.3.14"
 #define MyAppPublisher "OpaiTV"
 #define MyAppExeName "OpaiTV.exe"
 

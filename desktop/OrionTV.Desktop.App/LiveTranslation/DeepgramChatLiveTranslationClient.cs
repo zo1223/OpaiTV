@@ -653,7 +653,7 @@ internal sealed class DeepgramChatLiveTranslationClient : ILiveTranslationSessio
     private static HttpClient CreateHttpClient()
     {
         var client = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("OpaiTV-Desktop/1.3.13");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("OpaiTV-Desktop/1.3.14");
         return client;
     }
 
