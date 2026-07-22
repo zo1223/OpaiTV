@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
@@ -12,6 +14,7 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
 {
     private readonly IAppHost _host;
     private List<LocalCacheItem> _items = [];
+    private List<LocalMediaCardItem> _mediaItems = [];
     private List<ActiveJobItem> _activeJobs = [];
     private bool _listening;
     private bool _disposed;
@@ -88,11 +91,15 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
         {
             Title = "选择本地视频",
             Filter = "视频文件|*.mp4;*.mkv;*.avi;*.mov;*.webm;*.ts;*.m2ts;*.flv;*.m3u8;*.mp3;*.flac;*.wav|所有文件|*.*",
-            Multiselect = false,
+            Multiselect = true,
         };
         if (dialog.ShowDialog() == true)
         {
-            PlayLocalFile(dialog.FileName, Path.GetFileNameWithoutExtension(dialog.FileName));
+            var imported = _host.Services.LocalMedia.Import(dialog.FileNames);
+            RefreshEntries();
+            StatusText.Text = imported.Count == 0
+                ? "没有找到可添加的视频文件"
+                : $"已添加 {imported.Count} 部本地影视，共 {imported.Sum(item => item.Episodes.Count)} 个文件";
         }
     }
 
@@ -137,26 +144,151 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
 
     private void RefreshEntries()
     {
-        _items = _host.Services.VodCache
-            .GetEntries(_host.Services.Settings.VodCacheDirectory)
+        var entries = _host.Services.VodCache.GetEntries(_host.Services.Settings.VodCacheDirectory);
+        _items = entries
             .Select(entry => new LocalCacheItem(entry))
             .ToList();
         CacheList.ItemsSource = _items;
         EmptyText.Visibility = _items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        _mediaItems = BuildMediaItems(_host.Services.LocalMedia.GetItems(), entries);
+        MediaGrid.ItemsSource = _mediaItems;
+        MediaEmptyText.Visibility = _mediaItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
         var activeCount = _host.Services.Downloads.GetActiveJobs().Count;
         StatusText.Text = activeCount > 0
-            ? $"后台下载 {activeCount} 个 · 本地缓存 {_items.Count} 个（可同时多任务，播放互不影响）"
-            : _items.Count == 0
+            ? $"后台下载 {activeCount} 个 · 本地媒体 {_mediaItems.Count} 部 · 缓存 {_items.Count} 集"
+            : _mediaItems.Count == 0
                 ? ""
-                : $"共 {_items.Count} 个本地下载（优先单文件，未下完也可播已合并部分）";
+                : $"共 {_mediaItems.Count} 部本地影视 · {_items.Count} 个应用缓存";
+    }
+
+    private static List<LocalMediaCardItem> BuildMediaItems(
+        IReadOnlyList<LocalMediaItem> importedItems,
+        IReadOnlyList<VodCacheEntry> cacheEntries)
+    {
+        var cards = importedItems
+            .Select(item =>
+            {
+                var episodes = item.Episodes
+                    .Select(episode => ToPlayableUri(episode.Path))
+                    .Where(path => !string.IsNullOrWhiteSpace(path))
+                    .ToList();
+                return episodes.Count == 0
+                    ? null
+                    : LocalMediaCardItem.FromImported(item, episodes);
+            })
+            .Where(item => item is not null)
+            .Cast<LocalMediaCardItem>()
+            .ToList();
+
+        var parsedEntries = cacheEntries.Select(entry => new
+        {
+            Entry = entry,
+            Name = LocalMediaNaming.Parse(entry.Title),
+        });
+        var cacheGroups = parsedEntries.GroupBy(item =>
+            item.Name.EpisodeNumber is not null
+                ? $"series:{LocalMediaNaming.NormalizeTitle(item.Name.Title)}"
+                : $"cache:{item.Entry.Directory}",
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var group in cacheGroups)
+        {
+            var selected = group
+                .GroupBy(item => item.Name.EpisodeNumber?.ToString() ?? item.Entry.Directory, StringComparer.OrdinalIgnoreCase)
+                .Select(items => items.OrderByDescending(item => item.Entry.CreatedAt).First())
+                .OrderBy(item => item.Name.EpisodeNumber ?? int.MaxValue)
+                .ThenBy(item => item.Entry.CreatedAt)
+                .ToList();
+            var episodes = selected
+                .Select(item => ToPlayableUri(item.Entry.PlaylistPath))
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .ToList();
+            if (episodes.Count == 0)
+            {
+                continue;
+            }
+
+            var title = selected[0].Name.Title;
+            var poster = selected.Select(item => item.Entry.Poster)
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "";
+            cards.Add(LocalMediaCardItem.FromCache(
+                StableCacheId(group.Key),
+                title,
+                poster,
+                episodes,
+                selected.Max(item => item.Entry.CreatedAt)));
+        }
+
+        return cards.OrderByDescending(item => item.SortTime).ToList();
+    }
+
+    private static string StableCacheId(string value)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        return "cache-" + Convert.ToHexString(hash)[..16].ToLowerInvariant();
+    }
+
+    private static string ToPlayableUri(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return "";
+        }
+
+        try
+        {
+            if (Uri.TryCreate(path, UriKind.Absolute, out var uri) && uri.IsFile)
+            {
+                return File.Exists(uri.LocalPath) ? uri.AbsoluteUri : "";
+            }
+
+            var fullPath = Path.GetFullPath(path);
+            return File.Exists(fullPath) ? new Uri(fullPath).AbsoluteUri : "";
+        }
+        catch
+        {
+            return "";
+        }
     }
 
     private void PlayCacheButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button { DataContext: LocalCacheItem item })
         {
-            PlayLocalFile(item.PlaylistPath, item.Title);
+            PlayLocalFile(item.PlaylistPath, item.Title, item.Poster);
         }
+    }
+
+    private void PlayMediaCard_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: LocalMediaCardItem item })
+        {
+            PlayLocalMedia(item.Id, item.Card.Title, item.Card.Poster, item.Episodes);
+        }
+    }
+
+    private void RemoveMediaButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: LocalMediaCardItem { LibraryId: { } libraryId } item })
+        {
+            return;
+        }
+
+        var result = MessageBox.Show(
+            Window.GetWindow(this),
+            $"从本地媒体列表移除《{item.Card.Title}》？\n\n视频文件不会被删除。",
+            "移除本地媒体",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (result != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        _host.Services.LocalMedia.Remove(libraryId);
+        RefreshEntries();
+        StatusText.Text = $"已从列表移除《{item.Card.Title}》，视频文件仍保留在原位置";
     }
 
     private async void OptimizeSeekButton_Click(object sender, RoutedEventArgs e)
@@ -264,7 +396,8 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
             var job = await _host.Services.Downloads.StartAsync(
                 item.SourceUrl,
                 item.Title,
-                _host.Services.Settings.VodCacheDirectory).ConfigureAwait(true);
+                _host.Services.Settings.VodCacheDirectory,
+                poster: item.Poster).ConfigureAwait(true);
             StatusText.Text = $"《{item.Title}》已加入后台下载（{job.Percent}%）";
             RefreshAll();
         }
@@ -293,26 +426,38 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
         }
     }
 
-    private void PlayLocalFile(string path, string title)
+    private void PlayLocalFile(string path, string title, string poster = "")
     {
-        if (!File.Exists(path))
+        var uri = ToPlayableUri(path);
+        if (string.IsNullOrWhiteSpace(uri))
         {
             StatusText.Text = "文件不存在";
             return;
         }
 
-        var uri = new Uri(path).AbsoluteUri;
-        var id = path;
-        var result = new SearchResult(id, title, "", [uri], "local", "本地视频", "");
+        PlayLocalMedia(path, title, poster, [uri]);
+    }
+
+    private void PlayLocalMedia(string id, string title, string poster, IReadOnlyList<string> episodes)
+    {
+        var playableEpisodes = episodes.Where(path => !string.IsNullOrWhiteSpace(path)).ToList();
+        if (playableEpisodes.Count == 0)
+        {
+            StatusText.Text = "没有找到可播放的本地文件";
+            return;
+        }
+
+        var result = new SearchResult(id, title, poster, playableEpisodes, "local", "本地", "");
         _host.Navigate(AppPage.Player, new PlayParameter(
             title,
             "local",
-            "本地视频",
+            "本地",
             id,
-            [uri],
+            playableEpisodes,
             0,
             0,
-            [result]));
+            [result],
+            poster));
     }
 
     private static string ShortError(Exception error)
@@ -384,6 +529,7 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
             Directory = entry.Directory;
             PlaylistPath = entry.PlaylistPath;
             Title = entry.Title;
+            Poster = entry.Poster;
             SourceUrl = entry.SourceUrl;
             CanResume = entry.CanResumeDownload;
             CanDecrypt = entry.CanDecryptMerge;
@@ -413,6 +559,7 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
         public string Directory { get; }
         public string PlaylistPath { get; }
         public string Title { get; }
+        public string Poster { get; }
         public string Summary { get; }
         public string SourceUrl { get; }
         public string? MergedTsPath { get; }
@@ -422,6 +569,54 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
         public Visibility ResumeVisibility => CanResume ? Visibility.Visible : Visibility.Collapsed;
         public Visibility DecryptVisibility => CanDecrypt ? Visibility.Visible : Visibility.Collapsed;
         public Visibility OptimizeVisibility => CanOptimize ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private sealed class LocalMediaCardItem
+    {
+        private LocalMediaCardItem(
+            string id,
+            string? libraryId,
+            string title,
+            string poster,
+            IReadOnlyList<string> episodes,
+            DateTimeOffset sortTime)
+        {
+            Id = id;
+            LibraryId = libraryId;
+            Episodes = episodes;
+            SortTime = sortTime;
+            Card = new CatalogItem(
+                id,
+                title,
+                poster,
+                "local",
+                "本地",
+                episodes.Count > 1 ? $"{episodes.Count}集" : null);
+        }
+
+        public string Id { get; }
+        public string? LibraryId { get; }
+        public CatalogItem Card { get; }
+        public IReadOnlyList<string> Episodes { get; }
+        public DateTimeOffset SortTime { get; }
+        public Visibility RemoveVisibility => LibraryId is null ? Visibility.Collapsed : Visibility.Visible;
+
+        internal static LocalMediaCardItem FromImported(LocalMediaItem item, IReadOnlyList<string> episodes) =>
+            new(
+                item.Id,
+                item.Id,
+                item.Title,
+                item.Poster,
+                episodes,
+                DateTimeOffset.FromUnixTimeMilliseconds(Math.Max(0, item.SaveTime)));
+
+        internal static LocalMediaCardItem FromCache(
+            string id,
+            string title,
+            string poster,
+            IReadOnlyList<string> episodes,
+            DateTimeOffset sortTime) =>
+            new(id, null, title, poster, episodes, sortTime);
     }
 
     private static string FormatSize(long bytes)

@@ -12,6 +12,7 @@ public static class DesktopPaths
     public static string SettingsFile => Path.Combine(DataDirectory, "settings.json");
     public static string FavoritesFile => Path.Combine(DataDirectory, "favorites.json");
     public static string PlayRecordsFile => Path.Combine(DataDirectory, "play_records.json");
+    public static string LocalMediaFile => Path.Combine(DataDirectory, "local_media.json");
     /// <summary>AI/CLI 解析写入的额外视频源（与订阅源合并）。</summary>
     public static string ExtraSourcesFile => Path.Combine(DataDirectory, "extra_sources.json");
     public static string DefaultVodCacheDirectory => Path.Combine(

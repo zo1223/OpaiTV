@@ -380,11 +380,25 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             if (!string.IsNullOrWhiteSpace(detail.Poster))
             {
                 ImageLoader.SetSourceUrl(PosterImage, detail.Poster);
+                var updated = result with { Poster = detail.Poster };
+                _selected = updated;
+                ReplaceResult(_searchResults, result, updated);
+                ReplaceResult(_remoteResults, result, updated);
             }
         }
         catch
         {
             // 元信息获取失败时保留搜索结果中的字段。
+        }
+    }
+
+    private static void ReplaceResult(List<SearchResult> results, SearchResult current, SearchResult updated)
+    {
+        var key = SearchResultSources.SelectionKeyOf(current);
+        var index = results.FindIndex(item => SearchResultSources.SelectionKeyOf(item) == key);
+        if (index >= 0)
+        {
+            results[index] = updated;
         }
     }
 
@@ -716,7 +730,8 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             var job = await _host.Services.Downloads.StartAsync(
                 url,
                 cacheTitle,
-                _host.Services.Settings.VodCacheDirectory).ConfigureAwait(true);
+                _host.Services.Settings.VodCacheDirectory,
+                poster: _selected?.Poster ?? remote.Poster).ConfigureAwait(true);
             UpdateDownloadButton(episodeIndex, $"{job.Percent}%");
             RefreshDownloadStatusSummary();
         }

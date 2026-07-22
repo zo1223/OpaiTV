@@ -45,6 +45,7 @@ public sealed class AppServices : IDisposable
 
     public FavoriteStore Favorites { get; } = new();
     public PlayRecordStore PlayRecords { get; } = new();
+    public LocalMediaStore LocalMedia { get; } = new();
     public DesktopSettings Settings { get; set; }
 
     private IReadOnlyList<VideoSource> _subscriptionSources = [];

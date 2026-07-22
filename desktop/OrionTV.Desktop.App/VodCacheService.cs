@@ -36,7 +36,8 @@ public sealed record VodCacheEntry(
     string SourceUrl = "",
     bool CanResumeDownload = false,
     /// <summary>已下完且带 AES-128 密钥，可一键解密合并为 merged.ts。</summary>
-    bool CanDecryptMerge = false);
+    bool CanDecryptMerge = false,
+    string Poster = "");
 
 public sealed class VodCacheSession
 {
@@ -54,6 +55,7 @@ public sealed class VodCacheSession
     public string Id { get; }
     public string SourceUrl { get; }
     public string Title { get; }
+    public string Poster { get; internal set; } = "";
     public string Directory { get; }
     public int PrebufferSeconds { get; }
     public string PlaybackUrl { get; internal set; } = "";
@@ -124,7 +126,8 @@ internal sealed record CacheMetadata(
     string? MergedFileName = null,
     bool MergeSupported = true,
     string? MediaPlaylistUrl = null,
-    long[]? MergedSegmentLengths = null);
+    long[]? MergedSegmentLengths = null,
+    string Poster = "");
 
 /// <summary>
 /// Windows 点播弱网缓存：独立下载 HLS 分片到磁盘；LibVLC 只从本机服务读取已经完整落盘的文件。
@@ -258,7 +261,8 @@ public sealed class VodCacheService : IDisposable
         string title,
         string cacheDirectory,
         int prebufferSeconds,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string poster = "")
     {
         if (!IsHlsUrl(sourceUrl))
         {
@@ -271,6 +275,11 @@ public sealed class VodCacheService : IDisposable
         // 从播放器退出后仍在后台下载的同一任务，重新进入时直接接管，避免创建重复缓存目录。
         if (TryAttachActiveSession(root, sourceUrl, title) is { } active)
         {
+            if (string.IsNullOrWhiteSpace(active.Poster) && !string.IsNullOrWhiteSpace(poster))
+            {
+                active.Poster = poster;
+            }
+
             return active;
         }
 
@@ -282,7 +291,8 @@ public sealed class VodCacheService : IDisposable
                     sourceUrl,
                     title,
                     prebufferSeconds,
-                    cancellationToken)
+                    cancellationToken,
+                    poster)
                 .ConfigureAwait(false);
             if (resumed is not null)
             {
@@ -302,7 +312,10 @@ public sealed class VodCacheService : IDisposable
             sourceUrl,
             title,
             directory,
-            VodCacheSettings.NormalizePrebufferSeconds(prebufferSeconds));
+            VodCacheSettings.NormalizePrebufferSeconds(prebufferSeconds))
+        {
+            Poster = poster,
+        };
         session.PlaybackUrl = $"http://127.0.0.1:{_port}/vod/{id}/playlist.m3u8";
 
         try
@@ -514,7 +527,8 @@ public sealed class VodCacheService : IDisposable
                 metadata?.MergeSupported ?? hasMerged,
                 metadata?.SourceUrl ?? "",
                 canResume,
-                canDecryptMerge));
+                canDecryptMerge,
+                metadata?.Poster ?? ""));
         }
 
         return result.OrderByDescending(entry => entry.CreatedAt).ToList();
@@ -579,7 +593,8 @@ public sealed class VodCacheService : IDisposable
             MergedFileName: VodCacheSession.MergedFileName,
             MergeSupported: true,
             MediaPlaylistUrl: metadata?.MediaPlaylistUrl,
-            MergedSegmentLengths: lengths);
+            MergedSegmentLengths: lengths,
+            Poster: metadata?.Poster ?? "");
         TryWriteMetadata(directory, updated);
         DeleteMergedSegmentFiles(
             directory,
@@ -1400,7 +1415,8 @@ public sealed class VodCacheService : IDisposable
         string sourceUrl,
         string title,
         int prebufferSeconds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string poster)
     {
         try
         {
@@ -1432,6 +1448,7 @@ public sealed class VodCacheService : IDisposable
                 MergeSupported = metadata.MergeSupported,
                 MediaPlaylistUrl = metadata.MediaPlaylistUrl ?? "",
                 CreatedAt = metadata.CreatedAt,
+                Poster = string.IsNullOrWhiteSpace(poster) ? metadata.Poster : poster,
             };
             session.PlaybackUrl = $"http://127.0.0.1:{_port}/vod/{session.Id}/playlist.m3u8";
 
@@ -2180,7 +2197,8 @@ public sealed class VodCacheService : IDisposable
             session.MergeSupported ? VodCacheSession.MergedFileName : null,
             session.MergeSupported,
             session.MediaPlaylistUrl,
-            mergedSegmentLengths);
+            mergedSegmentLengths,
+            session.Poster);
         var path = Path.Combine(session.Directory, "cache.json");
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true }), cancellationToken).ConfigureAwait(false);
     }

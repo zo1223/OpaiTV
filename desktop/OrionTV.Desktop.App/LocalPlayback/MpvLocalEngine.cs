@@ -214,13 +214,13 @@ public sealed class MpvLocalEngine : IDisposable
             ?? throw new InvalidOperationException("MPV_NOT_FOUND");
 
         var pipePath = @"\\.\pipe\" + _pipeName;
-        // 便携 mpv：硬解 d3d11va；hr-seek=no 关键帧快跳；OSC 保底控制（airspace）。
+        // 便携 mpv：硬解 d3d11va；hr-seek=no 关键帧快跳；OSC 固定贴底（airspace）。
         var args =
             $"--wid={_wid.ToInt64()} " +
             "--idle=yes " +
             "--force-window=no " +
             "--keep-open=yes " +
-            "--osc=yes --osd-level=1 --no-border " +
+            "--osc=yes --script-opts=osc-layout=bottombar,osc-valign=1 --osd-level=1 --no-border " +
             "--hwdec=d3d11va " +
             "--hwdec-codecs=all " +
             "--vo=gpu " +

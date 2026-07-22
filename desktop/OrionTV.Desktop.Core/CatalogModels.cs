@@ -193,7 +193,9 @@ public sealed record PlayRecordItem(
     double PlayTime,
     double TotalTime,
     string Year,
-    long SaveTime = 0);
+    long SaveTime = 0,
+    string? LocalMediaId = null,
+    IReadOnlyList<string>? LocalEpisodes = null);
 
 /// <summary>直播频道（对齐安卓 m3u Channel）。</summary>
 public sealed record LiveChannel(

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using OrionTV.Desktop.Core;
@@ -163,6 +164,7 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
 
                 Grid.ShowResults(records, "暂无观看记录");
                 _hasMore = false;
+                _ = HydrateMissingRecordPostersAsync(records, token);
                 return;
             }
 
@@ -273,12 +275,66 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
                 var source = separator >= 0 ? kv.Key[..separator] : kv.Key;
                 var id = separator >= 0 ? kv.Key[(separator + 1)..] : "";
                 var record = kv.Value;
+                var localItem = string.Equals(source, "local", StringComparison.OrdinalIgnoreCase)
+                    ? _host.Services.LocalMedia.Get(record.LocalMediaId ?? id)
+                    : null;
+                var cover = !string.IsNullOrWhiteSpace(record.Cover)
+                    ? record.Cover
+                    : localItem?.Poster ?? "";
                 var progress = record.TotalTime > 0 ? record.PlayTime / record.TotalTime : 0;
                 return new CatalogItem(
-                    id, record.Title, record.Cover, source, record.SourceName, record.Year, null,
-                    progress, record.Index, record.TotalEpisodes, record.PlayTime);
+                    id, record.Title, cover, source,
+                    string.Equals(source, "local", StringComparison.OrdinalIgnoreCase) ? "本地" : record.SourceName,
+                    record.Year, null, progress, record.Index,
+                    localItem?.Episodes.Count ?? record.TotalEpisodes, record.PlayTime);
             })
             .ToList();
+    }
+
+    private async Task HydrateMissingRecordPostersAsync(IReadOnlyList<CatalogItem> records, CancellationToken token)
+    {
+        foreach (var item in records.Where(item =>
+                     string.IsNullOrWhiteSpace(item.Poster)
+                     && !string.Equals(item.Source, "local", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            var source = _host.Services.FindSource(item.Source);
+            if (source is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                var results = await _host.Services.VodClients.For(source)
+                    .GetByIdAsync(source, item.Id, token);
+                if (token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                var match = results.FirstOrDefault(result => result.Id == item.Id) ?? results.FirstOrDefault();
+                if (string.IsNullOrWhiteSpace(match?.Poster))
+                {
+                    continue;
+                }
+
+                Grid.ReplaceItem(item, item with { Poster = match.Poster });
+                _host.Services.PlayRecords.UpdateCover(item.Source, item.Id, match.Poster);
+            }
+            catch when (token.IsCancellationRequested)
+            {
+                return;
+            }
+            catch
+            {
+                // 单条历史的海报补全失败不影响其它记录。
+            }
+        }
     }
 
     private List<CatalogItem> PreparePlayabilityResults(IEnumerable<CatalogItem> results)
@@ -396,6 +452,12 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
 
     private async Task ResumeRecordAsync(CatalogItem item)
     {
+        if (string.Equals(item.Source, "local", StringComparison.OrdinalIgnoreCase))
+        {
+            ResumeLocalRecord(item);
+            return;
+        }
+
         var source = _host.Services.FindSource(item.Source);
         if (source is not null)
         {
@@ -406,8 +468,10 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
                 if (match is not null && match.Episodes.Count > 0)
                 {
                     var index = Math.Clamp(item.EpisodeIndex ?? 0, 0, match.Episodes.Count - 1);
+                    var poster = string.IsNullOrWhiteSpace(item.Poster) ? match.Poster : item.Poster;
                     _host.Navigate(AppPage.Player, new PlayParameter(
-                        item.Title, item.Source, item.SourceName, item.Id, match.Episodes, index, item.PlayTime * 1000, [], item.Poster));
+                        item.Title, item.Source, item.SourceName, item.Id, match.Episodes, index,
+                        item.PlayTime * 1000, [], poster));
                     return;
                 }
             }
@@ -418,6 +482,91 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
         }
 
         _host.Navigate(AppPage.Detail, new DetailParameter(item.Title, item.Source, item.Id));
+    }
+
+    private void ResumeLocalRecord(CatalogItem item)
+    {
+        var record = _host.Services.PlayRecords.Get(item.Source, item.Id);
+        var libraryItem = _host.Services.LocalMedia.Get(record?.LocalMediaId ?? item.Id);
+        var candidates = libraryItem is not null
+            ? libraryItem.Episodes.Select(episode => episode.Path).ToList()
+            : record?.LocalEpisodes?.ToList() ?? [item.Id];
+        var episodes = candidates.Select(NormalizeLocalEpisode).ToList();
+        if (episodes.All(string.IsNullOrWhiteSpace))
+        {
+            episodes = FindCachedLocalEpisodes(item.Title);
+        }
+
+        if (episodes.All(string.IsNullOrWhiteSpace))
+        {
+            MessageBox.Show(
+                Window.GetWindow(this),
+                "本地视频文件已移动或删除，请在“本地视频”中重新添加。",
+                "无法继续播放",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var index = Math.Clamp(item.EpisodeIndex ?? record?.Index ?? 0, 0, episodes.Count - 1);
+        if (string.IsNullOrWhiteSpace(episodes[index]))
+        {
+            index = episodes.FindIndex(path => !string.IsNullOrWhiteSpace(path));
+        }
+
+        var poster = !string.IsNullOrWhiteSpace(item.Poster)
+            ? item.Poster
+            : libraryItem?.Poster ?? record?.Cover ?? "";
+        var title = string.IsNullOrWhiteSpace(item.Title) ? libraryItem?.Title ?? "本地视频" : item.Title;
+        var localSource = new SearchResult(item.Id, title, poster, episodes, "local", "本地", "");
+        _host.Navigate(AppPage.Player, new PlayParameter(
+            title,
+            "local",
+            "本地",
+            item.Id,
+            episodes,
+            Math.Max(0, index),
+            item.PlayTime * 1000,
+            [localSource],
+            poster));
+    }
+
+    private List<string> FindCachedLocalEpisodes(string title)
+    {
+        var normalizedTitle = LocalMediaNaming.NormalizeTitle(title);
+        return _host.Services.VodCache
+            .GetEntries(_host.Services.Settings.VodCacheDirectory)
+            .Select(entry => new { Entry = entry, Name = LocalMediaNaming.Parse(entry.Title) })
+            .Where(item => LocalMediaNaming.NormalizeTitle(item.Name.Title) == normalizedTitle)
+            .GroupBy(item => item.Name.EpisodeNumber?.ToString() ?? item.Entry.Directory, StringComparer.OrdinalIgnoreCase)
+            .Select(items => items.OrderByDescending(item => item.Entry.CreatedAt).First())
+            .OrderBy(item => item.Name.EpisodeNumber ?? int.MaxValue)
+            .Select(item => NormalizeLocalEpisode(item.Entry.PlaylistPath))
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .ToList();
+    }
+
+    private static string NormalizeLocalEpisode(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return "";
+        }
+
+        try
+        {
+            if (Uri.TryCreate(path, UriKind.Absolute, out var uri) && uri.IsFile)
+            {
+                return File.Exists(uri.LocalPath) ? uri.AbsoluteUri : "";
+            }
+
+            var fullPath = Path.GetFullPath(path);
+            return File.Exists(fullPath) ? new Uri(fullPath).AbsoluteUri : "";
+        }
+        catch
+        {
+            return "";
+        }
     }
 
     private void LiveLink_Click(object sender, RoutedEventArgs e) => _host.Navigate(AppPage.Live);

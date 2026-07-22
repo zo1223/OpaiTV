@@ -66,7 +66,8 @@ public sealed class VodDownloadManager : IDisposable
         string sourceUrl,
         string title,
         string cacheDirectory,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string poster = "")
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!VodCacheService.IsHlsUrl(sourceUrl))
@@ -89,7 +90,8 @@ public sealed class VodDownloadManager : IDisposable
                 title,
                 cacheDirectory,
                 prebufferSeconds: 15,
-                cancellationToken)
+                cancellationToken,
+                poster)
             .ConfigureAwait(false);
         if (session is null)
         {

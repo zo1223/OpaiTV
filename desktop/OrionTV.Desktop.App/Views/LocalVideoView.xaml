@@ -14,17 +14,47 @@
             <StackPanel MaxWidth="900">
                 <Border Style="{StaticResource CardPanelStyle}">
                     <StackPanel>
-                        <TextBlock Text="播放本地视频" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" />
-                        <TextBlock Text="支持 MP4、MKV、AVI、MOV、WebM、TS 和本地 M3U8。详情页下载可后台继续；可同时多个任务，播放其他视频互不影响。"
+                        <TextBlock Text="添加本地视频" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" />
+                        <TextBlock Text="支持 MP4、MKV、AVI、MOV、WebM、TS 和本地 M3U8；多选文件会自动归集为可选集的本地影视。"
                                    Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,6,0,12" TextWrapping="Wrap" />
                         <StackPanel Orientation="Horizontal">
-                            <Button Content="选择视频文件" Style="{StaticResource PrimaryButtonStyle}" Height="38" Padding="18,0" Click="OpenLocalFileButton_Click" />
+                            <Button Content="添加视频文件" Style="{StaticResource PrimaryButtonStyle}" Height="38" Padding="18,0" Click="OpenLocalFileButton_Click" />
                             <Button Content="打开缓存目录" Style="{StaticResource SecondaryButtonStyle}" Height="38" Padding="18,0" Margin="10,0,0,0" Click="OpenCacheFolderButton_Click" />
                             <Button Content="刷新列表" Style="{StaticResource SecondaryButtonStyle}" Height="38" Padding="18,0" Margin="10,0,0,0" Click="RefreshButton_Click" />
                         </StackPanel>
                         <TextBlock x:Name="StatusText" Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,10,0,0" />
                     </StackPanel>
                 </Border>
+
+                <StackPanel Orientation="Horizontal" Margin="0,16,0,10">
+                    <Rectangle Width="4" Height="16" RadiusX="2" RadiusY="2" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Center" />
+                    <TextBlock Text="本地媒体" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" Margin="8,0,0,0" />
+                </StackPanel>
+                <TextBlock x:Name="MediaEmptyText" Text="暂无本地媒体" Foreground="{StaticResource MutedTextBrush}" FontSize="14" Margin="0,24" HorizontalAlignment="Center" />
+                <ItemsControl x:Name="MediaGrid" Margin="-6,0,0,4">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Width="162">
+                                <ctrl:VideoCardControl Item="{Binding Card}" Click="PlayMediaCard_Click" />
+                                <Button Content="&#xE74D;"
+                                        Style="{StaticResource IconButtonStyle}"
+                                        Width="30" Height="30"
+                                        Padding="0"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Top"
+                                        Margin="0,48,10,0"
+                                        Visibility="{Binding RemoveVisibility}"
+                                        ToolTip="从列表移除（不会删除视频文件）"
+                                        Click="RemoveMediaButton_Click" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
 
                 <StackPanel Orientation="Horizontal" Margin="0,16,0,10">
                     <Rectangle Width="4" Height="16" RadiusX="2" RadiusY="2" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Center" />

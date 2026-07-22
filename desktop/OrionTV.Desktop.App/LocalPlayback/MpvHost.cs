@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
+using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media;
 
 namespace OrionTV.Desktop.App.LocalPlayback;
 
@@ -19,6 +21,9 @@ public sealed class MpvHost : HwndHost
         const int wsClipSiblings = 0x04000000;
         const int wsClipChildren = 0x02000000;
 
+        var initialSize = ToDevicePixels(
+            ActualWidth > 0 ? ActualWidth : 16,
+            ActualHeight > 0 ? ActualHeight : 16);
         _hwnd = CreateWindowEx(
             0,
             "Static",
@@ -26,8 +31,8 @@ public sealed class MpvHost : HwndHost
             wsChild | wsVisible | wsClipSiblings | wsClipChildren,
             0,
             0,
-            (int)Math.Max(1, ActualWidth > 0 ? ActualWidth : 16),
-            (int)Math.Max(1, ActualHeight > 0 ? ActualHeight : 16),
+            initialSize.Width,
+            initialSize.Height,
             hwndParent.Handle,
             IntPtr.Zero,
             IntPtr.Zero,
@@ -56,14 +61,23 @@ public sealed class MpvHost : HwndHost
         base.OnRenderSizeChanged(sizeInfo);
         if (_hwnd != IntPtr.Zero)
         {
+            var size = ToDevicePixels(sizeInfo.NewSize.Width, sizeInfo.NewSize.Height);
             MoveWindow(
                 _hwnd,
                 0,
                 0,
-                (int)Math.Max(1, sizeInfo.NewSize.Width),
-                (int)Math.Max(1, sizeInfo.NewSize.Height),
+                size.Width,
+                size.Height,
                 true);
         }
+    }
+
+    private (int Width, int Height) ToDevicePixels(double width, double height)
+    {
+        var dpi = VisualTreeHelper.GetDpi(this);
+        return (
+            Math.Max(1, (int)Math.Round(width * dpi.DpiScaleX)),
+            Math.Max(1, (int)Math.Round(height * dpi.DpiScaleY)));
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

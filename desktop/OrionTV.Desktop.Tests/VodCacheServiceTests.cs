@@ -283,10 +283,13 @@ public sealed class VodCacheServiceTests
         try
         {
             const string title = "Poster Episode";
-            var session = await service.StartAsync(upstream.PlaylistUrl, title, root, 15);
+            const string poster = "https://images.example/poster.jpg";
+            var session = await service.StartAsync(upstream.PlaylistUrl, title, root, 15, poster: poster);
             Assert.NotNull(session);
             await session!.DownloadTask.WaitAsync(TimeSpan.FromSeconds(10));
             await service.CloseAsync(session, deleteFiles: false, continueDownload: false);
+
+            Assert.Equal(poster, Assert.Single(service.GetEntries(root)).Poster);
 
             var directoriesBefore = Directory.EnumerateDirectories(root).ToArray();
             var requestsBefore = Enumerable.Range(1, 3)

@@ -53,6 +53,6 @@ desktop\publish\win-x64-self-contained\mpv\mpv.exe
 
 ## 说明
 
-- 本地模式开启 mpv OSC，避免 HwndHost airspace 挡 WPF 控制条  
+- 本地模式开启贴底的 mpv OSC，避免 HwndHost airspace 挡 WPF 控制条；宿主尺寸按当前 DPI 换算，保证全屏进度条位置正确
 - 硬解：`--hwdec=d3d11va`（不强制软解）  
 - seek：`absolute+keyframes` 快速关键帧跳转  

@@ -115,13 +115,38 @@ public sealed class FavoriteStore() : JsonDictionaryStore<FavoriteItem>(DesktopP
 }
 
 /// <summary>本地观看记录存储（对齐安卓 PlayRecordManager 的 localstorage 模式）。</summary>
-public sealed class PlayRecordStore() : JsonDictionaryStore<PlayRecordItem>(DesktopPaths.PlayRecordsFile)
+public sealed class PlayRecordStore : JsonDictionaryStore<PlayRecordItem>
 {
+    public PlayRecordStore() : this(DesktopPaths.PlayRecordsFile)
+    {
+    }
+
+    public PlayRecordStore(string filePath) : base(filePath)
+    {
+    }
+
     public PlayRecordItem? Get(string source, string id) =>
         GetAll().TryGetValue(Key(source, id), out var record) ? record : null;
 
     public void Save(string source, string id, PlayRecordItem record) =>
         Mutate(all => all[Key(source, id)] = record with { SaveTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
+
+    public void UpdateCover(string source, string id, string cover)
+    {
+        if (string.IsNullOrWhiteSpace(cover))
+        {
+            return;
+        }
+
+        Mutate(all =>
+        {
+            var key = Key(source, id);
+            if (all.TryGetValue(key, out var record) && string.IsNullOrWhiteSpace(record.Cover))
+            {
+                all[key] = record with { Cover = cover };
+            }
+        });
+    }
 
     public void Remove(string source, string id) => Mutate(all => all.Remove(Key(source, id)));
 }

@@ -999,15 +999,24 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
         try
         {
+            var isLocal = string.Equals(_sourceKey, "local", StringComparison.OrdinalIgnoreCase);
+            var poster = _poster;
+            if (isLocal && string.IsNullOrWhiteSpace(poster))
+            {
+                poster = _host.Services.LocalMedia.Get(_id)?.Poster ?? "";
+            }
+
             _host.Services.PlayRecords.Save(_sourceKey, _id, new PlayRecordItem(
                 Title: _title,
                 SourceName: _sourceName,
-                Cover: _poster,
+                Cover: poster,
                 Index: _episodeIndex,
                 TotalEpisodes: _episodes.Count,
                 PlayTime: _currentTimeMs / 1000.0,
                 TotalTime: _lengthMs / 1000.0,
-                Year: ""));
+                Year: "",
+                LocalMediaId: isLocal ? _id : null,
+                LocalEpisodes: isLocal ? _episodes.ToArray() : null));
         }
         catch
         {

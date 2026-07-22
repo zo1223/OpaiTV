@@ -77,19 +77,29 @@ public static class ImageLoader
 
     private static async Task<BitmapSource?> LoadAsync(string url)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        if (url.Contains("doubanio.com", StringComparison.OrdinalIgnoreCase))
+        byte[] bytes;
+        if (TryGetLocalPath(url, out var localPath))
         {
-            request.Headers.TryAddWithoutValidation("Referer", "https://movie.douban.com/");
+            bytes = await File.ReadAllBytesAsync(localPath).ConfigureAwait(false);
+        }
+        else
+        {
+            var requestUrl = url.StartsWith("//", StringComparison.Ordinal) ? "https:" + url : url;
+            using var request = new HttpRequestMessage(HttpMethod.Get, requestUrl);
+            if (requestUrl.Contains("doubanio.com", StringComparison.OrdinalIgnoreCase))
+            {
+                request.Headers.TryAddWithoutValidation("Referer", "https://movie.douban.com/");
+            }
+
+            using var response = await Http.SendAsync(request).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
         }
 
-        using var response = await Http.SendAsync(request).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
-        var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
         return await Task.Run<BitmapSource?>(() =>
         {
             try
@@ -104,5 +114,29 @@ public static class ImageLoader
                 return null;
             }
         }).ConfigureAwait(false);
+    }
+
+    private static bool TryGetLocalPath(string value, out string path)
+    {
+        path = "";
+        try
+        {
+            if (Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.IsFile)
+            {
+                path = uri.LocalPath;
+                return File.Exists(path);
+            }
+
+            if (Path.IsPathFullyQualified(value) && File.Exists(value))
+            {
+                path = Path.GetFullPath(value);
+                return true;
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
     }
 }
