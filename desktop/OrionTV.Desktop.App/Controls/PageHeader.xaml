@@ -1,0 +1,36 @@
+<UserControl x:Class="OrionTV.Desktop.App.Controls.PageHeader"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Border Background="Transparent">
+        <Grid Height="60" Margin="8,4,12,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="52" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <Button x:Name="BackButton"
+                    Grid.Column="0"
+                    Style="{StaticResource IconButtonStyle}"
+                    Content="&#xE72B;"
+                    Margin="0"
+                    VerticalAlignment="Center"
+                    Click="BackButton_Click" />
+
+            <TextBlock x:Name="TitleText"
+                       Grid.Column="1"
+                       HorizontalAlignment="Left"
+                       VerticalAlignment="Center"
+                       Margin="6,0,12,0"
+                       FontSize="22"
+                       FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis"
+                       Foreground="{StaticResource PrimaryBrush}" />
+
+            <ContentPresenter x:Name="RightContent"
+                              Grid.Column="2"
+                              VerticalAlignment="Center"
+                              Margin="0,0,8,0" />
+        </Grid>
+    </Border>
+</UserControl>

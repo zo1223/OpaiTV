@@ -1,0 +1,98 @@
+<Window x:Class="OrionTV.Desktop.App.Views.AiImportDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AI 解析视频源"
+        Height="610" Width="680"
+        MinHeight="480" MinWidth="520"
+        WindowStartupLocation="CenterOwner"
+        Background="{StaticResource AppBackgroundBrush}"
+        FontFamily="Microsoft YaHei UI"
+        ResizeMode="CanResizeWithGrip"
+        ShowInTaskbar="False">
+    <Grid Margin="22,18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      PanningMode="VerticalFirst">
+            <StackPanel Margin="0,0,8,0">
+                <StackPanel Margin="0,0,0,14">
+                    <TextBlock x:Name="TitleText" Text="Claude Code" FontSize="20" FontWeight="SemiBold"
+                               Foreground="{StaticResource PrimaryBrush}" />
+                    <TextBlock Text="CLI 会先完整阅读 ORION_SOURCE_GUIDE.md，再验证 AppleCMS/MacCMS 接口并将可用源写入 extra_sources.json。"
+                               Foreground="{StaticResource MutedTextBrush}" FontSize="12"
+                               TextWrapping="Wrap" Margin="0,6,0,0" />
+                </StackPanel>
+
+                <StackPanel Margin="0,0,0,12">
+                    <TextBlock Text="网址" Style="{StaticResource FieldLabelStyle}" />
+                    <TextBox x:Name="UrlBox" Tag="https://example.com/ 或订阅/接口地址" />
+                </StackPanel>
+
+                <StackPanel Margin="0,0,0,12">
+                    <TextBlock Text="备注（可选）" Style="{StaticResource FieldLabelStyle}" />
+                    <TextBox x:Name="NotesBox" Tag="例如：只要点播 API、站点名称偏好…" Height="72"
+                             TextWrapping="Wrap" AcceptsReturn="True"
+                             VerticalContentAlignment="Top" Padding="12,10" />
+                </StackPanel>
+
+                <Border Style="{StaticResource CardPanelStyle}" Padding="12" Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock Text="CMS 自动写入" Foreground="{StaticResource SoftTextBrush}"
+                                   FontSize="12" Margin="0,0,0,4" />
+                        <TextBlock x:Name="OutputPathText" Foreground="{StaticResource MutedTextBrush}"
+                                   FontSize="12" TextWrapping="Wrap" FontFamily="Consolas" />
+                        <TextBlock Text="项目说明（AI 必读）" Foreground="{StaticResource SoftTextBrush}"
+                                   FontSize="12" Margin="0,10,0,4" />
+                        <TextBlock x:Name="DocsPathText" Foreground="{StaticResource MutedTextBrush}"
+                                   FontSize="12" TextWrapping="Wrap" FontFamily="Consolas" />
+                    </StackPanel>
+                </Border>
+
+                <TextBlock x:Name="StatusText" Foreground="{StaticResource SoftTextBrush}"
+                           FontSize="13" TextWrapping="Wrap" MinHeight="42"
+                           VerticalAlignment="Top" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <Border Grid.Row="1" BorderBrush="{StaticResource BorderBrushDark}"
+                BorderThickness="0,1,0,0" Margin="0,14,0,0" Padding="0,14,0,0">
+            <StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Button Grid.Column="0" Content="AI 寻源" Margin="0,0,6,0"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Click="DiscoverButton_Click" />
+                    <Button Grid.Column="1" Content="打开 CLI" Margin="6,0,0,0"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Click="LaunchButton_Click" IsDefault="True" />
+                </Grid>
+
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Button Grid.Column="0" Content="关闭" Width="88" HorizontalAlignment="Left"
+                            Style="{StaticResource SecondaryButtonStyle}" IsCancel="True"
+                            Click="CloseButton_Click" />
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button Content="打开输出目录" Width="120"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Click="OpenFolderButton_Click" />
+                        <Button Content="立即刷新源" Width="110" Margin="8,0,0,0"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Click="RefreshButton_Click" />
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

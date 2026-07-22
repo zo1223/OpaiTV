@@ -1,0 +1,51 @@
+<UserControl x:Class="OrionTV.Desktop.App.Views.HomeView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ctrl="clr-namespace:OrionTV.Desktop.App.Controls">
+    <Grid Background="{StaticResource AppBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- 顶部标题 + 图标按钮 -->
+        <DockPanel Grid.Row="0" Margin="22,20,18,8">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="首页" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}" />
+                <Button x:Name="LiveLink"
+                        Content="直播"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Foreground="{StaticResource MutedTextBrush}"
+                        FontSize="20"
+                        FontWeight="SemiBold"
+                        Cursor="Hand"
+                        Margin="18,0,0,0"
+                        Padding="0"
+                        VerticalAlignment="Center"
+                        Click="LiveLink_Click" />
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" DockPanel.Dock="Right">
+                <Button x:Name="ClearHistoryButton" Style="{StaticResource IconButtonStyle}" Content="&#xE74D;" Click="ClearHistoryButton_Click" ToolTip="清空观看历史" Visibility="Collapsed" />
+                <Button x:Name="FavoritesButton" Style="{StaticResource IconButtonStyle}" Content="&#xEB51;" Click="FavoritesButton_Click" ToolTip="收藏" />
+                <Button x:Name="SearchButton" Style="{StaticResource IconButtonStyle}" Content="&#xE721;" Click="SearchButton_Click" ToolTip="搜索" />
+                <Button x:Name="SettingsButton" Style="{StaticResource IconButtonStyle}" Content="&#xE713;" Click="SettingsButton_Click" ToolTip="设置" />
+            </StackPanel>
+        </DockPanel>
+
+        <!-- 分类条 -->
+        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" Margin="14,4,14,0">
+            <StackPanel x:Name="CategoryBar" Orientation="Horizontal" />
+        </ScrollViewer>
+
+        <!-- 子标签条 -->
+        <ScrollViewer x:Name="TagScroll" Grid.Row="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" Margin="14,6,14,0" Visibility="Collapsed">
+            <StackPanel x:Name="TagBar" Orientation="Horizontal" />
+        </ScrollViewer>
+
+        <ctrl:CardGrid x:Name="Grid" Grid.Row="3" Margin="0,6,0,0" />
+    </Grid>
+</UserControl>

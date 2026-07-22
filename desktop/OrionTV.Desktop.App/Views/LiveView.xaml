@@ -1,0 +1,196 @@
+<UserControl x:Class="OrionTV.Desktop.App.Views.LiveView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
+             xmlns:ctrl="clr-namespace:OrionTV.Desktop.App.Controls"
+             Focusable="True"
+             PreviewKeyDown="OnPreviewKeyDown">
+    <UserControl.Resources>
+        <!-- 频道列表项：状态圆点 + 频道名 + 延迟/速率标签 -->
+        <DataTemplate x:Key="ChannelItemTemplate">
+            <Grid ToolTip="{Binding MetricTooltip}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Ellipse Grid.Column="0" Width="9" Height="9" VerticalAlignment="Center" Fill="{Binding BadgeBrush}" />
+                <TextBlock Grid.Column="1" Margin="9,0,0,0" Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="2" Margin="8,0,0,0" Text="{Binding MetricLabel}" VerticalAlignment="Center" FontSize="11" Foreground="{Binding BadgeBrush}" />
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+    <Grid Background="{StaticResource AppBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <ctrl:PageHeader x:Name="Header" Grid.Row="0" Title="直播" />
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition x:Name="ChannelColumn" Width="340" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Background="{StaticResource VideoBrush}" ClipToBounds="True">
+                <!-- overlay 必须作为 VideoView 的 Content（绕开 airspace）；根容器近透明背景接收鼠标。 -->
+                <vlc:VideoView x:Name="VideoSurface">
+                    <Grid x:Name="OverlayRoot" Background="#01000000"
+                          MouseLeftButtonDown="Overlay_MouseDown"
+                          MouseWheel="Overlay_MouseWheel">
+
+                        <!-- 频道名提示 -->
+                        <Border x:Name="ChannelTitleBadge"
+                                VerticalAlignment="Top" HorizontalAlignment="Left"
+                                Background="#99000000" CornerRadius="6" Padding="12,6" Margin="16"
+                                Visibility="Collapsed">
+                            <TextBlock x:Name="ChannelTitleText" Foreground="White" FontSize="15" FontWeight="SemiBold" />
+                        </Border>
+
+                        <!-- 实时数据浮层（按 I 或控制栏按钮切换） -->
+                        <Border x:Name="StatsOverlay"
+                                VerticalAlignment="Top" HorizontalAlignment="Right"
+                                Background="#B0000000" CornerRadius="6" Padding="12,8" Margin="16"
+                                Visibility="Collapsed">
+                            <StackPanel MinWidth="150">
+                                <TextBlock Text="实时数据" Foreground="White" FontSize="12" FontWeight="Bold" Margin="0,0,0,4" />
+                                <TextBlock x:Name="StatsVerdictText" Foreground="#00A862" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,4" Text="—" />
+                                <TextBlock x:Name="StatsBitrateText" Foreground="#DDDDDD" FontSize="12" Text="码率 —" />
+                                <TextBlock x:Name="StatsFpsText" Foreground="#DDDDDD" FontSize="12" Text="帧率 —" />
+                                <TextBlock x:Name="StatsDropText" Foreground="#DDDDDD" FontSize="12" Text="丢帧 —" />
+                                <TextBlock x:Name="StatsBufferText" Foreground="#DDDDDD" FontSize="12" Text="缓冲 —" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- OpenAI 英语直播实时翻译状态 -->
+                        <Border x:Name="TranslationStatusBadge"
+                                VerticalAlignment="Top" HorizontalAlignment="Center"
+                                Background="#B0000000" CornerRadius="6" Padding="12,7" Margin="16"
+                                Visibility="Collapsed" IsHitTestVisible="False">
+                            <TextBlock x:Name="TranslationStatusText" Foreground="#48D597" FontSize="13" FontWeight="SemiBold" />
+                        </Border>
+
+                        <!-- 中文字幕；置于控制栏上方，普通窗口和全屏共用。 -->
+                        <Border x:Name="TranslationSubtitlePanel"
+                                VerticalAlignment="Bottom" HorizontalAlignment="Center"
+                                MaxWidth="980" Background="#B3000000" CornerRadius="8"
+                                Padding="18,9" Margin="70,0,70,78"
+                                Visibility="Collapsed" IsHitTestVisible="False">
+                            <TextBlock x:Name="TranslationSubtitleText"
+                                       Foreground="White" FontSize="24" FontWeight="SemiBold"
+                                       TextAlignment="Center" TextWrapping="Wrap" />
+                        </Border>
+
+                        <!-- 未配置 / 解析失败提示 -->
+                        <TextBlock x:Name="HintText"
+                                   Text="请在设置中配置直播源地址"
+                                   Foreground="{StaticResource MutedTextBrush}"
+                                   FontSize="15"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   Visibility="Collapsed" />
+
+                        <!-- 加载 / 缓冲 -->
+                        <Border x:Name="LoadingOverlay" Background="#66000000" Visibility="Collapsed">
+                            <TextBlock Text="加载中…" Foreground="White" FontSize="15"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+
+                        <!-- 错误 / 重连 -->
+                        <Border x:Name="ErrorOverlay" Background="#88000000" Visibility="Collapsed">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock Text="无法播放该频道" Foreground="White" FontSize="15"
+                                           HorizontalAlignment="Center" Margin="0,0,0,12" />
+                                <Button Content="重新连接" Style="{StaticResource SecondaryButtonStyle}" Height="38" Width="120"
+                                        HorizontalAlignment="Center" Click="RetryButton_Click" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 底部控制栏 -->
+                        <Border x:Name="ControlBar" VerticalAlignment="Bottom" Padding="14,16,14,10"
+                                MouseEnter="Bar_MouseEnter" MouseLeave="Bar_MouseLeave">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                    <GradientStop Color="#00000000" Offset="0" />
+                                    <GradientStop Color="#D9000000" Offset="1" />
+                                </LinearGradientBrush>
+                            </Border.Background>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button x:Name="PlayPauseButton" Style="{StaticResource IconButtonStyle}" Content="&#xE768;" Click="PlayPauseButton_Click" ToolTip="播放/暂停 (空格)" />
+                                    <Button x:Name="RefreshButton" Style="{StaticResource IconButtonStyle}" Content="&#xE72C;" Click="RefreshButton_Click" ToolTip="重新连接" />
+                                    <Button x:Name="StatsButton" Style="{StaticResource IconButtonStyle}" FontSize="16" Content="&#xE9D9;" Click="StatsButton_Click" ToolTip="实时数据 (I)" />
+                                    <Button x:Name="TranslationButton" Style="{StaticResource IconButtonStyle}"
+                                            Width="54" FontFamily="Segoe UI" FontSize="12" FontWeight="SemiBold"
+                                            Content="中译" Click="TranslationButton_Click" ToolTip="英语实时翻译为中文字幕 (T)" />
+                                </StackPanel>
+
+                                <TextBlock x:Name="NowPlayingText" Grid.Column="1" Foreground="White" VerticalAlignment="Center" Margin="10,0" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="6,0">
+                                    <Button x:Name="MuteButton" Style="{StaticResource IconButtonStyle}" FontSize="16" Content="&#xE767;" Click="MuteButton_Click" ToolTip="静音 (M)" />
+                                    <Slider x:Name="VolumeSlider" Width="80" VerticalAlignment="Center" Minimum="0" Maximum="100" Value="100"
+                                            ValueChanged="VolumeSlider_ValueChanged" />
+                                </StackPanel>
+
+                                <Button x:Name="ChannelToggleButton" Grid.Column="3" Style="{StaticResource IconButtonStyle}" FontSize="16" Content="&#xE8FD;" Click="ChannelToggleButton_Click" ToolTip="频道列表" Visibility="Collapsed" />
+
+                                <Button x:Name="FullscreenButton" Grid.Column="4" Style="{StaticResource IconButtonStyle}" Content="&#xE740;" Click="FullscreenButton_Click" ToolTip="全屏 (F / 双击)" />
+                            </Grid>
+                        </Border>
+
+                        <!-- 全屏时的频道浮层 -->
+                        <Border x:Name="FsChannelPanel" HorizontalAlignment="Right" Width="320" Background="#F2151718"
+                                BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1,0,0,0" Visibility="Collapsed"
+                                MouseEnter="Bar_MouseEnter" MouseLeave="Bar_MouseLeave">
+                            <DockPanel Margin="12">
+                                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                                    <Button DockPanel.Dock="Right" Style="{StaticResource IconButtonStyle}" Content="&#xE711;" Click="ChannelToggleButton_Click" />
+                                    <Button x:Name="ScanButtonFs" DockPanel.Dock="Right" Style="{StaticResource SecondaryButtonStyle}" Height="30" Padding="12,0" FontSize="13" Content="测速" Click="ScanButton_Click" ToolTip="检测各频道延迟和速率" />
+                                    <TextBlock Text="频道" Foreground="{StaticResource TextBrush}" FontSize="16" FontWeight="Bold" VerticalAlignment="Center" />
+                                </DockPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="110" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <ListBox x:Name="GroupListFs" Grid.Column="0" Margin="0,0,8,0" SelectionChanged="GroupListFs_SelectionChanged" />
+                                    <ListBox x:Name="ChannelListFs" Grid.Column="1" SelectionChanged="ChannelListFs_SelectionChanged" ItemTemplate="{StaticResource ChannelItemTemplate}" />
+                                </Grid>
+                            </DockPanel>
+                        </Border>
+                    </Grid>
+                </vlc:VideoView>
+            </Border>
+
+            <Border x:Name="ChannelDock" Grid.Column="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1,0,0,0">
+                <DockPanel Margin="12">
+                    <DockPanel DockPanel.Dock="Top" Margin="2,0,0,10">
+                        <Button x:Name="ScanButton" DockPanel.Dock="Right" Style="{StaticResource SecondaryButtonStyle}" Height="32" Padding="14,0" FontSize="13" Content="测速" Click="ScanButton_Click" ToolTip="检测各频道延迟和速率" />
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="选择频道" Foreground="{StaticResource TextBrush}" FontSize="16" FontWeight="Bold" />
+                            <TextBlock x:Name="ScanProgressText" Foreground="{StaticResource MutedTextBrush}" FontSize="11" Margin="0,2,0,0" Visibility="Collapsed" />
+                        </StackPanel>
+                    </DockPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="118" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <ListBox x:Name="GroupList" Grid.Column="0" Margin="0,0,8,0" SelectionChanged="GroupList_SelectionChanged" />
+                        <ListBox x:Name="ChannelList" Grid.Column="1" SelectionChanged="ChannelList_SelectionChanged" ItemTemplate="{StaticResource ChannelItemTemplate}" />
+                    </Grid>
+                </DockPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

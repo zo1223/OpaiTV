@@ -1,0 +1,209 @@
+<UserControl x:Class="OrionTV.Desktop.App.Views.SettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ctrl="clr-namespace:OrionTV.Desktop.App.Controls">
+    <Grid Background="{StaticResource AppBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ctrl:PageHeader x:Name="Header" Grid.Row="0" Title="设置" />
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="20,16">
+            <StackPanel MaxWidth="720" HorizontalAlignment="Stretch">
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <StackPanel>
+                        <TextBlock Text="API 地址" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,10" />
+                        <TextBox x:Name="ApiBox" Tag="输入服务器地址（可选）" TextChanged="OnFieldChanged" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <StackPanel>
+                        <DockPanel Margin="0,0,0,10">
+                            <TextBlock x:Name="SubHint" DockPanel.Dock="Right" Foreground="{StaticResource MutedTextBrush}" FontSize="12" FontStyle="Italic" VerticalAlignment="Center" />
+                            <TextBlock Text="影视源订阅链接" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" />
+                        </DockPanel>
+                        <TextBox x:Name="SubBox" Tag="输入影视源订阅地址" TextChanged="OnFieldChanged" />
+                        <TextBlock Text="桌面端使用 AppleCMS / 订阅 JSON / AI 额外源（extra_sources）。不再内置 TVBox 代理。"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0" />
+                    </StackPanel>
+                </Border>
+
+
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <DockPanel>
+                        <ToggleButton x:Name="AutoSkipToggle" DockPanel.Dock="Right" Style="{StaticResource SwitchStyle}" VerticalAlignment="Center" Checked="OnFieldChanged" Unchecked="OnFieldChanged" />
+                        <TextBlock Text="自动跳过广告" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </DockPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <StackPanel>
+                        <TextBlock Text="点播下载目录" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" />
+                        <TextBlock Text="在视频详情页手动下载到本地；正常播放始终走源站，下载完成后可在详情页选择「本地已下载」。"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,7,0,14" />
+
+                        <TextBlock Text="下载保存目录" Foreground="{StaticResource SoftTextBrush}" FontSize="13" Margin="0,0,0,7" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="VodCacheDirectoryBox" Grid.Column="0" Margin="0,0,8,0" TextChanged="OnFieldChanged" />
+                            <Button Grid.Column="1" Content="选择目录" Height="40" Padding="14,0" Margin="0,0,8,0"
+                                    Style="{StaticResource SecondaryButtonStyle}" Click="ChooseVodCacheDirectoryButton_Click" />
+                            <Button Grid.Column="2" Content="打开目录" Height="40" Padding="14,0"
+                                    Style="{StaticResource SecondaryButtonStyle}" Click="OpenVodCacheDirectoryButton_Click" />
+                        </Grid>
+                        <DockPanel Margin="0,10,0,0">
+                            <Button DockPanel.Dock="Right" Content="立即清理本地下载" Height="34" Padding="14,0"
+                                    Style="{StaticResource SecondaryButtonStyle}" Click="ClearVodCacheButton_Click" />
+                            <TextBlock x:Name="VodCacheStatusText" Foreground="{StaticResource MutedTextBrush}" FontSize="12"
+                                       VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </DockPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <StackPanel>
+                        <DockPanel>
+                            <ToggleButton x:Name="UsePotPlayerToggle" DockPanel.Dock="Right" Style="{StaticResource SwitchStyle}"
+                                          VerticalAlignment="Center" Checked="OnFieldChanged" Unchecked="OnFieldChanged" />
+                            <TextBlock Text="本地文件用 PotPlayer 播放（可选）" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock Text="默认关闭：本地片在本窗口用便携 mpv 内嵌播放。开启后改为外启 PotPlayer。在线视频始终用内置 LibVLC。"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,7,0,12" />
+                        <TextBlock Text="PotPlayer 路径" Foreground="{StaticResource SoftTextBrush}" FontSize="13" Margin="0,0,0,7" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="PotPlayerPathBox" Grid.Column="0" Margin="0,0,8,0" TextChanged="OnFieldChanged"
+                                     Tag="例如 E:\potPlayer\PotPlayerMini64.exe（可留空自动探测）" />
+                            <Button Grid.Column="1" Content="浏览…" Height="40" Padding="14,0"
+                                    Style="{StaticResource SecondaryButtonStyle}" Click="BrowsePotPlayerButton_Click" />
+                        </Grid>
+                        <TextBlock x:Name="PotPlayerStatusText" Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,8,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <StackPanel>
+                        <TextBlock Text="主要直播源地址" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,10" />
+                        <TextBox x:Name="M3uBox" Tag="输入 M3U 直播源地址" TextChanged="OnFieldChanged" />
+
+                        <Border Height="1" Background="{StaticResource BorderBrushDark}" Margin="0,18,0,16" />
+                        <TextBlock Text="手动增加直播源" Foreground="{StaticResource TextBrush}" FontSize="14" FontWeight="SemiBold" />
+                        <TextBlock Text="新增源会追加在主要源之后；单个新增源失效不会影响主要源。"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,4,0,10" />
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="LiveSourceNameBox" Grid.Column="0" Margin="0,0,8,0" Tag="源名称（如 BBC）" />
+                            <TextBox x:Name="LiveSourceUrlBox" Grid.Column="1" Margin="0,0,8,0" Tag="M3U 直播源地址" />
+                            <Button Grid.Column="2" Content="添加" Width="74" Height="40"
+                                    Style="{StaticResource SecondaryButtonStyle}" Click="AddLiveSourceButton_Click" />
+                        </Grid>
+
+                        <ItemsControl x:Name="AdditionalLiveSourcesList" Margin="0,10,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{StaticResource InputBrush}" BorderBrush="{StaticResource BorderBrushDark}"
+                                            BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,7">
+                                        <DockPanel>
+                                            <Button DockPanel.Dock="Right" Content="删除" Height="30" Padding="12,0" Margin="10,0,0,0"
+                                                    Style="{StaticResource SecondaryButtonStyle}" FontSize="12"
+                                                    Click="DeleteLiveSourceButton_Click" />
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextBrush}" FontSize="13" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding Url}" Foreground="{StaticResource MutedTextBrush}" FontSize="11"
+                                                           Margin="0,3,0,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding Url}" />
+                                            </StackPanel>
+                                        </DockPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock x:Name="LiveSourceEditStatus" Foreground="{StaticResource MutedTextBrush}"
+                                   FontSize="12" Margin="0,3,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <StackPanel>
+                        <TextBlock Text="英语直播同声翻译" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" />
+                        <TextBlock Text="直播页点「中译」：Deepgram Nova-3 做英语识别+中转 Chat 译中文（验证字幕）；也可选豆包同传/Gemini（字幕+配音）。密钥仅存 Windows 凭据管理器。"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,14" />
+
+                        <TextBlock Text="翻译引擎" Foreground="{StaticResource TextBrush}" FontSize="13" Margin="0,0,0,7" />
+                        <ComboBox x:Name="TranslationProviderBox" Height="36" FontSize="14" SelectionChanged="TranslationProviderBox_SelectionChanged">
+                            <ComboBoxItem Content="Deepgram Nova-3 STT（仅字幕，推荐验证）" Tag="deepgram" />
+                            <ComboBoxItem Content="豆包同声传译 2.0（字幕+配音）" Tag="doubao" />
+                            <ComboBoxItem Content="Google Gemini Live Translate（字幕+配音）" Tag="gemini" />
+                            <ComboBoxItem Content="OpenAI / 中转站（本机听写 + Chat）" Tag="openai" />
+                        </ComboBox>
+                        <TextBlock Text="Deepgram：免费 $200 额度，console.deepgram.com 申请 Key；中文翻译仍用下方中转站 Key。豆包需火山语音控制台。"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,6,0,14" TextWrapping="Wrap" />
+
+                        <TextBlock x:Name="DoubaoAppKeyLabel" Text="豆包 APP ID / APP Key" Foreground="{StaticResource TextBrush}" FontSize="13" Margin="0,0,0,7" />
+                        <TextBox x:Name="DoubaoAppKeyBox" Tag="火山控制台 · 语音技术 · 应用 APP ID" TextChanged="OnFieldChanged" />
+                        <TextBlock x:Name="DoubaoResourceHint"
+                                   Text="Resource ID 默认 volc.service_type.10053（同声传译 2.0）。下方 API Key 填 Access Token。"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,6,0,14" TextWrapping="Wrap" />
+
+                        <TextBlock x:Name="TranslationBaseUrlLabel" Text="Chat 中转站地址（Deepgram / OpenAI 译中文用）" Foreground="{StaticResource TextBrush}" FontSize="13" Margin="0,0,0,7" />
+                        <TextBox x:Name="TranslationBaseUrlBox" Tag="例如 https://api.example.com；留空=官方 api.openai.com" TextChanged="OnFieldChanged" />
+                        <TextBlock x:Name="TranslationBaseUrlHint" Text="Deepgram 模式：此处填中转站，英文识别由 Deepgram 完成，中文由中转 Chat 翻译。"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,6,0,14" TextWrapping="Wrap" />
+
+                        <TextBlock x:Name="ApiKeyLabel" Text="API Key / Access Token" Foreground="{StaticResource TextBrush}" FontSize="13" Margin="0,0,0,7" />
+                        <PasswordBox x:Name="OpenAiKeyBox"
+                                     Height="40" Padding="12,0" VerticalContentAlignment="Center"
+                                     Foreground="{StaticResource TextBrush}" Background="{StaticResource InputBrush}"
+                                     BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1"
+                                     FontSize="14" PasswordChanged="OnFieldChanged" />
+                        <DockPanel Margin="0,8,0,8">
+                            <Button x:Name="DeleteOpenAiKeyButton" DockPanel.Dock="Right"
+                                    Content="删除已存 Key" Style="{StaticResource SecondaryButtonStyle}"
+                                    Height="32" Padding="12,0" FontSize="12" Click="DeleteOpenAiKeyButton_Click" />
+                            <TextBlock x:Name="OpenAiKeyStatus" Foreground="{StaticResource MutedTextBrush}"
+                                       FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </DockPanel>
+                        <TextBlock x:Name="ChatKeyLabel" Text="Chat 中转 API Key（Deepgram 译中文用，可与上方分开）"
+                                   Foreground="{StaticResource TextBrush}" FontSize="13" Margin="0,0,0,7" Visibility="Collapsed" />
+                        <PasswordBox x:Name="ChatKeyBox"
+                                     Height="40" Padding="12,0" VerticalContentAlignment="Center"
+                                     Foreground="{StaticResource TextBrush}" Background="{StaticResource InputBrush}"
+                                     BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1"
+                                     FontSize="14" PasswordChanged="OnFieldChanged" Visibility="Collapsed" />
+                        <TextBlock x:Name="ChatKeyHint" Visibility="Collapsed"
+                                   Text="留空则使用已保存的 OpenAI/中转 Key。Deepgram Key 与中转 Key 分槽保存。"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,6,0,14" TextWrapping="Wrap" />
+                        <TextBlock Text="各引擎密钥分开保存。当前引擎对应哪家就填哪家的 Key。"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,0,0,14" TextWrapping="Wrap" />
+
+                        <TextBlock Text="Chat 翻译模型（Deepgram/OpenAI 用）" Foreground="{StaticResource TextBrush}" FontSize="13" Margin="0,0,0,7" />
+                        <TextBox x:Name="TranslationModelBox" Tag="例如 doubao-seed-2-0-pro-260215" TextChanged="OnFieldChanged" />
+                        <CheckBox x:Name="TranslationDubbingToggle" Content="播放中文配音（仅豆包 s2s / Gemini；Deepgram 无配音）"
+                                  Foreground="{StaticResource TextBrush}" FontSize="13" Margin="0,12,0,0"
+                                  Checked="OnFieldChanged" Unchecked="OnFieldChanged" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <DockPanel Grid.Row="2" Margin="20,8,20,16">
+            <Button x:Name="SaveButton" DockPanel.Dock="Right" Content="保存设置" Width="120" Style="{StaticResource PrimaryButtonStyle}" IsEnabled="False" Click="SaveButton_Click" />
+            <TextBlock x:Name="StatusText" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" FontSize="13" />
+        </DockPanel>
+    </Grid>
+</UserControl>

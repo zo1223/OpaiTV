@@ -1,0 +1,44 @@
+<UserControl x:Class="OrionTV.Desktop.App.Controls.CardGrid"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ctrl="clr-namespace:OrionTV.Desktop.App.Controls">
+    <Grid>
+        <ScrollViewer x:Name="Scroll"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      Padding="14,8"
+                      ScrollChanged="Scroll_ScrollChanged">
+            <StackPanel>
+                <ItemsControl x:Name="Items">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <ctrl:VideoCardControl Item="{Binding}" Click="OnCardClick" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <TextBlock x:Name="FooterText"
+                           Text="加载更多…"
+                           Foreground="{StaticResource MutedTextBrush}"
+                           HorizontalAlignment="Center"
+                           Margin="0,16"
+                           Visibility="Collapsed" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <TextBlock x:Name="MessageText"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   Foreground="{StaticResource MutedTextBrush}"
+                   FontSize="15"
+                   TextAlignment="Center"
+                   TextWrapping="Wrap"
+                   MaxWidth="520"
+                   Visibility="Collapsed" />
+    </Grid>
+</UserControl>
