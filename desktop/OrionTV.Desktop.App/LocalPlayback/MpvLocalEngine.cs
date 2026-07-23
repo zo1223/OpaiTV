@@ -14,9 +14,16 @@ namespace OrionTV.Desktop.App.LocalPlayback;
 /// </summary>
 public sealed class MpvLocalEngine : IDisposable
 {
+    internal const string PreferredSubtitleLanguages = "zh-Hans,zh-CN,chs,sc,zho,chi,zh";
+    internal const string PreferredSubtitleFont = "Microsoft YaHei UI";
+    private const int SeekCoalesceDelayMilliseconds = 20;
+
     private readonly IntPtr _wid;
     private readonly Dispatcher _dispatcher;
     private readonly object _sync = new();
+    private readonly object _seekSync = new();
+    private readonly SemaphoreSlim _processGate = new(1, 1);
+    private readonly SemaphoreSlim _ipcWriteGate = new(1, 1);
     private readonly string _pipeName;
     private Process? _process;
     private NamedPipeClientStream? _ipc;
@@ -24,6 +31,12 @@ public sealed class MpvLocalEngine : IDisposable
     private StreamReader? _ipcReader;
     private CancellationTokenSource? _observeCts;
     private Task? _observeTask;
+    private CancellationTokenSource? _outputCts;
+    private Task? _stdoutDrainTask;
+    private Task? _stderrDrainTask;
+    private long? _pendingSeekMs;
+    private int _pendingSeekGeneration;
+    private bool _seekPumpRunning;
     private int _generation;
     private bool _disposed;
     private PlaybackState _state = PlaybackState.Idle;
@@ -32,6 +45,7 @@ public sealed class MpvLocalEngine : IDisposable
     private int _volume = 100;
     private bool _mute;
     private bool _paused;
+    private bool _fullscreen;
 
     public MpvLocalEngine(IntPtr wid, Dispatcher dispatcher)
     {
@@ -49,11 +63,13 @@ public sealed class MpvLocalEngine : IDisposable
     public event EventHandler<long>? TimeChanged;
     public event EventHandler<long>? LengthChanged;
     public event EventHandler? EndReached;
+    public event EventHandler<bool>? FullscreenChanged;
 
     public PlaybackState State => _state;
     public long Length => Interlocked.Read(ref _lengthMs);
     public long Time => Interlocked.Read(ref _timeMs);
     public bool IsPlaying => _state == PlaybackState.Playing;
+    public bool Fullscreen => Volatile.Read(ref _fullscreen);
 
     public int Volume
     {
@@ -73,6 +89,12 @@ public sealed class MpvLocalEngine : IDisposable
             _mute = value;
             _ = SetPropertyAsync("mute", value);
         }
+    }
+
+    public void SetFullscreen(bool enabled)
+    {
+        Volatile.Write(ref _fullscreen, enabled);
+        _ = SetPropertyAsync("fullscreen", enabled);
     }
 
     /// <summary>
@@ -123,7 +145,9 @@ public sealed class MpvLocalEngine : IDisposable
     public async Task SwitchToAsync(string pathOrUrl, long startMs = 0, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var generation = ++_generation;
+        var requestedFullscreen = Fullscreen;
+        var generation = Interlocked.Increment(ref _generation);
+        ClearPendingSeeks();
         SetState(PlaybackState.Opening);
 
         var localPath = ToLocalPath(pathOrUrl);
@@ -143,13 +167,15 @@ public sealed class MpvLocalEngine : IDisposable
         if (startMs > 0)
         {
             await SendCommandAsync(
-                    ["seek", (startMs / 1000d).ToString("0.###", CultureInfo.InvariantCulture), "absolute+keyframes"],
+                    ["seek", (startMs / 1000d).ToString("0.###", CultureInfo.InvariantCulture), "absolute+exact"],
                     cancellationToken)
                 .ConfigureAwait(false);
         }
 
         await SetPropertyAsync("volume", _volume, cancellationToken).ConfigureAwait(false);
         await SetPropertyAsync("mute", _mute, cancellationToken).ConfigureAwait(false);
+        Volatile.Write(ref _fullscreen, requestedFullscreen);
+        await SetPropertyAsync("fullscreen", requestedFullscreen, cancellationToken).ConfigureAwait(false);
         await SetPropertyAsync("pause", false, cancellationToken).ConfigureAwait(false);
         _paused = false;
         SetState(PlaybackState.Playing);
@@ -178,16 +204,46 @@ public sealed class MpvLocalEngine : IDisposable
 
     public bool TrySeek(long ms)
     {
-        var targetSec = Math.Max(0, ms) / 1000d;
-        // 关键帧快速 seek（本地 TS 更跟手）；不强制软解。
-        _ = SendCommandAsync(["seek", targetSec.ToString("0.###", CultureInfo.InvariantCulture), "absolute+keyframes"]);
-        Interlocked.Exchange(ref _timeMs, Math.Max(0, ms));
-        Post(() => TimeChanged?.Invoke(this, Math.Max(0, ms)));
+        if (_disposed)
+        {
+            return false;
+        }
+
+        var length = Length;
+        var targetMs = length > 0
+            ? Math.Clamp(ms, 0, length)
+            : Math.Max(0, ms);
+        var startPump = false;
+
+        lock (_seekSync)
+        {
+            if (_disposed)
+            {
+                return false;
+            }
+
+            _pendingSeekMs = targetMs;
+            _pendingSeekGeneration = Volatile.Read(ref _generation);
+            if (!_seekPumpRunning)
+            {
+                _seekPumpRunning = true;
+                startPump = true;
+            }
+        }
+
+        Interlocked.Exchange(ref _timeMs, targetMs);
+        Post(() => TimeChanged?.Invoke(this, targetMs));
+        if (startPump)
+        {
+            _ = FlushPendingSeeksAsync();
+        }
+
         return true;
     }
 
     public void Stop()
     {
+        ClearPendingSeeks();
         _ = SendCommandAsync(["stop"]);
         Interlocked.Exchange(ref _timeMs, 0);
         SetState(PlaybackState.Idle);
@@ -195,53 +251,54 @@ public sealed class MpvLocalEngine : IDisposable
 
     private async Task EnsureProcessAsync(CancellationToken cancellationToken)
     {
-        lock (_sync)
+        await _processGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            if (_process is { HasExited: false } && _ipc is { IsConnected: true })
+            lock (_sync)
             {
-                return;
+                if (_process is { HasExited: false } && _ipc is { IsConnected: true })
+                {
+                    return;
+                }
             }
-        }
 
-        await RestartProcessAsync(cancellationToken).ConfigureAwait(false);
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            await RestartProcessAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _processGate.Release();
+        }
     }
 
     private async Task RestartProcessAsync(CancellationToken cancellationToken)
     {
-        ShutdownProcess_NoLock();
+        lock (_sync)
+        {
+            ShutdownProcess_NoLock();
+        }
 
         var mpv = FindMpvExecutable()
             ?? throw new InvalidOperationException("MPV_NOT_FOUND");
 
         var pipePath = @"\\.\pipe\" + _pipeName;
-        // 便携 mpv：硬解 d3d11va；hr-seek=no 关键帧快跳；OSC 固定贴底（airspace）。
-        var args =
-            $"--wid={_wid.ToInt64()} " +
-            "--idle=yes " +
-            "--force-window=no " +
-            "--keep-open=yes " +
-            "--osc=yes --script-opts=osc-layout=bottombar,osc-valign=1 --osd-level=1 --no-border " +
-            "--hwdec=d3d11va " +
-            "--hwdec-codecs=all " +
-            "--vo=gpu " +
-            "--gpu-context=d3d11 " +
-            "--cache=yes --demuxer-max-bytes=256MiB " +
-            "--hr-seek=no " +
-            "--input-default-bindings=yes " +
-            $"--input-ipc-server={pipePath}";
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = mpv,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            WorkingDirectory = Path.GetDirectoryName(mpv) ?? AppContext.BaseDirectory,
+        };
+        foreach (var argument in BuildArguments(_wid.ToInt64(), pipePath))
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
 
         var process = new Process
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = mpv,
-                Arguments = args,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardError = true,
-                RedirectStandardOutput = true,
-                WorkingDirectory = Path.GetDirectoryName(mpv) ?? AppContext.BaseDirectory,
-            },
+            StartInfo = startInfo,
             EnableRaisingEvents = true,
         };
 
@@ -250,9 +307,15 @@ public sealed class MpvLocalEngine : IDisposable
             throw new InvalidOperationException("MPV_START_FAILED");
         }
 
+        var outputCts = new CancellationTokenSource();
+        var stdoutDrainTask = DrainOutputAsync(process.StandardOutput, outputCts.Token);
+        var stderrDrainTask = DrainOutputAsync(process.StandardError, outputCts.Token);
         lock (_sync)
         {
             _process = process;
+            _outputCts = outputCts;
+            _stdoutDrainTask = stdoutDrainTask;
+            _stderrDrainTask = stderrDrainTask;
         }
 
         Exception? last = null;
@@ -293,9 +356,53 @@ public sealed class MpvLocalEngine : IDisposable
         await SendCommandAsync(["observe_property", 2, "duration"], cancellationToken).ConfigureAwait(false);
         await SendCommandAsync(["observe_property", 3, "pause"], cancellationToken).ConfigureAwait(false);
         await SendCommandAsync(["observe_property", 4, "eof-reached"], cancellationToken).ConfigureAwait(false);
+        await SendCommandAsync(["observe_property", 5, "fullscreen"], cancellationToken).ConfigureAwait(false);
 
         _observeCts = new CancellationTokenSource();
         _observeTask = Task.Run(() => ObserveLoopAsync(_observeCts.Token), CancellationToken.None);
+    }
+
+    internal static IReadOnlyList<string> BuildArguments(long windowHandle, string pipePath) =>
+    [
+        $"--wid={windowHandle}",
+        "--idle=yes",
+        "--force-window=no",
+        "--keep-open=yes",
+        "--fullscreen=no",
+        "--osc=no",
+        "--osd-level=1",
+        "--no-border",
+        "--hwdec=d3d11va",
+        "--hwdec-codecs=all",
+        "--vo=gpu",
+        "--gpu-context=d3d11",
+        "--cache=no",
+        "--hr-seek=yes",
+        $"--slang={PreferredSubtitleLanguages}",
+        $"--sub-font={PreferredSubtitleFont}",
+        "--sub-font-size=42",
+        "--input-default-bindings=no",
+        $"--input-ipc-server={pipePath}",
+    ];
+
+    private static async Task DrainOutputAsync(StreamReader reader, CancellationToken cancellationToken)
+    {
+        var buffer = new char[4096];
+        try
+        {
+            while (await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false) > 0)
+            {
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (IOException)
+        {
+        }
     }
 
     private async Task ObserveLoopAsync(CancellationToken cancellationToken)
@@ -383,6 +490,13 @@ public sealed class MpvLocalEngine : IDisposable
                             EndReached?.Invoke(this, EventArgs.Empty);
                         });
                         break;
+                    case "fullscreen" when data.ValueKind is JsonValueKind.True or JsonValueKind.False:
+                    {
+                        var fullscreen = data.GetBoolean();
+                        Volatile.Write(ref _fullscreen, fullscreen);
+                        Post(() => FullscreenChanged?.Invoke(this, fullscreen));
+                        break;
+                    }
                 }
             }
             catch
@@ -394,26 +508,99 @@ public sealed class MpvLocalEngine : IDisposable
     private Task SetPropertyAsync(string name, object value, CancellationToken cancellationToken = default) =>
         SendCommandAsync(["set_property", name, value], cancellationToken);
 
-    private async Task SendCommandAsync(object[] command, CancellationToken cancellationToken = default)
+    private async Task FlushPendingSeeksAsync()
     {
-        StreamWriter? writer;
-        lock (_sync)
-        {
-            writer = _ipcWriter;
-        }
-
-        if (writer is null)
-        {
-            return;
-        }
-
-        var payload = JsonSerializer.Serialize(new { command });
+        var restart = false;
         try
         {
+            while (!_disposed)
+            {
+                await Task.Delay(SeekCoalesceDelayMilliseconds).ConfigureAwait(false);
+
+                long? targetMs;
+                int generation;
+                lock (_seekSync)
+                {
+                    targetMs = _pendingSeekMs;
+                    generation = _pendingSeekGeneration;
+                    _pendingSeekMs = null;
+                }
+
+                if (targetMs is null)
+                {
+                    break;
+                }
+
+                if (generation != Volatile.Read(ref _generation))
+                {
+                    continue;
+                }
+
+                var targetSeconds = (targetMs.Value / 1000d).ToString("0.###", CultureInfo.InvariantCulture);
+                await SendCommandAsync(["seek", targetSeconds, "absolute+exact"]).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+        }
+        finally
+        {
+            lock (_seekSync)
+            {
+                _seekPumpRunning = false;
+                if (!_disposed && _pendingSeekMs is not null)
+                {
+                    _seekPumpRunning = true;
+                    restart = true;
+                }
+            }
+
+            if (restart)
+            {
+                _ = FlushPendingSeeksAsync();
+            }
+        }
+    }
+
+    private void ClearPendingSeeks()
+    {
+        lock (_seekSync)
+        {
+            _pendingSeekMs = null;
+        }
+    }
+
+    private async Task SendCommandAsync(object[] command, CancellationToken cancellationToken = default)
+    {
+        var gateEntered = false;
+        try
+        {
+            await _ipcWriteGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            gateEntered = true;
+
+            StreamWriter? writer;
+            lock (_sync)
+            {
+                writer = _ipcWriter;
+            }
+
+            if (writer is null)
+            {
+                return;
+            }
+
+            var payload = JsonSerializer.Serialize(new { command });
             await writer.WriteLineAsync(payload.AsMemory(), cancellationToken).ConfigureAwait(false);
         }
         catch
         {
+        }
+        finally
+        {
+            if (gateEntered)
+            {
+                _ipcWriteGate.Release();
+            }
         }
     }
 
@@ -470,6 +657,7 @@ public sealed class MpvLocalEngine : IDisposable
     private void ShutdownProcess_NoLock()
     {
         try { _observeCts?.Cancel(); } catch { }
+        try { _outputCts?.Cancel(); } catch { }
         try { _ipcWriter?.Dispose(); } catch { }
         try { _ipcReader?.Dispose(); } catch { }
         try { _ipc?.Dispose(); } catch { }
@@ -489,6 +677,10 @@ public sealed class MpvLocalEngine : IDisposable
 
         try { _process?.Dispose(); } catch { }
         _process = null;
+        try { _outputCts?.Dispose(); } catch { }
+        _outputCts = null;
+        _stdoutDrainTask = null;
+        _stderrDrainTask = null;
     }
 
     public void Dispose()
@@ -499,17 +691,10 @@ public sealed class MpvLocalEngine : IDisposable
         }
 
         _disposed = true;
-        _generation++;
+        Interlocked.Increment(ref _generation);
+        ClearPendingSeeks();
         lock (_sync)
         {
-            try
-            {
-                _ipcWriter?.WriteLine(JsonSerializer.Serialize(new { command = new object[] { "quit" } }));
-            }
-            catch
-            {
-            }
-
             ShutdownProcess_NoLock();
         }
     }

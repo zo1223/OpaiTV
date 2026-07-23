@@ -11,6 +11,7 @@ namespace OrionTV.Desktop.App.LocalPlayback;
 public sealed class MpvHost : HwndHost
 {
     private IntPtr _hwnd = IntPtr.Zero;
+    private bool _syncingBounds;
 
     public IntPtr HostHandle => _hwnd;
 
@@ -59,9 +60,34 @@ public sealed class MpvHost : HwndHost
     protected override void OnRenderSizeChanged(System.Windows.SizeChangedInfo sizeInfo)
     {
         base.OnRenderSizeChanged(sizeInfo);
-        if (_hwnd != IntPtr.Zero)
+        SyncNativeBounds();
+    }
+
+    protected override void OnWindowPositionChanged(Rect rcBoundingBox)
+    {
+        base.OnWindowPositionChanged(rcBoundingBox);
+        SyncNativeBounds();
+    }
+
+    protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+    {
+        base.OnDpiChanged(oldDpi, newDpi);
+        SyncNativeBounds();
+    }
+
+    public void SyncNativeBounds()
+    {
+        if (_hwnd == IntPtr.Zero || _syncingBounds)
         {
-            var size = ToDevicePixels(sizeInfo.NewSize.Width, sizeInfo.NewSize.Height);
+            return;
+        }
+
+        _syncingBounds = true;
+        try
+        {
+            var size = ToDevicePixels(
+                ActualWidth > 0 ? ActualWidth : 1,
+                ActualHeight > 0 ? ActualHeight : 1);
             MoveWindow(
                 _hwnd,
                 0,
@@ -69,6 +95,30 @@ public sealed class MpvHost : HwndHost
                 size.Width,
                 size.Height,
                 true);
+
+            EnumChildWindows(
+                _hwnd,
+                (child, _) =>
+                {
+                    if (GetParent(child) == _hwnd)
+                    {
+                        SetWindowPos(
+                            child,
+                            IntPtr.Zero,
+                            0,
+                            0,
+                            size.Width,
+                            size.Height,
+                            swpNoZOrder | swpNoActivate | swpShowWindow);
+                    }
+
+                    return true;
+                },
+                IntPtr.Zero);
+        }
+        finally
+        {
+            _syncingBounds = false;
         }
     }
 
@@ -100,4 +150,27 @@ public sealed class MpvHost : HwndHost
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool MoveWindow(IntPtr hWnd, int x, int y, int nWidth, int nHeight, bool bRepaint);
+
+    private const uint swpNoZOrder = 0x0004;
+    private const uint swpNoActivate = 0x0010;
+    private const uint swpShowWindow = 0x0040;
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetParent(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(
+        IntPtr hWnd,
+        IntPtr hWndInsertAfter,
+        int x,
+        int y,
+        int cx,
+        int cy,
+        uint uFlags);
 }

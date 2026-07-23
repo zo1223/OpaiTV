@@ -55,6 +55,8 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
     private bool _updatingSlider;
     private bool _disposed;
     private bool _initializingController;
+    private bool? _pendingLocalFullscreen;
+    private int _localLayoutRefreshVersion;
 
     private LoadingNoticeMode _loadingNoticeMode;
     private DateTimeOffset _loadingNoticeStartedAt;
@@ -297,7 +299,9 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         _localEngine.TimeChanged += Controller_TimeChanged;
         _localEngine.LengthChanged += Controller_LengthChanged;
         _localEngine.EndReached += Controller_EndReached;
+        _localEngine.FullscreenChanged += LocalEngine_FullscreenChanged;
         _localEngine.Volume = (int)Math.Round(VolumeSlider.Value);
+        LocalVideoHost.SyncNativeBounds();
         return true;
     }
 
@@ -307,15 +311,80 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         if (local)
         {
             LocalVideoHost.Visibility = Visibility.Visible;
+            LocalVideoHost.UpdateLayout();
+            LocalVideoHost.SyncNativeBounds();
             try { _controller?.Stop(); } catch { }
-            VideoSurface.Visibility = Visibility.Collapsed;
+
+            // Keep VideoSurface mounted so LibVLCSharp's detached foreground window
+            // continues to host the application controls during local mpv playback.
+            // Detach only the VLC player; its transparent HWND stays behind the mpv host.
+            VideoSurface.MediaPlayer = null;
+            VideoSurface.Visibility = Visibility.Visible;
         }
         else
         {
+            VideoSurface.MediaPlayer = _controller?.Player;
             VideoSurface.Visibility = Visibility.Visible;
             LocalVideoHost.Visibility = Visibility.Collapsed;
             try { _localEngine?.Stop(); } catch { }
         }
+    }
+
+    private void LocalEngine_FullscreenChanged(object? sender, bool enabled)
+    {
+        if (_disposed || !_usingLocalEngine)
+        {
+            return;
+        }
+
+        if (_pendingLocalFullscreen is { } pending)
+        {
+            if (pending != enabled)
+            {
+                return;
+            }
+
+            _pendingLocalFullscreen = null;
+        }
+
+        if (_host.IsFullscreen != enabled)
+        {
+            _host.SetFullscreen(enabled);
+        }
+
+        FullscreenButton.Content = enabled ? ExitFullscreenGlyph : FullscreenGlyph;
+        RequestLocalLayoutRefresh();
+    }
+
+    private void RequestLocalLayoutRefresh()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        LocalVideoHost.SyncNativeBounds();
+        var version = ++_localLayoutRefreshVersion;
+        _ = RefreshLocalLayoutAsync(version);
+    }
+
+    private async Task RefreshLocalLayoutAsync(int version)
+    {
+        await Dispatcher.Yield(DispatcherPriority.Render);
+        if (_disposed || version != _localLayoutRefreshVersion)
+        {
+            return;
+        }
+
+        LocalVideoHost.UpdateLayout();
+        LocalVideoHost.SyncNativeBounds();
+        await Task.Delay(100).ConfigureAwait(true);
+        if (_disposed || version != _localLayoutRefreshVersion || _localEngine is null)
+        {
+            return;
+        }
+
+        LocalVideoHost.SyncNativeBounds();
     }
 
     private static bool IsRemoteHttpUrl(string url) =>
@@ -876,8 +945,16 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
     private void ToggleFullscreen()
     {
-        _host.SetFullscreen(!_host.IsFullscreen);
-        FullscreenButton.Content = _host.IsFullscreen ? ExitFullscreenGlyph : FullscreenGlyph;
+        var enabled = !_host.IsFullscreen;
+        _pendingLocalFullscreen = _usingLocalEngine ? enabled : null;
+        _host.SetFullscreen(enabled);
+        if (_usingLocalEngine)
+        {
+            _localEngine?.SetFullscreen(enabled);
+            RequestLocalLayoutRefresh();
+        }
+
+        FullscreenButton.Content = enabled ? ExitFullscreenGlyph : FullscreenGlyph;
     }
 
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)
@@ -931,7 +1008,10 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             return;
         }
 
-        var target = Math.Clamp(_currentTimeMs + deltaMs, 0, _lengthMs);
+        var current = _usingLocalEngine && _localEngine is not null
+            ? _localEngine.Time
+            : _currentTimeMs;
+        var target = Math.Clamp(current + deltaMs, 0, _lengthMs);
         if (_usingLocalEngine && _localEngine is not null)
         {
             _localEngine.TrySeek(target);
@@ -1072,6 +1152,7 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             _localEngine.TimeChanged -= Controller_TimeChanged;
             _localEngine.LengthChanged -= Controller_LengthChanged;
             _localEngine.EndReached -= Controller_EndReached;
+            _localEngine.FullscreenChanged -= LocalEngine_FullscreenChanged;
             _localEngine.Dispose();
             _localEngine = null;
         }
