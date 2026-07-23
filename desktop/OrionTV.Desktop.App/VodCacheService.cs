@@ -142,9 +142,11 @@ public sealed class VodCacheService : IDisposable
     private static readonly Regex EpisodeCacheTitleRegex = new(
         @"^(?<series>.+?)\s+第\s*(?<episode>\d+)\s*集$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly JsonSerializerOptions MetadataJsonOptions = new() { WriteIndented = true };
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(25);
     private const int MaxDownloadAttempts = 3;
     private const int MaxResumePlanAttempts = 3;
+    private const int MetadataReplaceAttempts = 8;
 
     private readonly ConcurrentDictionary<string, VodCacheSession> _sessions = new(StringComparer.Ordinal);
     private readonly HttpClient _http;
@@ -2199,8 +2201,7 @@ public sealed class VodCacheService : IDisposable
             session.MediaPlaylistUrl,
             mergedSegmentLengths,
             session.Poster);
-        var path = Path.Combine(session.Directory, "cache.json");
-        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true }), cancellationToken).ConfigureAwait(false);
+        await WriteMetadataFileAsync(session.Directory, metadata, cancellationToken).ConfigureAwait(false);
     }
 
     private static CacheMetadata? ReadMetadata(string directory)
@@ -2208,7 +2209,54 @@ public sealed class VodCacheService : IDisposable
         try
         {
             var path = Path.Combine(directory, "cache.json");
-            return File.Exists(path) ? JsonSerializer.Deserialize<CacheMetadata>(File.ReadAllText(path)) : null;
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            CacheMetadata? metadata;
+            using (var stream = new FileStream(
+                       path,
+                       FileMode.Open,
+                       FileAccess.Read,
+                       FileShare.ReadWrite | FileShare.Delete,
+                       4096,
+                       FileOptions.SequentialScan))
+            {
+                metadata = JsonSerializer.Deserialize<CacheMetadata>(stream);
+            }
+
+            if (metadata is null
+                || metadata.IsComplete
+                || metadata.TotalSegments <= 0
+                || metadata.CompletedSegments < metadata.TotalSegments)
+            {
+                return metadata;
+            }
+
+            var mergedPath = Path.Combine(
+                directory,
+                metadata.MergedFileName ?? VodCacheSession.MergedFileName);
+            var hasCompleteMergedFile = metadata.MergedSegments >= metadata.TotalSegments
+                && File.Exists(mergedPath)
+                && new FileInfo(mergedPath).Length > 0;
+            var offlinePath = Path.Combine(directory, "offline.m3u8");
+            var hasCompletedPlaylist = File.Exists(offlinePath)
+                && File.ReadLines(offlinePath).Any(line =>
+                    string.Equals(line.Trim(), "#EXT-X-ENDLIST", StringComparison.OrdinalIgnoreCase));
+            if (!hasCompleteMergedFile && !hasCompletedPlaylist)
+            {
+                return metadata;
+            }
+
+            var repaired = metadata with { IsComplete = true };
+            if (TryWriteMetadata(directory, repaired))
+            {
+                VodCacheLog.Info(
+                    $"cache-completion-recovered title={metadata.Title} dir={directory}");
+            }
+
+            return repaired;
         }
         catch
         {
@@ -2219,21 +2267,63 @@ public sealed class VodCacheService : IDisposable
     private static bool AreEqual(IReadOnlyList<long>? left, IReadOnlyList<long> right) =>
         left is not null && left.Count == right.Count && left.SequenceEqual(right);
 
-    private static void TryWriteMetadata(string directory, CacheMetadata metadata)
+    private static async Task WriteMetadataFileAsync(
+        string directory,
+        CacheMetadata metadata,
+        CancellationToken cancellationToken)
     {
+        var path = Path.Combine(directory, "cache.json");
+        var temp = Path.Combine(directory, $".cache-{Guid.NewGuid():N}.tmp");
         try
         {
-            var path = Path.Combine(directory, "cache.json");
-            var temp = path + ".tmp";
+            await File.WriteAllTextAsync(
+                temp,
+                JsonSerializer.Serialize(metadata, MetadataJsonOptions),
+                new UTF8Encoding(false),
+                cancellationToken).ConfigureAwait(false);
+
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    File.Move(temp, path, true);
+                    return;
+                }
+                catch (Exception error) when (
+                    attempt < MetadataReplaceAttempts
+                    && error is IOException or UnauthorizedAccessException)
+                {
+                    await Task.Delay(50 * attempt, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            TryDeleteFile(temp);
+        }
+    }
+
+    private static bool TryWriteMetadata(string directory, CacheMetadata metadata)
+    {
+        var path = Path.Combine(directory, "cache.json");
+        var temp = Path.Combine(directory, $".cache-{Guid.NewGuid():N}.tmp");
+        try
+        {
             File.WriteAllText(
                 temp,
-                JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true }),
+                JsonSerializer.Serialize(metadata, MetadataJsonOptions),
                 new UTF8Encoding(false));
             File.Move(temp, path, true);
+            return true;
         }
         catch
         {
             // 兼容迁移失败不影响本地播放或续传。
+            return false;
+        }
+        finally
+        {
+            TryDeleteFile(temp);
         }
     }
 

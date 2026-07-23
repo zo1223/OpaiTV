@@ -269,7 +269,7 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             return;
         }
 
-        var networkCachingMs = isRemote ? 1500 : 300;
+        var networkCachingMs = isRemote ? 6000 : 300;
         _controller.SwitchTo(url, seekMs, networkCachingMs);
         await Task.CompletedTask;
     }

@@ -318,6 +318,76 @@ public sealed class VodCacheServiceTests
     }
 
     [Fact]
+    public void CompletedCacheWithStaleMetadataIsRecoveredForLocalPlayback()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-recover-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Combine(root, "Recovered Series", "第1集-test");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            const string title = "Recovered Series 第1集";
+            const string sourceUrl = "https://video.example/episode.m3u8";
+            var mergedPath = Path.Combine(directory, VodCacheSession.MergedFileName);
+            File.WriteAllBytes(mergedPath, new byte[1024]);
+            File.WriteAllText(
+                Path.Combine(directory, "offline.m3u8"),
+                "#EXTM3U\n#EXTINF:8,\nsegment_00000.ts\n#EXT-X-ENDLIST\n");
+            File.WriteAllText(
+                Path.Combine(directory, "cache.json"),
+                JsonSerializer.Serialize(new CacheMetadata(
+                    title,
+                    sourceUrl,
+                    DateTimeOffset.UtcNow,
+                    IsComplete: false,
+                    CompletedSegments: 1,
+                    TotalSegments: 1,
+                    MergedSegments: 1,
+                    MergedFileName: VodCacheSession.MergedFileName)));
+
+            using var service = new VodCacheService();
+            Assert.Equal(mergedPath, service.FindCompletedPlaybackPath(root, sourceUrl, title));
+            Assert.True(Assert.Single(service.GetEntries(root)).IsComplete);
+
+            using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "cache.json")));
+            Assert.True(document.RootElement.GetProperty("IsComplete").GetBoolean());
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task TransientMetadataFileLockDoesNotFailCompletedDownload()
+    {
+        await using var upstream = new FakeHlsServer(delayThirdSegment: true);
+        using var service = new VodCacheService();
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-lock-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            const string title = "Locked Metadata Episode";
+            var session = await service.StartAsync(upstream.PlaylistUrl, title, root, 15);
+            Assert.NotNull(session);
+            _ = await session!.Ready.WaitAsync(TimeSpan.FromSeconds(10));
+
+            var metadataPath = Path.Combine(session.Directory, "cache.json");
+            using (new FileStream(metadataPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                await Task.Delay(1100);
+            }
+
+            await session.DownloadTask.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(session.Progress.IsComplete);
+            await service.CloseAsync(session, deleteFiles: false, continueDownload: false);
+            Assert.Equal(session.MergedFilePath, service.FindCompletedPlaybackPath(root, upstream.PlaylistUrl, title));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public async Task DifferentEpisodesAreStoredUnderTheSameSeriesDirectory()
     {
         await using var upstream = new FakeHlsServer();

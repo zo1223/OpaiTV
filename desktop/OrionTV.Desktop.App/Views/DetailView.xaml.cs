@@ -920,9 +920,8 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             return label;
         }
 
-        var verdict = ChannelHealthScoring.LabelOf(health.Health);
         var metrics = ChannelHealthDisplay.MetricsLabelOf(health);
-        return $"{label} · {verdict} · {metrics}";
+        return $"{label} · {metrics}";
     }
 
     private async void ScanButton_Click(object sender, RoutedEventArgs e)
