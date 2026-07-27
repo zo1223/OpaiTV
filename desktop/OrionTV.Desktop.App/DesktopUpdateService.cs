@@ -23,7 +23,7 @@ public sealed record DesktopUpdateInfo(
 
 public sealed partial class DesktopUpdateService : IDisposable
 {
-    private const string ReleasesApiUrl = "https://api.github.com/repos/zo1223/OrionTV/releases?per_page=20";
+    private const string ReleasesApiUrl = "https://api.github.com/repos/zo1223/OpaiTV/releases?per_page=20";
     private const long MaximumInstallerSize = 1024L * 1024 * 1024;
     private static readonly TimeSpan AutomaticCheckInterval = TimeSpan.FromHours(12);
     private static readonly string DefaultUpdateDirectory = Path.Combine(

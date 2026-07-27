@@ -149,6 +149,7 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}
           name: OpaiTV v${{ steps.version.outputs.version }}
           generate_release_notes: true
+          make_latest: true
           fail_on_unmatched_files: true
           files: |
             desktop/dist/OpaiTV-Setup-${{ steps.version.outputs.version }}-win-x64.exe

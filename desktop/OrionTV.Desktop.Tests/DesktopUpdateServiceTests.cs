@@ -23,12 +23,12 @@ public sealed class DesktopUpdateServiceTests
                   {
                     "name": "OpaiTV-Setup-1.3.16-win-x64.exe",
                     "size": 120000000,
-                    "browser_download_url": "https://github.com/zo1223/OrionTV/releases/download/v1.3.16/OpaiTV-Setup-1.3.16-win-x64.exe"
+                    "browser_download_url": "https://github.com/zo1223/OpaiTV/releases/download/v1.3.16/OpaiTV-Setup-1.3.16-win-x64.exe"
                   },
                   {
                     "name": "OpaiTV-Setup-1.3.16-win-x64.exe.sha256",
                     "size": 100,
-                    "browser_download_url": "https://github.com/zo1223/OrionTV/releases/download/v1.3.16/OpaiTV-Setup-1.3.16-win-x64.exe.sha256"
+                    "browser_download_url": "https://github.com/zo1223/OpaiTV/releases/download/v1.3.16/OpaiTV-Setup-1.3.16-win-x64.exe.sha256"
                   }
                 ]
               },
@@ -40,12 +40,12 @@ public sealed class DesktopUpdateServiceTests
                   {
                     "name": "OpaiTV-Setup-1.3.15-win-x64.exe",
                     "size": 110000000,
-                    "browser_download_url": "https://github.com/zo1223/OrionTV/releases/download/v1.3.15/OpaiTV-Setup-1.3.15-win-x64.exe"
+                    "browser_download_url": "https://github.com/zo1223/OpaiTV/releases/download/v1.3.15/OpaiTV-Setup-1.3.15-win-x64.exe"
                   },
                   {
                     "name": "OpaiTV-Setup-1.3.15-win-x64.exe.sha256",
                     "size": 100,
-                    "browser_download_url": "https://github.com/zo1223/OrionTV/releases/download/v1.3.15/OpaiTV-Setup-1.3.15-win-x64.exe.sha256"
+                    "browser_download_url": "https://github.com/zo1223/OpaiTV/releases/download/v1.3.15/OpaiTV-Setup-1.3.15-win-x64.exe.sha256"
                   }
                 ]
               }
@@ -73,12 +73,12 @@ public sealed class DesktopUpdateServiceTests
                   {
                     "name": "OpaiTV-Setup-2.0.0-win-x64.exe",
                     "size": 100,
-                    "browser_download_url": "https://github.com/zo1223/OrionTV/releases/download/v2.0.0/OpaiTV-Setup-2.0.0-win-x64.exe"
+                    "browser_download_url": "https://github.com/zo1223/OpaiTV/releases/download/v2.0.0/OpaiTV-Setup-2.0.0-win-x64.exe"
                   },
                   {
                     "name": "OpaiTV-Setup-2.0.0-win-x64.exe.sha256",
                     "size": 100,
-                    "browser_download_url": "https://github.com/zo1223/OrionTV/releases/download/v2.0.0/OpaiTV-Setup-2.0.0-win-x64.exe.sha256"
+                    "browser_download_url": "https://github.com/zo1223/OpaiTV/releases/download/v2.0.0/OpaiTV-Setup-2.0.0-win-x64.exe.sha256"
                   }
                 ]
               },
@@ -90,7 +90,7 @@ public sealed class DesktopUpdateServiceTests
                   {
                     "name": "OpaiTV-Setup-1.4.1-win-x64.exe",
                     "size": 100,
-                    "browser_download_url": "https://github.com/zo1223/OrionTV/releases/download/v1.4.0/OpaiTV-Setup-1.4.1-win-x64.exe"
+                    "browser_download_url": "https://github.com/zo1223/OpaiTV/releases/download/v1.4.0/OpaiTV-Setup-1.4.1-win-x64.exe"
                   }
                 ]
               }
@@ -165,9 +165,9 @@ public sealed class DesktopUpdateServiceTests
             "1.3.16",
             "v1.3.16",
             "OpaiTV-Setup-1.3.16-win-x64.exe",
-            new Uri("https://github.com/zo1223/OrionTV/releases/download/v1.3.16/OpaiTV-Setup-1.3.16-win-x64.exe"),
+            new Uri("https://github.com/zo1223/OpaiTV/releases/download/v1.3.16/OpaiTV-Setup-1.3.16-win-x64.exe"),
             installerBytes.Length,
-            new Uri("https://github.com/zo1223/OrionTV/releases/download/v1.3.16/OpaiTV-Setup-1.3.16-win-x64.exe.sha256"),
+            new Uri("https://github.com/zo1223/OpaiTV/releases/download/v1.3.16/OpaiTV-Setup-1.3.16-win-x64.exe.sha256"),
             "",
             null);
         var progressValues = new List<int>();
@@ -204,9 +204,9 @@ public sealed class DesktopUpdateServiceTests
             "1.3.16",
             "v1.3.16",
             "OpaiTV-Setup-1.3.16-win-x64.exe",
-            new Uri("https://github.com/zo1223/OrionTV/releases/download/v1.3.16/OpaiTV-Setup-1.3.16-win-x64.exe"),
+            new Uri("https://github.com/zo1223/OpaiTV/releases/download/v1.3.16/OpaiTV-Setup-1.3.16-win-x64.exe"),
             installerBytes.Length,
-            new Uri("https://github.com/zo1223/OrionTV/releases/download/v1.3.16/OpaiTV-Setup-1.3.16-win-x64.exe.sha256"),
+            new Uri("https://github.com/zo1223/OpaiTV/releases/download/v1.3.16/OpaiTV-Setup-1.3.16-win-x64.exe.sha256"),
             "",
             null);
 
