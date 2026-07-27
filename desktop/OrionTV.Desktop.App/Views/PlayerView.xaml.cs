@@ -358,11 +358,13 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
         if (!IsVisible)
         {
+            UnmountVideoSurface();
             CancelSourceSwitchScan();
             SaveRecord();
             return;
         }
 
+        MountVideoSurface();
         if (_controller is null)
         {
             return;
@@ -377,6 +379,23 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         {
             // 某些 WPF 原生宿主在 Hidden -> Visible 时会重建视频窗口，重新绑定但不重启媒体。
             VideoSurface.MediaPlayer = _controller.Player;
+        }
+    }
+
+    private void UnmountVideoSurface()
+    {
+        // LibVLCSharp's overlay is a separate Window that hides on Unloaded, not ancestor Visibility.
+        if (ReferenceEquals(VideoSurface.Parent, PlayerRoot))
+        {
+            PlayerRoot.Children.Remove(VideoSurface);
+        }
+    }
+
+    private void MountVideoSurface()
+    {
+        if (VideoSurface.Parent is null)
+        {
+            PlayerRoot.Children.Add(VideoSurface);
         }
     }
 

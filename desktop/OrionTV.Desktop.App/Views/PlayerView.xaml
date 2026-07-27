@@ -5,7 +5,7 @@
              xmlns:local="clr-namespace:OrionTV.Desktop.App.LocalPlayback"
              Focusable="True"
              PreviewKeyDown="OnPreviewKeyDown">
-    <Grid Background="{StaticResource VideoBrush}" ClipToBounds="True">
+    <Grid x:Name="PlayerRoot" Background="{StaticResource VideoBrush}" ClipToBounds="True">
         <!-- Hidden 仍参与完整布局，mpv 可在首帧输出前完成 HWND 创建和尺寸同步。 -->
         <local:MpvHost x:Name="LocalVideoHost" Visibility="Hidden"
                        IsHitTestVisible="False" SnapsToDevicePixels="True" />
