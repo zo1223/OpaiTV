@@ -1,0 +1,157 @@
+name: Build Windows Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build_windows:
+    name: Build Windows installer
+    runs-on: windows-latest
+    env:
+      APP_PROJECT: desktop/OrionTV.Desktop.App/OrionTV.Desktop.App.csproj
+      PUBLISH_DIR: desktop/publish/win-x64-self-contained
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Audit public tree
+        run: node scripts/audit-public-tree.mjs
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Read and validate version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$project = Get-Content -LiteralPath $env:APP_PROJECT
+          $version = [string]($project.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "The desktop project does not define Version."
+          }
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match desktop version v$version."
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Restore bundled mpv from previous release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/vnd.github+json"
+            "User-Agent" = "OpaiTV-Windows-Build"
+          }
+          $api = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases?per_page=20"
+          $releases = Invoke-RestMethod -Headers $headers -Uri $api
+          $asset = $releases |
+            Where-Object { -not $_.draft -and -not $_.prerelease } |
+            ForEach-Object { $_.assets } |
+            Where-Object { $_.name -like "OpaiTV-*-win-x64-self-contained.zip" } |
+            Select-Object -First 1
+          if ($null -eq $asset) {
+            throw "No previous Windows portable release was found to bootstrap mpv."
+          }
+
+          $archive = Join-Path $env:RUNNER_TEMP "opaitv-previous-windows.zip"
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP "opaitv-previous-windows"
+          Invoke-WebRequest -Headers @{ "User-Agent" = "OpaiTV-Windows-Build" } -Uri $asset.browser_download_url -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $runtimeRoot -Force
+
+          $mpv = Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File -Filter mpv.exe |
+            Where-Object { $_.Directory.Name -eq "mpv" } | Select-Object -First 1
+          if ($null -eq $mpv) {
+            throw "The previous portable release does not contain mpv."
+          }
+
+          New-Item -ItemType Directory -Force -Path desktop/tools/mpv-extract | Out-Null
+          Copy-Item -Path (Join-Path $mpv.Directory.FullName "*") -Destination desktop/tools/mpv-extract -Recurse -Force
+
+      - name: Restore and test
+        shell: pwsh
+        run: |
+          dotnet restore desktop/OrionTV.Desktop.sln
+          dotnet test desktop/OrionTV.Desktop.sln -c Release --no-restore
+
+      - name: Publish self-contained application
+        shell: pwsh
+        run: |
+          dotnet publish $env:APP_PROJECT -c Release -r win-x64 --self-contained true -o $env:PUBLISH_DIR
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build installer and checksums
+        id: package
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6/ISCC.exe"
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            throw "Inno Setup compiler was not found at $iscc."
+          }
+          & $iscc "/DMyAppVersion=$env:RELEASE_VERSION" "desktop/installer/OpaiTV.iss"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE."
+          }
+
+          $dist = Join-Path $PWD "desktop/dist"
+          $installer = Join-Path $dist "OpaiTV-Setup-$env:RELEASE_VERSION-win-x64.exe"
+          if (-not (Test-Path -LiteralPath $installer)) {
+            throw "Expected installer was not generated: $installer"
+          }
+          $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText(
+            "$installer.sha256",
+            "$installerHash  $([IO.Path]::GetFileName($installer))`r`n",
+            [Text.Encoding]::ASCII)
+
+          $portable = Join-Path $dist "OpaiTV-$env:RELEASE_VERSION-win-x64-self-contained.zip"
+          Compress-Archive -Path (Join-Path $env:PUBLISH_DIR "*") -DestinationPath $portable -CompressionLevel Optimal -Force
+          $portableHash = (Get-FileHash -LiteralPath $portable -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText(
+            "$portable.sha256",
+            "$portableHash  $([IO.Path]::GetFileName($portable))`r`n",
+            [Text.Encoding]::ASCII)
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpaiTV-${{ steps.version.outputs.version }}-windows
+          path: |
+            desktop/dist/OpaiTV-Setup-${{ steps.version.outputs.version }}-win-x64.exe
+            desktop/dist/OpaiTV-Setup-${{ steps.version.outputs.version }}-win-x64.exe.sha256
+            desktop/dist/OpaiTV-${{ steps.version.outputs.version }}-win-x64-self-contained.zip
+            desktop/dist/OpaiTV-${{ steps.version.outputs.version }}-win-x64-self-contained.zip.sha256
+          if-no-files-found: error
+
+      - name: Create or update GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: OpaiTV v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            desktop/dist/OpaiTV-Setup-${{ steps.version.outputs.version }}-win-x64.exe
+            desktop/dist/OpaiTV-Setup-${{ steps.version.outputs.version }}-win-x64.exe.sha256
+            desktop/dist/OpaiTV-${{ steps.version.outputs.version }}-win-x64-self-contained.zip
+            desktop/dist/OpaiTV-${{ steps.version.outputs.version }}-win-x64-self-contained.zip.sha256

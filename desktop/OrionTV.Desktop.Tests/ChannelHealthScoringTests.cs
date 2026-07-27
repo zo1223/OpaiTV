@@ -100,6 +100,14 @@ public class ChannelHealthScoringTests
     }
 
     [Fact]
+    public void MetricsLabelOf_shows_failure_reason_instead_of_misleading_latency()
+    {
+        var result = ChannelHealthResult.Unsupported("网页线路", ttfbMs: 35);
+
+        Assert.Equal("网页线路", ChannelHealthDisplay.MetricsLabelOf(result));
+    }
+
+    [Fact]
     public void SummaryOf_reports_average_probe_metrics()
     {
         var results = new[]
@@ -129,6 +137,19 @@ public class ChannelHealthScoringTests
     }
 
     [Fact]
+    public async Task ProbeAsync_uses_lowest_bandwidth_variant_like_the_downloader()
+    {
+        var handler = new VariantRecordingHandler();
+        var probe = new ChannelHealthProbe(new HttpClient(handler));
+
+        await probe.ProbeAsync("https://video.example/master.m3u8", CancellationToken.None);
+
+        Assert.Contains(handler.Requests, uri => uri.AbsolutePath == "/low/playlist.m3u8");
+        Assert.DoesNotContain(handler.Requests, uri => uri.AbsolutePath == "/high/playlist.m3u8");
+        Assert.Contains(handler.Requests, uri => uri.AbsolutePath == "/low/segment.ts");
+    }
+
+    [Fact]
     public async Task ProbeAsync_treats_flv_response_as_raw_stream_even_when_original_url_ends_with_m3u8()
     {
         var handler = new FlvResponseHandler();
@@ -139,6 +160,53 @@ public class ChannelHealthScoringTests
         Assert.Single(handler.Requests);
         Assert.True(result.TtfbMs >= 0);
         Assert.True(result.ThroughputMbps > 0);
+    }
+
+    [Fact]
+    public async Task ProbeAsync_rejects_fast_html_response_instead_of_measuring_it_as_video()
+    {
+        var probe = new ChannelHealthProbe(new HttpClient(new HtmlResponseHandler()));
+
+        var result = await probe.ProbeAsync("https://video.example/play/episode", CancellationToken.None);
+
+        Assert.Equal(MediaProbeStatus.UnsupportedContent, result.MediaStatus);
+        Assert.Equal("网页线路", result.Detail);
+        Assert.Equal(0, result.ThroughputMbps);
+    }
+
+    [Fact]
+    public async Task ProbeAsync_rejects_m3u8_url_when_body_is_html_without_html_content_type()
+    {
+        var probe = new ChannelHealthProbe(new HttpClient(new MisleadingHtmlResponseHandler()));
+
+        var result = await probe.ProbeAsync("https://video.example/episode.m3u8", CancellationToken.None);
+
+        Assert.Equal(MediaProbeStatus.UnsupportedContent, result.MediaStatus);
+        Assert.Equal("网页线路", result.Detail);
+    }
+
+    [Fact]
+    public async Task ProbeAsync_validates_hls_key_before_accepting_media_segment()
+    {
+        var handler = new EncryptedHlsHandler();
+        var probe = new ChannelHealthProbe(new HttpClient(handler));
+
+        var result = await probe.ProbeAsync("https://video.example/playlist.m3u8", CancellationToken.None);
+
+        Assert.Equal(MediaProbeStatus.MediaValidated, result.MediaStatus);
+        Assert.Contains(handler.Requests, uri => uri.AbsolutePath == "/key.bin");
+        Assert.Contains(handler.Requests, uri => uri.AbsolutePath == "/segment.ts");
+    }
+
+    [Fact]
+    public async Task ProbeAsync_rejects_hls_segment_that_returns_html()
+    {
+        var probe = new ChannelHealthProbe(new HttpClient(new HtmlSegmentHandler()));
+
+        var result = await probe.ProbeAsync("https://video.example/playlist.m3u8", CancellationToken.None);
+
+        Assert.Equal(MediaProbeStatus.UnsupportedContent, result.MediaStatus);
+        Assert.Equal("网页线路", result.Detail);
     }
 
     private sealed record CapturedRequest(Uri Uri, string UserAgent, Uri? Referrer);
@@ -191,6 +259,93 @@ public class ChannelHealthScoringTests
             };
             response.Content.Headers.ContentType = new("video/x-flv");
             return Task.FromResult(response);
+        }
+    }
+
+    private sealed class HtmlResponseHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var content = new StringContent("<head><title>player</title></head>");
+            content.Headers.ContentType = new("text/html");
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = content });
+        }
+    }
+
+    private sealed class MisleadingHtmlResponseHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(System.Text.Encoding.UTF8.GetBytes("<!DOCTYPE html><html></html>")),
+            });
+    }
+
+    private sealed class EncryptedHlsHandler : HttpMessageHandler
+    {
+        public List<Uri> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request.RequestUri!);
+            HttpContent content = request.RequestUri!.AbsolutePath switch
+            {
+                "/playlist.m3u8" => new StringContent(
+                    "#EXTM3U\n" +
+                    "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n" +
+                    "#EXTINF:6,\n" +
+                    "segment.ts\n"),
+                "/key.bin" => new ByteArrayContent(new byte[16]),
+                "/segment.ts" => new ByteArrayContent(new byte[256_000]),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}"),
+            };
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = content });
+        }
+    }
+
+    private sealed class HtmlSegmentHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("#EXTM3U\n#EXTINF:6,\nsegment.ts\n"),
+                });
+            }
+
+            var content = new StringContent("<html>expired</html>");
+            content.Headers.ContentType = new("text/html");
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = content });
+        }
+    }
+
+    private sealed class VariantRecordingHandler : HttpMessageHandler
+    {
+        public List<Uri> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request.RequestUri!);
+            HttpContent content = request.RequestUri!.AbsolutePath switch
+            {
+                "/master.m3u8" => new StringContent(
+                    "#EXTM3U\n" +
+                    "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\n" +
+                    "high/playlist.m3u8\n" +
+                    "#EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=640x360\n" +
+                    "low/playlist.m3u8\n"),
+                "/low/playlist.m3u8" => new StringContent(
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nsegment.ts\n#EXT-X-ENDLIST\n"),
+                "/low/segment.ts" => new ByteArrayContent(new byte[256_000]),
+                _ => throw new InvalidOperationException($"Unexpected probe request: {request.RequestUri}"),
+            };
+
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = content,
+            });
         }
     }
 }

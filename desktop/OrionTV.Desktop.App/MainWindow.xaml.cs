@@ -12,6 +12,7 @@ public partial class MainWindow : Window, IAppHost
 
     private readonly Stack<UIElement> _backStack = new();
     private UIElement? _current;
+    private PlayerView? _playerView;
     private AiSourceWatcher? _aiSourceWatcher;
     private int _lastNotifiedSourceCount = -1;
 
@@ -27,6 +28,17 @@ public partial class MainWindow : Window, IAppHost
 
     public void Navigate(AppPage page, object? parameter = null)
     {
+        if (page == AppPage.Player)
+        {
+            NavigateToPlayer(parameter);
+            return;
+        }
+
+        if (page == AppPage.Detail && TryNavigateFromPlayerToDetail(parameter))
+        {
+            return;
+        }
+
         var isTopLevel = TopLevelPages.Contains(page);
         if (isTopLevel)
         {
@@ -35,16 +47,31 @@ public partial class MainWindow : Window, IAppHost
                 Discard(_backStack.Pop());
             }
 
-            Discard(_current);
+            if (_current is PlayerView)
+            {
+                // 侧栏切换只隐藏播放页，不能销毁当前媒体与播放进度。
+                HidePlayerForNavigation();
+            }
+            else
+            {
+                Discard(_current);
+            }
         }
         else if (_current is not null)
         {
-            _backStack.Push(_current);
+            if (_current is PlayerView)
+            {
+                HidePlayerForNavigation();
+            }
+            else
+            {
+                _backStack.Push(_current);
+            }
         }
 
         var view = CreateView(page);
         _current = view;
-        ContentHost.Content = view;
+        ShowContentView(view);
 
         if (isTopLevel)
         {
@@ -59,12 +86,22 @@ public partial class MainWindow : Window, IAppHost
 
     public void GoBack()
     {
+        if (_current is PlayerView)
+        {
+            ClosePlayer();
+            _current = null;
+        }
+
         if (_backStack.Count > 0)
         {
-            Discard(_current);
+            if (_current is not null)
+            {
+                Discard(_current);
+            }
+
             var previous = _backStack.Pop();
             _current = previous;
-            ContentHost.Content = previous;
+            ShowContentView(previous);
             return;
         }
 
@@ -122,14 +159,106 @@ public partial class MainWindow : Window, IAppHost
         AppPage.LocalVideo => new LocalVideoView(this),
         AppPage.Settings => new SettingsView(this),
         AppPage.Detail => new DetailView(this),
-        AppPage.Player => new PlayerView(this),
+        AppPage.Player => _playerView ??= new PlayerView(this),
         _ => new HomeView(this),
     };
+
+    private void NavigateToPlayer(object? parameter)
+    {
+        if (_current is not PlayerView && _current is not null)
+        {
+            _backStack.Push(_current);
+        }
+
+        var player = (PlayerView)CreateView(AppPage.Player);
+        _current = player;
+        if (parameter is not null)
+        {
+            player.OnNavigatedTo(parameter);
+        }
+
+        // 常驻播放页先切换到新媒体和加载态，再显示，避免旧原生画布短暂露出。
+        ShowPlayerView(player);
+        NavPlayer.Visibility = Visibility.Visible;
+        NavPlayer.IsChecked = true;
+    }
+
+    private bool TryNavigateFromPlayerToDetail(object? parameter)
+    {
+        if (_current is not PlayerView)
+        {
+            return false;
+        }
+
+        DetailView detail;
+        if (_backStack.Count > 0 && _backStack.Peek() is DetailView existing)
+        {
+            _backStack.Pop();
+            detail = existing;
+        }
+        else
+        {
+            detail = new DetailView(this);
+        }
+
+        ClosePlayer();
+        _current = detail;
+        ShowContentView(detail);
+        detail.OnNavigatedTo(parameter);
+        return true;
+    }
+
+    private void ShowContentView(UIElement view)
+    {
+        ContentHost.Content = view;
+        ContentHost.Visibility = Visibility.Visible;
+        if (_playerView is not null)
+        {
+            PlayerHost.Visibility = Visibility.Hidden;
+        }
+    }
+
+    private void ShowPlayerView(PlayerView player)
+    {
+        if (!ReferenceEquals(PlayerHost.Content, player))
+        {
+            PlayerHost.Content = player;
+        }
+
+        ContentHost.Visibility = Visibility.Collapsed;
+        PlayerHost.Visibility = Visibility.Visible;
+    }
+
+    private void HidePlayerForNavigation()
+    {
+        if (_playerView is null)
+        {
+            return;
+        }
+
+        PlayerHost.Visibility = Visibility.Hidden;
+        ContentHost.Visibility = Visibility.Visible;
+    }
+
+    private void ClosePlayer()
+    {
+        if (_playerView is null)
+        {
+            return;
+        }
+
+        _playerView.Dispose();
+        PlayerHost.Content = null;
+        PlayerHost.Visibility = Visibility.Collapsed;
+        _playerView = null;
+        NavPlayer.Visibility = Visibility.Collapsed;
+    }
 
     private void SyncSidebar(AppPage page)
     {
         var target = page switch
         {
+            AppPage.Player => NavPlayer,
             AppPage.Home => NavHome,
             AppPage.Search => NavSearch,
             AppPage.Live => NavLive,
@@ -141,6 +270,11 @@ public partial class MainWindow : Window, IAppHost
 
         if (target is not null)
         {
+            if (target == NavPlayer)
+            {
+                NavPlayer.Visibility = Visibility.Visible;
+            }
+
             target.IsChecked = true;
         }
     }
@@ -158,6 +292,10 @@ public partial class MainWindow : Window, IAppHost
         if (sender == NavHome)
         {
             Navigate(AppPage.Home);
+        }
+        else if (sender == NavPlayer)
+        {
+            Navigate(AppPage.Player);
         }
         else if (sender == NavSearch)
         {
@@ -201,6 +339,7 @@ public partial class MainWindow : Window, IAppHost
     {
         var page = _current switch
         {
+            PlayerView => AppPage.Player,
             HomeView => AppPage.Home,
             SearchView => AppPage.Search,
             LiveView => AppPage.Live,
@@ -243,6 +382,45 @@ public partial class MainWindow : Window, IAppHost
         _lastNotifiedSourceCount = Services.Sources.Count;
 
         Navigate(AppPage.Home);
+        _ = CheckForUpdatesOnStartupAsync();
+    }
+
+    private async Task CheckForUpdatesOnStartupAsync()
+    {
+        try
+        {
+            if (!Services.Updates.IsAutomaticCheckDue())
+            {
+                return;
+            }
+
+            var update = await Services.Updates.CheckForUpdateAsync();
+            if (update is null || !IsLoaded)
+            {
+                return;
+            }
+
+            if (_current is PlayerView)
+            {
+                Title = $"OpaiTV · 可更新至 {update.VersionText}";
+                return;
+            }
+
+            var result = MessageBox.Show(
+                this,
+                $"发现 OpaiTV {update.VersionText}，是否前往设置页下载并安装？",
+                "发现新版本",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Information);
+            if (result == MessageBoxResult.Yes)
+            {
+                Navigate(AppPage.Settings, update);
+            }
+        }
+        catch
+        {
+            // Automatic update checks never interrupt startup or playback.
+        }
     }
 
     private void OnAiSourcesFileChanged(AiSourceWatcher.ChangeKind kind)
@@ -282,7 +460,22 @@ public partial class MainWindow : Window, IAppHost
             Discard(_backStack.Pop());
         }
 
-        Discard(_current);
+        if (_current is PlayerView)
+        {
+            ClosePlayer();
+            _current = null;
+        }
+        else
+        {
+            Discard(_current);
+        }
+
+        // 播放页可能已经被侧栏隐藏，但仍需在应用退出时释放。
+        if (_playerView is not null)
+        {
+            ClosePlayer();
+        }
+
         Services.Dispose();
     }
 }

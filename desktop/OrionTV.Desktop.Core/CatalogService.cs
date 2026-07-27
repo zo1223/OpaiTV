@@ -14,7 +14,9 @@ public sealed record CatalogItem(
     int? TotalEpisodes = null,
     double PlayTime = 0,
     CatalogPlayabilityStatus PlayabilityStatus = CatalogPlayabilityStatus.Unknown,
-    int? PlayableSourceCount = null);
+    int? PlayableSourceCount = null,
+    IReadOnlyList<SearchResult>? CandidateSources = null,
+    IReadOnlyList<SearchResult>? PlayableSources = null);
 
 /// <summary>
 /// 编排层：移植自安卓 services/api.ts 的订阅模式数据流。
@@ -83,7 +85,29 @@ public sealed class CatalogService
         CancellationToken cancellationToken = default)
     {
         var perSource = await SearchSourcesConcurrentlyAsync(sources, query, cancellationToken).ConfigureAwait(false);
-        return perSource.SelectMany(items => items).Select(ToCatalogItem).ToList();
+        return perSource
+            .SelectMany(items => items)
+            .GroupBy(item => CatalogTitleMatcher.Normalize(item.Title), StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var matches = group.ToList();
+                var representative = matches.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Poster))
+                    ?? matches[0];
+                var candidates = matches
+                    .SelectMany(SearchResultSources.Expand)
+                    .GroupBy(SearchResultSources.SelectionKeyOf, StringComparer.Ordinal)
+                    .Select(items => items.First())
+                    .ToList();
+                return ToCatalogItem(representative) with
+                {
+                    PlayabilityStatus = candidates.Count > 0
+                        ? CatalogPlayabilityStatus.Available
+                        : CatalogPlayabilityStatus.Unavailable,
+                    PlayableSourceCount = candidates.Count,
+                    CandidateSources = candidates,
+                };
+            })
+            .ToList();
     }
 
     /// <summary>已知 source/id 时优先走单源 id 查询，避免进入详情页前再次全源搜索。</summary>
@@ -205,6 +229,7 @@ public sealed class CatalogService
             return item with
             {
                 Episodes = line.Episodes,
+                EpisodeLabels = line.EpisodeLabels,
                 PlaybackSources = match.PlaybackSources,
                 PlaybackSourceKey = line.PlaybackSourceKey ?? item.PlaybackSourceKey,
                 Poster = string.IsNullOrWhiteSpace(item.Poster) ? line.Poster : item.Poster,

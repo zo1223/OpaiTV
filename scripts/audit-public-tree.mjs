@@ -41,6 +41,7 @@ const secretPatterns = [
 ];
 
 const allowedHosts = new Set([
+  "api.github.com",
   "api.openai.com",
   "docs.expo.dev",
   "docs.expo.io",

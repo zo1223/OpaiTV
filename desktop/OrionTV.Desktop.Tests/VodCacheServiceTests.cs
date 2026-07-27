@@ -83,6 +83,38 @@ public sealed class VodCacheServiceTests
     }
 
     [Fact]
+    public async Task DownloadsSegmentsConcurrentlyWhileCommittingThemInOrder()
+    {
+        await using var upstream = new FakeHlsServer(delayAllSegments: true);
+        using var service = new VodCacheService();
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-parallel-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var session = await service.StartAsync(
+                upstream.PlaylistUrl,
+                "Parallel Episode",
+                root,
+                15);
+
+            Assert.NotNull(session);
+            await session!.DownloadTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(session.Progress.IsComplete);
+            Assert.InRange(upstream.MaxConcurrentSegmentRequests, 2, 4);
+            Assert.Equal(3, session.Progress.CompletedSegments);
+            Assert.Equal(3 * 1024, new FileInfo(session.MergedFilePath).Length);
+            var merged = await File.ReadAllBytesAsync(session.MergedFilePath);
+            Assert.All(merged[..1024], value => Assert.Equal((byte)1, value));
+            Assert.All(merged[1024..2048], value => Assert.Equal((byte)2, value));
+            Assert.All(merged[2048..], value => Assert.Equal((byte)3, value));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public async Task ResolvesRelativeSegmentsAgainstRedirectedPlaylistUrl()
     {
         // 模拟普通远程源：/source/xxx/play.m3u8 302 到 CDN 媒体清单，分片是相对路径。
@@ -603,13 +635,20 @@ public sealed class VodCacheServiceTests
         private readonly Task _loop;
         private readonly bool _delayThirdSegment;
         private readonly bool _redirectPlaylist;
+        private readonly bool _delayAllSegments;
         private readonly ConcurrentDictionary<string, int> _requestCounts = new(StringComparer.Ordinal);
         private int _playlistFailuresRemaining;
+        private int _activeSegmentRequests;
+        private int _maxConcurrentSegmentRequests;
 
-        internal FakeHlsServer(bool delayThirdSegment = false, bool redirectPlaylist = false)
+        internal FakeHlsServer(
+            bool delayThirdSegment = false,
+            bool redirectPlaylist = false,
+            bool delayAllSegments = false)
         {
             _delayThirdSegment = delayThirdSegment;
             _redirectPlaylist = redirectPlaylist;
+            _delayAllSegments = delayAllSegments;
             _listener.Start();
             var port = ((IPEndPoint)_listener.LocalEndpoint).Port;
             PlaylistUrl = $"http://127.0.0.1:{port}/playlist.m3u8";
@@ -619,6 +658,7 @@ public sealed class VodCacheServiceTests
 
         internal string PlaylistUrl { get; }
         internal string RedirectEntryUrl { get; }
+        internal int MaxConcurrentSegmentRequests => Volatile.Read(ref _maxConcurrentSegmentRequests);
 
         internal int SegmentRequestCount(int index)
         {
@@ -689,12 +729,33 @@ public sealed class VodCacheServiceTests
                 }
                 else
                 {
-                    if (_delayThirdSegment && path.Contains("seg3", StringComparison.Ordinal))
+                    var activeRequests = 0;
+                    if (_delayAllSegments)
                     {
-                        await Task.Delay(800);
+                        activeRequests = Interlocked.Increment(ref _activeSegmentRequests);
+                        UpdateMaximum(ref _maxConcurrentSegmentRequests, activeRequests);
                     }
-                    body = Enumerable.Repeat((byte)(path.Contains('1') ? 1 : path.Contains('2') ? 2 : 3), 1024).ToArray();
-                    type = "video/mp2t";
+
+                    try
+                    {
+                        if (_delayAllSegments)
+                        {
+                            await Task.Delay(300);
+                        }
+                        if (_delayThirdSegment && path.Contains("seg3", StringComparison.Ordinal))
+                        {
+                            await Task.Delay(800);
+                        }
+                        body = Enumerable.Repeat((byte)(path.Contains('1') ? 1 : path.Contains('2') ? 2 : 3), 1024).ToArray();
+                        type = "video/mp2t";
+                    }
+                    finally
+                    {
+                        if (activeRequests > 0)
+                        {
+                            Interlocked.Decrement(ref _activeSegmentRequests);
+                        }
+                    }
                 }
 
                 var locationHeader = location is null ? "" : $"Location: {location}\r\n";
@@ -718,6 +779,19 @@ public sealed class VodCacheServiceTests
                 if (Interlocked.CompareExchange(ref _playlistFailuresRemaining, remaining - 1, remaining) == remaining)
                 {
                     return true;
+                }
+            }
+        }
+
+        private static void UpdateMaximum(ref int target, int candidate)
+        {
+            while (true)
+            {
+                var current = Volatile.Read(ref target);
+                if (candidate <= current
+                    || Interlocked.CompareExchange(ref target, candidate, current) == current)
+                {
+                    return;
                 }
             }
         }

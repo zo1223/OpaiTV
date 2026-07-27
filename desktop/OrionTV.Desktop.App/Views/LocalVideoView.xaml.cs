@@ -646,6 +646,7 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
             return "—/s";
         }
 
-        return FormatSize(bytesPerSecond) + "/s";
+        var megabitsPerSecond = bytesPerSecond * 8d / 1_000_000d;
+        return $"{FormatSize(bytesPerSecond)}/s · {megabitsPerSecond:0.0} Mbps";
     }
 }

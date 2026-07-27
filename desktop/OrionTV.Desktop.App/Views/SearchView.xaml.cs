@@ -4,10 +4,11 @@ using OrionTV.Desktop.Core;
 
 namespace OrionTV.Desktop.App.Views;
 
-public partial class SearchView : UserControl, INavigationAware
+public partial class SearchView : UserControl, INavigationAware, IDisposable
 {
     private readonly IAppHost _host;
     private CancellationTokenSource? _cts;
+    private bool _disposed;
 
     public SearchView(IAppHost host)
     {
@@ -48,6 +49,7 @@ public partial class SearchView : UserControl, INavigationAware
         }
 
         _cts?.Cancel();
+        _cts?.Dispose();
         var cts = new CancellationTokenSource();
         _cts = cts;
 
@@ -72,5 +74,23 @@ public partial class SearchView : UserControl, INavigationAware
     }
 
     private void OnCardClicked(CatalogItem item) =>
-        _host.Navigate(AppPage.Detail, new DetailParameter(item.Title, item.Source, item.Id));
+        _host.Navigate(AppPage.Detail, new DetailParameter(
+            item.Title,
+            item.Source,
+            item.Id,
+            item.CandidateSources,
+            item.PlayableSources));
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _cts = null;
+    }
 }

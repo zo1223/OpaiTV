@@ -163,6 +163,9 @@ public sealed class LocalMediaLibraryTests
             Assert.Equal("Old Show", record.Title);
             Assert.Null(record.LocalMediaId);
             Assert.Null(record.LocalEpisodes);
+            Assert.Null(record.PlaybackSourceKey);
+            Assert.Null(record.EpisodeLabel);
+            Assert.Null(record.EpisodeNumber);
         }
         finally
         {

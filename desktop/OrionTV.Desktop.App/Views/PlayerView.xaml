@@ -5,9 +5,10 @@
              xmlns:local="clr-namespace:OrionTV.Desktop.App.LocalPlayback"
              Focusable="True"
              PreviewKeyDown="OnPreviewKeyDown">
-    <Grid Background="{StaticResource VideoBrush}">
-        <!-- 便携 mpv 内嵌宿主；仅本地文件播放时显示。 -->
-        <local:MpvHost x:Name="LocalVideoHost" Visibility="Collapsed" />
+    <Grid Background="{StaticResource VideoBrush}" ClipToBounds="True">
+        <!-- Hidden 仍参与完整布局，mpv 可在首帧输出前完成 HWND 创建和尺寸同步。 -->
+        <local:MpvHost x:Name="LocalVideoHost" Visibility="Hidden"
+                       IsHitTestVisible="False" SnapsToDevicePixels="True" />
 
         <!-- 所有 overlay 必须作为 VideoView 的 Content（绕开 LibVLCSharp.WPF 的 airspace；
              根容器使用近透明背景 #01000000 才能接收鼠标事件）。 -->
@@ -17,7 +18,7 @@
                   MouseWheel="Overlay_MouseWheel">
 
                 <!-- 加载 / 缓冲 -->
-                <Border x:Name="LoadingOverlay" Background="#66000000" Visibility="Collapsed">
+                <Border x:Name="LoadingOverlay" Background="{StaticResource VideoBrush}" Visibility="Collapsed">
                     <StackPanel Margin="24" HorizontalAlignment="Center" VerticalAlignment="Center">
                         <ProgressBar Width="300" Height="4" Margin="0,0,0,18"
                                      HorizontalAlignment="Center" IsIndeterminate="True"
@@ -61,7 +62,10 @@
                     </Border.Background>
                     <DockPanel>
                         <Button x:Name="BackButton" DockPanel.Dock="Left" Style="{StaticResource IconButtonStyle}" Content="&#xE72B;" Click="BackButton_Click" ToolTip="返回 (Esc)" />
-                        <Button x:Name="EpisodesButton" DockPanel.Dock="Right" Style="{StaticResource SecondaryButtonStyle}" Height="38" Padding="14,0" Content="选集 / 换源" Click="EpisodesButton_Click" />
+                        <Button x:Name="EpisodesButton" DockPanel.Dock="Right" Style="{StaticResource SecondaryButtonStyle}" Height="38" MinWidth="58" Padding="14,0" Content="选集" Click="EpisodesButton_Click" />
+                        <Button x:Name="SourceSwitchButton" DockPanel.Dock="Right" Style="{StaticResource SecondaryButtonStyle}"
+                                Height="38" MinWidth="58" Padding="14,0" Margin="0,0,8,0" Content="换源"
+                                Visibility="Collapsed" Click="SourceSwitchButton_Click" />
                         <TextBlock x:Name="TitleText" Foreground="White" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Margin="8,0" TextTrimming="CharacterEllipsis" />
                     </DockPanel>
                 </Border>
@@ -110,22 +114,49 @@
                     </Grid>
                 </Border>
 
-                <!-- 选集 / 换源 侧栏 -->
+                <!-- 选集侧栏 -->
                 <Border x:Name="SidePanel" HorizontalAlignment="Right" Width="320" Background="#F2151718"
                         BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1,0,0,0" Visibility="Collapsed"
                         MouseEnter="Bar_MouseEnter" MouseLeave="Bar_MouseLeave">
                     <DockPanel Margin="14">
                         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
                             <Button DockPanel.Dock="Right" Style="{StaticResource IconButtonStyle}" Content="&#xE711;" Click="EpisodesButton_Click" />
-                            <TextBlock Text="选集 / 换源" Foreground="{StaticResource TextBrush}" FontSize="16" FontWeight="Bold" VerticalAlignment="Center" />
+                            <TextBlock Text="选集" Foreground="{StaticResource TextBrush}" FontSize="16" FontWeight="Bold" VerticalAlignment="Center" />
                         </DockPanel>
-
-                        <TextBlock DockPanel.Dock="Top" Text="播放源" Foreground="{StaticResource SoftTextBrush}" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,6" />
-                        <WrapPanel x:Name="SourceBar" DockPanel.Dock="Top" Margin="0,0,0,12" />
 
                         <TextBlock DockPanel.Dock="Top" Text="剧集" Foreground="{StaticResource SoftTextBrush}" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,6" />
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <WrapPanel x:Name="EpisodeBar" />
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+
+                <!-- 历史播放的当前集实时换源侧栏 -->
+                <Border x:Name="SourceSwitchPanel" HorizontalAlignment="Right" Width="420" Background="#F2151718"
+                        BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1,0,0,0" Visibility="Collapsed"
+                        MouseEnter="Bar_MouseEnter" MouseLeave="Bar_MouseLeave">
+                    <DockPanel Margin="14">
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButtonStyle}" Content="&#xE711;"
+                                    Click="SourceSwitchButton_Click" ToolTip="关闭" />
+                            <TextBlock Text="更换播放源" Foreground="{StaticResource TextBrush}" FontSize="16"
+                                       FontWeight="Bold" VerticalAlignment="Center" />
+                        </DockPanel>
+
+                        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                            <TextBlock x:Name="SourceSwitchEpisodeText" Foreground="{StaticResource SoftTextBrush}"
+                                       FontSize="13" TextWrapping="Wrap" Margin="0,0,0,10" />
+                            <DockPanel LastChildFill="True">
+                                <Button x:Name="SourceScanButton" DockPanel.Dock="Right"
+                                        Style="{StaticResource SecondaryButtonStyle}" Height="36" Padding="12,0"
+                                        Content="重新测速" Click="SourceScanButton_Click" />
+                                <TextBlock x:Name="SourceScanSummaryText" Foreground="{StaticResource MutedTextBrush}"
+                                           FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,10,0" />
+                            </DockPanel>
+                        </StackPanel>
+
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="SourceSwitchList" />
                         </ScrollViewer>
                     </DockPanel>
                 </Border>

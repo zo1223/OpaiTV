@@ -9,7 +9,7 @@ using System.Windows.Threading;
 namespace OrionTV.Desktop.App.LocalPlayback;
 
 /// <summary>
-/// 本地专用播放引擎：嵌入式便携 mpv（FFmpeg demux + d3d11va 硬解）。
+/// 本地专用播放引擎：内嵌便携 mpv（FFmpeg demux + d3d11va 硬解）。
 /// 通过 --wid 画到宿主 HWND，IPC 控制 seek/音量/暂停。不依赖 PATH（优先应用目录 mpv\mpv.exe）。
 /// </summary>
 public sealed class MpvLocalEngine : IDisposable
@@ -46,6 +46,11 @@ public sealed class MpvLocalEngine : IDisposable
     private bool _mute;
     private bool _paused;
     private bool _fullscreen;
+    private bool _mediaLoaded;
+    private bool _hasVideoOutput;
+    private long _nextRequestId;
+    private long _pendingVideoOutputRequestId;
+    private int _pendingVideoOutputGeneration;
 
     public MpvLocalEngine(IntPtr wid, Dispatcher dispatcher)
     {
@@ -64,12 +69,14 @@ public sealed class MpvLocalEngine : IDisposable
     public event EventHandler<long>? LengthChanged;
     public event EventHandler? EndReached;
     public event EventHandler<bool>? FullscreenChanged;
+    public event EventHandler<bool>? VideoOutputChanged;
 
     public PlaybackState State => _state;
     public long Length => Interlocked.Read(ref _lengthMs);
     public long Time => Interlocked.Read(ref _timeMs);
     public bool IsPlaying => _state == PlaybackState.Playing;
     public bool Fullscreen => Volatile.Read(ref _fullscreen);
+    public bool HasVideoOutput => Volatile.Read(ref _hasVideoOutput);
 
     public int Volume
     {
@@ -148,6 +155,9 @@ public sealed class MpvLocalEngine : IDisposable
         var requestedFullscreen = Fullscreen;
         var generation = Interlocked.Increment(ref _generation);
         ClearPendingSeeks();
+        Volatile.Write(ref _mediaLoaded, false);
+        Interlocked.Exchange(ref _pendingVideoOutputRequestId, 0);
+        SetVideoOutput(false);
         SetState(PlaybackState.Opening);
 
         var localPath = ToLocalPath(pathOrUrl);
@@ -163,14 +173,9 @@ public sealed class MpvLocalEngine : IDisposable
             return;
         }
 
-        await SendCommandAsync(["loadfile", localPath, "replace"], cancellationToken).ConfigureAwait(false);
-        if (startMs > 0)
-        {
-            await SendCommandAsync(
-                    ["seek", (startMs / 1000d).ToString("0.###", CultureInfo.InvariantCulture), "absolute+exact"],
-                    cancellationToken)
-                .ConfigureAwait(false);
-        }
+        Interlocked.Exchange(ref _timeMs, 0);
+        Interlocked.Exchange(ref _lengthMs, 0);
+        await SendCommandAsync(BuildLoadCommand(localPath, startMs), cancellationToken).ConfigureAwait(false);
 
         await SetPropertyAsync("volume", _volume, cancellationToken).ConfigureAwait(false);
         await SetPropertyAsync("mute", _mute, cancellationToken).ConfigureAwait(false);
@@ -178,7 +183,6 @@ public sealed class MpvLocalEngine : IDisposable
         await SetPropertyAsync("fullscreen", requestedFullscreen, cancellationToken).ConfigureAwait(false);
         await SetPropertyAsync("pause", false, cancellationToken).ConfigureAwait(false);
         _paused = false;
-        SetState(PlaybackState.Playing);
     }
 
     public void TogglePlayPause()
@@ -244,6 +248,8 @@ public sealed class MpvLocalEngine : IDisposable
     public void Stop()
     {
         ClearPendingSeeks();
+        Volatile.Write(ref _mediaLoaded, false);
+        SetVideoOutput(false);
         _ = SendCommandAsync(["stop"]);
         Interlocked.Exchange(ref _timeMs, 0);
         SetState(PlaybackState.Idle);
@@ -357,6 +363,7 @@ public sealed class MpvLocalEngine : IDisposable
         await SendCommandAsync(["observe_property", 3, "pause"], cancellationToken).ConfigureAwait(false);
         await SendCommandAsync(["observe_property", 4, "eof-reached"], cancellationToken).ConfigureAwait(false);
         await SendCommandAsync(["observe_property", 5, "fullscreen"], cancellationToken).ConfigureAwait(false);
+        await SendCommandAsync(["observe_property", 6, "vo-configured"], cancellationToken).ConfigureAwait(false);
 
         _observeCts = new CancellationTokenSource();
         _observeTask = Task.Run(() => ObserveLoopAsync(_observeCts.Token), CancellationToken.None);
@@ -369,6 +376,7 @@ public sealed class MpvLocalEngine : IDisposable
         "--force-window=no",
         "--keep-open=yes",
         "--fullscreen=no",
+        "--mute=no",
         "--osc=no",
         "--osd-level=1",
         "--no-border",
@@ -384,6 +392,24 @@ public sealed class MpvLocalEngine : IDisposable
         "--input-default-bindings=no",
         $"--input-ipc-server={pipePath}",
     ];
+
+    internal static object[] BuildLoadCommand(string localPath, long startMs)
+    {
+        if (startMs <= 0)
+        {
+            return ["loadfile", localPath, "replace"];
+        }
+
+        var startSeconds = (startMs / 1000d).ToString("0.###", CultureInfo.InvariantCulture);
+        return
+        [
+            "loadfile",
+            localPath,
+            "replace",
+            -1,
+            new Dictionary<string, string> { ["start"] = startSeconds },
+        ];
+    }
 
     private static async Task DrainOutputAsync(StreamReader reader, CancellationToken cancellationToken)
     {
@@ -444,7 +470,36 @@ public sealed class MpvLocalEngine : IDisposable
             {
                 using var doc = JsonDocument.Parse(line);
                 var root = doc.RootElement;
-                if (!root.TryGetProperty("event", out var evt) || evt.GetString() != "property-change")
+                if (!root.TryGetProperty("event", out var evt))
+                {
+                    ApplyVideoOutputResponse(root);
+                    continue;
+                }
+
+                var eventName = evt.GetString();
+                if (eventName == "file-loaded")
+                {
+                    Volatile.Write(ref _mediaLoaded, true);
+                    SetState(_paused ? PlaybackState.Paused : PlaybackState.Playing);
+                    await QueryVideoOutputAsync(Volatile.Read(ref _generation), cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
+
+                if (eventName == "end-file")
+                {
+                    Volatile.Write(ref _mediaLoaded, false);
+                    SetVideoOutput(false);
+                    if (root.TryGetProperty("reason", out var reason)
+                        && reason.GetString() == "error")
+                    {
+                        SetState(PlaybackState.Error);
+                    }
+
+                    continue;
+                }
+
+                if (eventName != "property-change")
                 {
                     continue;
                 }
@@ -481,7 +536,10 @@ public sealed class MpvLocalEngine : IDisposable
                     }
                     case "pause" when data.ValueKind is JsonValueKind.True or JsonValueKind.False:
                         _paused = data.GetBoolean();
-                        Post(() => SetState(_paused ? PlaybackState.Paused : PlaybackState.Playing));
+                        if (Volatile.Read(ref _mediaLoaded))
+                        {
+                            SetState(_paused ? PlaybackState.Paused : PlaybackState.Playing);
+                        }
                         break;
                     case "eof-reached" when data.ValueKind == JsonValueKind.True:
                         Post(() =>
@@ -497,6 +555,9 @@ public sealed class MpvLocalEngine : IDisposable
                         Post(() => FullscreenChanged?.Invoke(this, fullscreen));
                         break;
                     }
+                    case "vo-configured" when data.ValueKind is JsonValueKind.True or JsonValueKind.False:
+                        SetVideoOutput(data.GetBoolean());
+                        break;
                 }
             }
             catch
@@ -507,6 +568,54 @@ public sealed class MpvLocalEngine : IDisposable
 
     private Task SetPropertyAsync(string name, object value, CancellationToken cancellationToken = default) =>
         SendCommandAsync(["set_property", name, value], cancellationToken);
+
+    private Task QueryVideoOutputAsync(int generation, CancellationToken cancellationToken)
+    {
+        if (generation != Volatile.Read(ref _generation))
+        {
+            return Task.CompletedTask;
+        }
+
+        var requestId = Interlocked.Increment(ref _nextRequestId);
+        Volatile.Write(ref _pendingVideoOutputGeneration, generation);
+        Interlocked.Exchange(ref _pendingVideoOutputRequestId, requestId);
+        return SendCommandAsync(
+            ["get_property", "vo-configured"],
+            cancellationToken,
+            requestId);
+    }
+
+    private void ApplyVideoOutputResponse(JsonElement root)
+    {
+        var requestId = Interlocked.Read(ref _pendingVideoOutputRequestId);
+        if (requestId == 0
+            || !TryReadBooleanResponse(root, requestId, out var available)
+            || Interlocked.CompareExchange(ref _pendingVideoOutputRequestId, 0, requestId) != requestId
+            || Volatile.Read(ref _pendingVideoOutputGeneration) != Volatile.Read(ref _generation))
+        {
+            return;
+        }
+
+        SetVideoOutput(available);
+    }
+
+    internal static bool TryReadBooleanResponse(JsonElement root, long expectedRequestId, out bool value)
+    {
+        value = false;
+        if (!root.TryGetProperty("request_id", out var requestId)
+            || !requestId.TryGetInt64(out var actualRequestId)
+            || actualRequestId != expectedRequestId
+            || !root.TryGetProperty("error", out var error)
+            || error.GetString() != "success"
+            || !root.TryGetProperty("data", out var data)
+            || data.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            return false;
+        }
+
+        value = data.GetBoolean();
+        return true;
+    }
 
     private async Task FlushPendingSeeksAsync()
     {
@@ -570,7 +679,10 @@ public sealed class MpvLocalEngine : IDisposable
         }
     }
 
-    private async Task SendCommandAsync(object[] command, CancellationToken cancellationToken = default)
+    private async Task SendCommandAsync(
+        object[] command,
+        CancellationToken cancellationToken = default,
+        long? requestId = null)
     {
         var gateEntered = false;
         try
@@ -589,7 +701,9 @@ public sealed class MpvLocalEngine : IDisposable
                 return;
             }
 
-            var payload = JsonSerializer.Serialize(new { command });
+            var payload = requestId.HasValue
+                ? JsonSerializer.Serialize(new { command, request_id = requestId.Value })
+                : JsonSerializer.Serialize(new { command });
             await writer.WriteLineAsync(payload.AsMemory(), cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -636,6 +750,17 @@ public sealed class MpvLocalEngine : IDisposable
 
         _state = state;
         Post(() => StateChanged?.Invoke(this, state));
+    }
+
+    private void SetVideoOutput(bool available)
+    {
+        if (Volatile.Read(ref _hasVideoOutput) == available)
+        {
+            return;
+        }
+
+        Volatile.Write(ref _hasVideoOutput, available);
+        Post(() => VideoOutputChanged?.Invoke(this, available));
     }
 
     private void Post(Action action)

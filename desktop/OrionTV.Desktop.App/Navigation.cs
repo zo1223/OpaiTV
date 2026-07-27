@@ -35,8 +35,34 @@ public interface INavigationAware
     void OnNavigatedTo(object? parameter);
 }
 
-/// <summary>详情页导航参数（对齐安卓 detail 的 q/source/id）。</summary>
-public sealed record DetailParameter(string Title, string? Source = null, string? Id = null);
+public sealed record PlaybackResumeContext(
+    int EpisodeIndex,
+    double PositionMs,
+    string? EpisodeLabel = null,
+    int? EpisodeNumber = null,
+    string? HistorySource = null,
+    string? HistoryId = null)
+{
+    public double StartPositionMs => PlaybackResumePolicy.StartPositionMilliseconds(PositionMs);
+
+    public int FindEpisodeIndex(IReadOnlyList<string>? episodeLabels, int episodeCount) =>
+        PlaybackResumePolicy.FindEpisodeIndex(
+            episodeLabels,
+            episodeCount,
+            EpisodeIndex,
+            EpisodeLabel,
+            EpisodeNumber);
+}
+
+/// <summary>详情页导航参数（对齐安卓 detail 的 q/source/id，并携带同一轮源验证快照）。</summary>
+public sealed record DetailParameter(
+    string Title,
+    string? Source = null,
+    string? Id = null,
+    IReadOnlyList<SearchResult>? CandidateSources = null,
+    IReadOnlyList<SearchResult>? PlayableSources = null,
+    string? PlaybackSourceKey = null,
+    PlaybackResumeContext? Resume = null);
 
 /// <summary>播放页导航参数。</summary>
 public sealed record PlayParameter(
@@ -49,4 +75,6 @@ public sealed record PlayParameter(
     double PositionMs,
     IReadOnlyList<SearchResult> AltSources,
     string Poster = "",
-    string? PlaybackSourceKey = null);
+    string? PlaybackSourceKey = null,
+    IReadOnlyList<string>? EpisodeLabels = null,
+    PlaybackResumeContext? Resume = null);

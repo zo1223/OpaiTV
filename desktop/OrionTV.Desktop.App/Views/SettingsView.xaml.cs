@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
@@ -14,6 +16,8 @@ public partial class SettingsView : UserControl, INavigationAware
 {
     private readonly IAppHost _host;
     private readonly ObservableCollection<DesktopLiveSource> _additionalLiveSources = [];
+    private DesktopUpdateInfo? _availableUpdate;
+    private bool _updateBusy;
     private bool _loaded;
 
     public SettingsView(IAppHost host)
@@ -27,6 +31,9 @@ public partial class SettingsView : UserControl, INavigationAware
     public void OnNavigatedTo(object? parameter)
     {
         _loaded = false;
+        CurrentVersionText.Text = $"当前版本 {DesktopUpdateService.CurrentVersionText}";
+        _availableUpdate = parameter as DesktopUpdateInfo ?? _host.Services.Updates.AvailableUpdate;
+        RenderUpdateState();
         var settings = _host.Services.Settings;
         ApiBox.Text = settings.ApiBaseUrl;
         SubBox.Text = settings.SubscriptionUrl;
@@ -55,6 +62,150 @@ public partial class SettingsView : UserControl, INavigationAware
         SaveButton.IsEnabled = false;
         StatusText.Text = "";
         _loaded = true;
+    }
+
+    private async void CheckUpdateButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_updateBusy)
+        {
+            return;
+        }
+
+        if (_availableUpdate is not null)
+        {
+            await DownloadAndInstallUpdateAsync(_availableUpdate);
+            return;
+        }
+
+        SetUpdateBusy(true);
+        UpdateStatusText.Text = "正在检查更新…";
+        UpdateNotesText.Visibility = Visibility.Collapsed;
+        try
+        {
+            _availableUpdate = await _host.Services.Updates.CheckForUpdateAsync();
+            if (_availableUpdate is null)
+            {
+                UpdateStatusText.Text = "当前已是最新版本";
+            }
+            else
+            {
+                RenderUpdateState();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            UpdateStatusText.Text = "检查超时，请稍后重试";
+        }
+        catch (HttpRequestException)
+        {
+            UpdateStatusText.Text = "无法连接 GitHub，请检查网络后重试";
+        }
+        catch
+        {
+            UpdateStatusText.Text = "检查更新失败，请稍后重试";
+        }
+        finally
+        {
+            SetUpdateBusy(false);
+        }
+    }
+
+    private async Task DownloadAndInstallUpdateAsync(DesktopUpdateInfo update)
+    {
+        var confirmation = MessageBox.Show(
+            Window.GetWindow(this),
+            $"将下载 OpaiTV {update.VersionText}（{DesktopUpdateService.FormatFileSize(update.InstallerSize)}）。\n\n下载完成后软件会自动退出、安装并重新启动。是否继续？",
+            "安装更新",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (confirmation != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        SetUpdateBusy(true);
+        UpdateProgressBar.Value = 0;
+        UpdateProgressBar.Visibility = Visibility.Visible;
+        UpdateStatusText.Text = "正在下载安装包…";
+        try
+        {
+            var progress = new Progress<int>(value =>
+            {
+                UpdateProgressBar.Value = value;
+                UpdateStatusText.Text = $"正在下载安装包… {value}%";
+            });
+            var installerPath = await _host.Services.Updates.DownloadAndVerifyAsync(update, progress);
+
+            UpdateStatusText.Text = "正在备份视频源配置…";
+            _ = DesktopUpdateService.BackupUserConfiguration(update.VersionText);
+
+            UpdateStatusText.Text = "正在启动安装程序…";
+            DesktopUpdateService.LaunchInstaller(installerPath);
+            Application.Current.Shutdown();
+        }
+        catch (Win32Exception exception) when (exception.NativeErrorCode == 1223)
+        {
+            UpdateStatusText.Text = "已取消安装";
+        }
+        catch (OperationCanceledException)
+        {
+            UpdateStatusText.Text = "下载已取消";
+        }
+        catch (InvalidDataException)
+        {
+            UpdateStatusText.Text = "安装包校验失败，未执行更新";
+        }
+        catch (HttpRequestException)
+        {
+            UpdateStatusText.Text = "安装包下载失败，请检查网络后重试";
+        }
+        catch
+        {
+            UpdateStatusText.Text = "更新失败，当前版本未被修改";
+        }
+        finally
+        {
+            SetUpdateBusy(false);
+        }
+    }
+
+    private void RenderUpdateState()
+    {
+        if (_availableUpdate is null)
+        {
+            CheckUpdateButton.Content = "检查更新";
+            UpdateStatusText.Text = "";
+            UpdateNotesText.Text = "";
+            UpdateNotesText.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        CheckUpdateButton.Content = "下载并安装";
+        UpdateStatusText.Text = $"发现新版本 {_availableUpdate.VersionText} · {DesktopUpdateService.FormatFileSize(_availableUpdate.InstallerSize)}";
+        var notes = NormalizeReleaseNotes(_availableUpdate.ReleaseNotes);
+        UpdateNotesText.Text = notes;
+        UpdateNotesText.Visibility = string.IsNullOrWhiteSpace(notes) ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void SetUpdateBusy(bool busy)
+    {
+        _updateBusy = busy;
+        CheckUpdateButton.IsEnabled = !busy;
+        if (!busy)
+        {
+            CheckUpdateButton.Content = _availableUpdate is null ? "检查更新" : "下载并安装";
+        }
+    }
+
+    private static string NormalizeReleaseNotes(string notes)
+    {
+        if (string.IsNullOrWhiteSpace(notes))
+        {
+            return "";
+        }
+
+        var normalized = notes.Replace("\r\n", "\n").Trim();
+        return normalized.Length <= 600 ? normalized : normalized[..600] + "…";
     }
 
     private void SelectTranslationProvider(string? provider)

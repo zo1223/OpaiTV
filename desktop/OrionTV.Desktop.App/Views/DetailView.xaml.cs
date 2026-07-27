@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using OrionTV.Desktop.Core;
 
 namespace OrionTV.Desktop.App.Views;
@@ -15,10 +16,14 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
     private List<SearchResult> _remoteResults = new();
     private List<SearchResult> _searchResults = new();
     private SearchResult? _selected;
-    private readonly Dictionary<string, ChannelHealthResult> _health = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, VodSourceHealthResult> _health = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RadioButton> _sourceChips = new(StringComparer.Ordinal);
     private readonly Dictionary<int, Button> _downloadButtons = new();
+    private VodCacheLookup _cacheLookup = VodCacheLookup.Empty;
+    private Task? _cacheRefreshTask;
+    private CancellationTokenSource? _loadCts;
     private CancellationTokenSource? _scanCts;
+    private PlaybackResumeContext? _resumeContext;
     private bool _disposed;
     private bool _listeningDownloads;
 
@@ -31,8 +36,13 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
 
     public void OnNavigatedTo(object? parameter)
     {
+        _loadCts?.Cancel();
+        _loadCts?.Dispose();
+        _loadCts = null;
         _scanCts?.Cancel();
         _health.Clear();
+        _cacheLookup = VodCacheLookup.Empty;
+        _cacheRefreshTask = null;
         EnsureDownloadListener();
         if (parameter is not DetailParameter request)
         {
@@ -41,12 +51,15 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         }
 
         _title = request.Title;
+        _resumeContext = request.Resume;
         Header.Title = request.Title;
         ShowMessage("加载中…");
-        _ = LoadAsync(request);
+        var cts = new CancellationTokenSource();
+        _loadCts = cts;
+        _ = LoadAsync(request, cts.Token);
     }
 
-    private async Task LoadAsync(DetailParameter request)
+    private async Task LoadAsync(DetailParameter request, CancellationToken cancellationToken)
     {
         if (!_host.Services.HasSources)
         {
@@ -54,53 +67,97 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             return;
         }
 
-        var preferred = await _host.Services.Catalog.GetPreferredDetailSourcesAsync(
-            _host.Services.Sources,
-            request.Source,
-            request.Id,
-            request.Title);
-        if (preferred.Count > 0)
-        {
-            ShowResults(preferred, preferred[0]);
-            _ = LoadAllSourcesAsync(request.Title, preferred, false);
-            return;
-        }
+        await Dispatcher.Yield(DispatcherPriority.Render);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        await LoadAllSourcesAsync(request.Title, [], true);
-    }
-
-    private async Task LoadAllSourcesAsync(
-        string title,
-        IReadOnlyList<SearchResult> preferred,
-        bool showErrors)
-    {
         try
         {
-            var results = await _host.Services.Catalog.GetDetailSourcesAsync(_host.Services.Sources, title);
-            var merged = MergeSources(preferred, results);
-            if (merged.Count == 0)
+            if (request.PlayableSources is { } verifiedSnapshot)
             {
-                if (showErrors)
+                if (ShowSources(request, verifiedSnapshot))
                 {
-                    ShowMessage($"未找到\"{title}\" 的播放源，请检查标题或稍后重试");
+                    StartDetailBackgroundWork(cancellationToken);
                 }
-
                 return;
             }
 
-            var selected = _selected is not null && !IsLocalSource(_selected)
-                ? merged.FirstOrDefault(result =>
-                    SearchResultSources.SelectionKeyOf(result) == SearchResultSources.SelectionKeyOf(_selected))
-                : null;
-            ShowResults(merged, selected ?? preferred.FirstOrDefault() ?? merged[0]);
+            IReadOnlyList<SearchResult>? candidates = request.CandidateSources;
+            if (candidates is null)
+            {
+                var sourceSnapshot = _host.Services.Sources;
+                if (!string.IsNullOrWhiteSpace(request.Source)
+                    && !string.IsNullOrWhiteSpace(request.Id))
+                {
+                    var preferredTask = _host.Services.Catalog.GetPreferredDetailSourcesAsync(
+                        sourceSnapshot,
+                        request.Source,
+                        request.Id,
+                        request.Title,
+                        cancellationToken);
+                    var allTask = _host.Services.Catalog.GetDetailSourcesAsync(
+                        sourceSnapshot,
+                        request.Title,
+                        cancellationToken);
+                    await Task.WhenAll(preferredTask, allTask);
+                    candidates = MergeSources(
+                        await preferredTask,
+                        await allTask);
+                }
+                else
+                {
+                    candidates = await _host.Services.Catalog.GetDetailSourcesAsync(
+                        sourceSnapshot,
+                        request.Title,
+                        cancellationToken);
+                }
+            }
+
+            if (cancellationToken.IsCancellationRequested || _disposed)
+            {
+                return;
+            }
+
+            if (ShowSources(request, candidates))
+            {
+                StartDetailBackgroundWork(cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
         }
         catch
         {
-            if (showErrors)
+            if (!cancellationToken.IsCancellationRequested && !_disposed)
             {
                 ShowMessage("加载失败，请稍后重试");
             }
         }
+    }
+
+    private bool ShowSources(
+        DetailParameter request,
+        IReadOnlyList<SearchResult> sources)
+    {
+        if (sources.Count == 0)
+        {
+            ShowMessage($"未找到\"{request.Title}\" 的播放源");
+            return false;
+        }
+
+        var selected = sources.FirstOrDefault(item =>
+                string.Equals(item.Source, request.Source, StringComparison.Ordinal)
+                && string.Equals(item.Id, request.Id, StringComparison.Ordinal)
+                && (string.IsNullOrWhiteSpace(request.PlaybackSourceKey)
+                    || string.Equals(
+                        item.PlaybackSourceKey,
+                        request.PlaybackSourceKey,
+                        StringComparison.Ordinal)))
+            ?? sources.FirstOrDefault(item =>
+                string.Equals(item.Source, request.Source, StringComparison.Ordinal)
+                && string.Equals(item.Id, request.Id, StringComparison.Ordinal))
+            ?? sources[0];
+        ShowResults(sources, selected);
+        return true;
     }
 
     private static List<SearchResult> MergeSources(
@@ -179,12 +236,11 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             return null;
         }
 
-        var cacheDirectory = _host.Services.Settings.VodCacheDirectory;
         var episodes = new string[maxEpisodes];
         var completed = 0;
         for (var index = 0; index < maxEpisodes; index++)
         {
-            var path = FindCompletedPath(remotes, index, cacheDirectory);
+            var path = FindCompletedPath(remotes, index);
             if (string.IsNullOrWhiteSpace(path))
             {
                 episodes[index] = "";
@@ -209,10 +265,11 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             SourceName: $"本地已下载 · {completed}集",
             Year: template.Year,
             Description: template.Description,
-            TypeName: template.TypeName);
+            TypeName: template.TypeName,
+            EpisodeLabels: template.EpisodeLabels);
     }
 
-    private string? FindCompletedPath(IReadOnlyList<SearchResult> remotes, int episodeIndex, string cacheDirectory)
+    private string? FindCompletedPath(IReadOnlyList<SearchResult> remotes, int episodeIndex)
     {
         var cacheTitle = CacheTitleOf(episodeIndex);
         foreach (var remote in remotes)
@@ -222,17 +279,14 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
                 continue;
             }
 
-            var path = _host.Services.VodCache.FindCompletedPlaybackPath(
-                cacheDirectory,
-                remote.Episodes[episodeIndex],
-                cacheTitle);
-            if (!string.IsNullOrWhiteSpace(path))
+            var entry = _cacheLookup.FindCompleted(cacheTitle, remote.Episodes[episodeIndex]);
+            if (entry is not null)
             {
-                return path;
+                return entry.PlaylistPath;
             }
         }
 
-        return _host.Services.VodCache.FindCompletedPlaybackPath(cacheDirectory, "", cacheTitle);
+        return _cacheLookup.FindCompleted(cacheTitle, "")?.PlaylistPath;
     }
 
     private static string CacheTitleOf(string seriesTitle, int episodeIndex) =>
@@ -288,7 +342,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         YearText.Text = result.Year ?? "";
         TypeText.Text = result.TypeName ?? "";
         DescText.Text = result.Description ?? "";
-        BuildEpisodes(result.Episodes);
+        BuildEpisodes(result);
         BuildDownloadBar();
         if (!IsLocalSource(result))
         {
@@ -333,7 +387,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             }
 
             _selected = hydrated;
-            BuildEpisodes(hydrated.Episodes);
+            BuildEpisodes(hydrated);
             BuildDownloadBar();
             if (_sourceChips.TryGetValue(key, out var chip))
             {
@@ -402,16 +456,18 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         }
     }
 
-    private void BuildEpisodes(IReadOnlyList<string> episodes)
+    private void BuildEpisodes(SearchResult result)
     {
         EpisodeBar.Children.Clear();
-        for (var index = 0; index < episodes.Count; index++)
+        var resumeEpisodeIndex = ResumeEpisodeIndexOf(result);
+        for (var index = 0; index < result.Episodes.Count; index++)
         {
-            var hasUrl = !string.IsNullOrWhiteSpace(episodes[index]);
+            var hasUrl = !string.IsNullOrWhiteSpace(result.Episodes[index]);
+            var isResumeEpisode = index == resumeEpisodeIndex;
             var button = new Button
             {
-                Content = $"第{index + 1} 集",
-                Style = (Style)FindResource(hasUrl ? "SecondaryButtonStyle" : "SecondaryButtonStyle"),
+                Content = EpisodeLabelFormatter.DisplayAt(result.EpisodeLabels, index),
+                Style = (Style)FindResource(isResumeEpisode ? "PrimaryButtonStyle" : "SecondaryButtonStyle"),
                 Height = 38,
                 MinWidth = 64,
                 Padding = new Thickness(12, 0, 12, 0),
@@ -420,7 +476,11 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
                 Tag = index,
                 IsEnabled = hasUrl,
                 Opacity = hasUrl ? 1 : 0.45,
-                ToolTip = hasUrl ? "播放" : "本集尚未下载完成",
+                ToolTip = !hasUrl
+                    ? "本集暂无播放地址"
+                    : isResumeEpisode
+                        ? $"从 {FormatResumeTime(_resumeContext!.StartPositionMs)} 继续播放"
+                        : "播放",
             };
             button.Click += EpisodeButton_Click;
             EpisodeBar.Children.Add(button);
@@ -486,20 +546,10 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         }
 
         var url = index < remote.Episodes.Count ? remote.Episodes[index] : "";
-        var completedPath = _host.Services.VodCache.FindCompletedPlaybackPath(
-            _host.Services.Settings.VodCacheDirectory,
-            url,
-            cacheTitle);
-        var completed = !string.IsNullOrWhiteSpace(completedPath);
-        if (completed)
+        var completedEntry = _cacheLookup.FindCompleted(cacheTitle, url);
+        if (completedEntry is not null)
         {
-            var directory = _host.Services.VodCache.FindCompletedDirectory(
-                _host.Services.Settings.VodCacheDirectory,
-                url,
-                cacheTitle);
-            var canDecrypt = !string.IsNullOrWhiteSpace(directory)
-                && _host.Services.VodCache.CanDecryptMerge(directory!);
-            if (canDecrypt)
+            if (completedEntry.CanDecryptMerge)
             {
                 button.Style = (Style)FindResource("PrimaryButtonStyle");
                 button.Content = $"第{index + 1}集 · 解密合并";
@@ -547,7 +597,8 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             return;
         }
 
-        // 播放页只接收当前选中源 + 全部源列表；本地源也作为 AltSources 的一项出现。
+        var resume = index == ResumeEpisodeIndexOf(_selected) ? _resumeContext : null;
+        // 备用源只供失败后返回详情时展示，不在播放器内自动换源。
         _host.Navigate(AppPage.Player, new PlayParameter(
             _selected.Title,
             _selected.Source,
@@ -555,10 +606,21 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             _selected.Id,
             _selected.Episodes,
             index,
-            0,
+            resume?.StartPositionMs ?? 0,
             _searchResults,
             _selected.Poster,
-            _selected.PlaybackSourceKey));
+            _selected.PlaybackSourceKey,
+            _selected.EpisodeLabels,
+            resume));
+    }
+
+    private int ResumeEpisodeIndexOf(SearchResult result) =>
+        _resumeContext?.FindEpisodeIndex(result.EpisodeLabels, result.Episodes.Count) ?? -1;
+
+    private static string FormatResumeTime(double positionMs)
+    {
+        var time = TimeSpan.FromMilliseconds(Math.Max(0, positionMs));
+        return time.TotalHours >= 1 ? time.ToString(@"h\:mm\:ss") : time.ToString(@"mm\:ss");
     }
 
     private async void DownloadEpisodeButton_Click(object sender, RoutedEventArgs e)
@@ -646,12 +708,8 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
                 .ConfigureAwait(true);
             DownloadStatusText.Text =
                 $"第{episodeIndex + 1} 集已解密合并（{new FileInfo(path).Length / 1024d / 1024d:0.0} MB）";
-            RefreshLocalSourceInList();
-            if (GetDownloadSource() is { } current
-                && _downloadButtons.TryGetValue(episodeIndex, out var doneButton))
-            {
-                ApplyDownloadButtonState(doneButton, current, episodeIndex);
-            }
+            var token = _loadCts?.Token ?? CancellationToken.None;
+            QueueCacheLookupRefresh(token);
         }
         catch (Exception error)
         {
@@ -689,12 +747,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
                     continue;
                 }
 
-                var completed = !string.IsNullOrWhiteSpace(
-                    _host.Services.VodCache.FindCompletedPlaybackPath(
-                        _host.Services.Settings.VodCacheDirectory,
-                        url,
-                        cacheTitle));
-                if (completed)
+                if (_cacheLookup.FindCompleted(cacheTitle, url) is not null)
                 {
                     continue;
                 }
@@ -803,9 +856,11 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             if (_host.Services.Downloads.GetJobs().Any(job =>
                     job.Status == VodDownloadJobStatus.Completed
                     && (job.Title.StartsWith(_title + " ", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(job.Title, _title, StringComparison.OrdinalIgnoreCase))))
+                        || string.Equals(job.Title, _title, StringComparison.OrdinalIgnoreCase))
+                    && _cacheLookup.FindCompleted(job.Title, "") is null))
             {
-                RefreshLocalSourceInList();
+                var token = _loadCts?.Token ?? CancellationToken.None;
+                QueueCacheLookupRefresh(token);
             }
         });
     }
@@ -853,11 +908,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         var completed = 0;
         for (var index = 0; index < remote.Episodes.Count; index++)
         {
-            if (!string.IsNullOrWhiteSpace(
-                    _host.Services.VodCache.FindCompletedPlaybackPath(
-                        _host.Services.Settings.VodCacheDirectory,
-                        remote.Episodes[index],
-                        CacheTitleOf(index))))
+            if (_cacheLookup.FindCompleted(CacheTitleOf(index), remote.Episodes[index]) is not null)
             {
                 completed++;
             }
@@ -890,7 +941,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             if (local is not null)
             {
                 _selected = local;
-                BuildEpisodes(local.Episodes);
+                BuildEpisodes(local);
             }
         }
     }
@@ -906,10 +957,20 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
     {
         var baseName = string.IsNullOrWhiteSpace(result.SourceName) ? result.Source : result.SourceName;
         var label = result.Episodes.Count > 1
-            ? $"{baseName} · {result.Episodes.Count}集"
+            ? $"{baseName} · {EpisodeSummary(result)}"
             : result.Episodes.Count == 0 && !IsLocalSource(result)
                 ? $"{baseName} · 待解析"
                 : baseName;
+        if (_resumeContext is not null && ResumeEpisodeIndexOf(result) < 0)
+        {
+            var target = !string.IsNullOrWhiteSpace(_resumeContext.EpisodeLabel)
+                ? _resumeContext.EpisodeLabel
+                : _resumeContext.EpisodeNumber is > 0
+                    ? $"第{_resumeContext.EpisodeNumber}集"
+                    : "续播目标集";
+            return $"{label} · 缺少{target}";
+        }
+
         if (IsLocalSource(result))
         {
             return label;
@@ -920,11 +981,29 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             return label;
         }
 
-        var metrics = ChannelHealthDisplay.MetricsLabelOf(health);
-        return $"{label} · {metrics}";
+        return $"{label} · {health.DisplayLabel}";
     }
 
-    private async void ScanButton_Click(object sender, RoutedEventArgs e)
+    private static string EpisodeSummary(SearchResult result)
+    {
+        var latestNumber = 0;
+        if (result.EpisodeLabels is not null)
+        {
+            foreach (var episodeLabel in result.EpisodeLabels)
+            {
+                if (EpisodeLabelFormatter.TryGetNumber(episodeLabel, out var number))
+                {
+                    latestNumber = Math.Max(latestNumber, number);
+                }
+            }
+        }
+
+        return latestNumber > 0 && latestNumber != result.Episodes.Count
+            ? $"更新至{latestNumber}集"
+            : $"{result.Episodes.Count}集";
+    }
+
+    private void ScanButton_Click(object sender, RoutedEventArgs e)
     {
         if (_scanCts is not null)
         {
@@ -932,12 +1011,21 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             return;
         }
 
+        StartSourceScan();
+    }
+
+    private void StartSourceScan()
+    {
+        if (_disposed || _scanCts is not null)
+        {
+            return;
+        }
+
         var items = _searchResults
             .Where(result =>
                 !IsLocalSource(result)
                 && result.Episodes.Count > 0
-                && !string.IsNullOrWhiteSpace(result.Episodes[0]))
-            .Select(result => (Key: SearchResultSources.SelectionKeyOf(result), Url: result.Episodes[0]))
+                && result.Episodes.Any(episode => !string.IsNullOrWhiteSpace(episode)))
             .ToList();
         if (items.Count == 0)
         {
@@ -947,14 +1035,101 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         var cts = new CancellationTokenSource();
         _scanCts = cts;
         _health.Clear();
-        BuildSourceChips(_selected ?? _searchResults[0]);
+        RefreshSourceChipLabels();
         ScanButton.Content = $"测速中 0/{items.Count}";
         ScanSummaryText.Text = "";
+        _ = RunSourceScanAsync(items, cts);
+    }
+
+    private void StartDetailBackgroundWork(CancellationToken cancellationToken)
+    {
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Background,
+            new Action(StartSourceScan));
+        QueueCacheLookupRefresh(cancellationToken);
+    }
+
+    private void QueueCacheLookupRefresh(CancellationToken cancellationToken)
+    {
+        if (_cacheRefreshTask is { IsCompleted: false })
+        {
+            return;
+        }
+
+        _cacheRefreshTask = RefreshCacheLookupAsync(cancellationToken);
+    }
+
+    private async Task RefreshCacheLookupAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var cacheDirectory = _host.Services.Settings.VodCacheDirectory;
+            var lookup = await Task.Run(
+                () => VodCacheLookup.FromEntries(_host.Services.VodCache.GetEntries(cacheDirectory)),
+                cancellationToken);
+            if (cancellationToken.IsCancellationRequested || _disposed)
+            {
+                return;
+            }
+
+            _cacheLookup = lookup;
+            if (HasCompletedCachedEpisode())
+            {
+                RefreshLocalSourceInList();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch
+        {
+            // 缓存索引失败不影响在线播放与测速。
+        }
+    }
+
+    private bool HasCompletedCachedEpisode()
+    {
+        var maxEpisodes = _remoteResults.Count == 0
+            ? 0
+            : _remoteResults.Max(result => result.Episodes.Count);
+        for (var index = 0; index < maxEpisodes; index++)
+        {
+            if (_cacheLookup.FindCompleted(CacheTitleOf(index), "") is not null)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void RefreshSourceChipLabels()
+    {
+        foreach (var chip in _sourceChips.Values)
+        {
+            if (chip.Tag is SearchResult source)
+            {
+                chip.Content = SourceLabel(source);
+            }
+        }
+    }
+
+    private async Task RunSourceScanAsync(
+        IReadOnlyList<SearchResult> items,
+        CancellationTokenSource cts)
+    {
         var done = 0;
 
         try
         {
-            await _host.Services.ChannelHealth.ProbeManyAsync(
+            Func<SearchResult, int?>? preferredEpisodeIndex = _resumeContext is null
+                ? null
+                : source =>
+                {
+                    var index = ResumeEpisodeIndexOf(source);
+                    return index >= 0 ? index : null;
+                };
+            await _host.Services.VodSourceHealth.ProbeManyAsync(
                 items,
                 (key, result) => Dispatcher.Invoke(() =>
                 {
@@ -971,8 +1146,9 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
                     }
                     ScanButton.Content = $"测速中 {done}/{items.Count}";
                 }),
-                concurrency: 5,
-                cts.Token);
+                concurrency: 4,
+                cts.Token,
+                preferredEpisodeIndex);
         }
         catch (OperationCanceledException)
         {
@@ -984,7 +1160,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             {
                 _scanCts = null;
                 ScanButton.Content = "测速";
-                ScanSummaryText.Text = ChannelHealthDisplay.SummaryOf(_health.Values);
+                ScanSummaryText.Text = VodSourceHealthDisplay.SummaryOf(_health.Values);
             }
             cts.Dispose();
         }
@@ -1047,6 +1223,9 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         _scanCts?.Cancel();
         _scanCts?.Dispose();
         _scanCts = null;
+        _loadCts?.Cancel();
+        _loadCts?.Dispose();
+        _loadCts = null;
 
         // 离开详情页：询问是否后台继续；选否则取消本片相关任务。
         if (activeJobs.Count > 0 && !string.IsNullOrWhiteSpace(_title))

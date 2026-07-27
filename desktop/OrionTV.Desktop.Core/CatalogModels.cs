@@ -12,6 +12,7 @@ public enum CatalogPlayabilityStatus
 {
     Unknown,
     Checking,
+    Available,
     Playable,
     Unavailable,
 }
@@ -40,28 +41,40 @@ public static class CatalogTitleMatcher
             : new string(value.Trim().ToLowerInvariant().Where(c => !char.IsWhiteSpace(c)).ToArray());
 }
 
-public sealed record CatalogPlayability(CatalogPlayabilityStatus Status, int PlayableSourceCount)
+public sealed record CatalogPlayability(
+    CatalogPlayabilityStatus Status,
+    int PlayableSourceCount,
+    IReadOnlyList<SearchResult>? CandidateSources = null)
 {
     /// <summary>
-    /// 与详情页播放源列表同口径计数：
+    /// 海报使用的候选线路计数，不执行 HTTP 媒体校验或播放器解码：
     /// - 标题用 <see cref="CatalogTitleMatcher"/>（与 GetDetailSourcesAsync 一致）
     /// - 去重用 SelectionKey（source+id+线路），与详情 chip 一致
     /// - 保留无剧集条目（TVBox search 常无 play_url，详情页再补拉）
-    /// 匹配到任意源即 Playable，数字 = 详情页可展示的源数。
+    /// 匹配到任意线路即 Available；进入详情后再从这些候选中筛选真正可播线路。
     /// </summary>
     public static CatalogPlayability FromDetailSources(string title, IEnumerable<SearchResult> results)
     {
-        var sourceCount = results
+        var candidates = results
             .SelectMany(SearchResultSources.Expand)
             .Where(item => CatalogTitleMatcher.Matches(item.Title, title))
-            .Select(SearchResultSources.SelectionKeyOf)
-            .Distinct(StringComparer.Ordinal)
-            .Count();
+            .GroupBy(SearchResultSources.SelectionKeyOf, StringComparer.Ordinal)
+            .Select(items => items.First())
+            .ToList();
 
         return new CatalogPlayability(
-            sourceCount > 0 ? CatalogPlayabilityStatus.Playable : CatalogPlayabilityStatus.Unavailable,
-            sourceCount);
+            candidates.Count > 0 ? CatalogPlayabilityStatus.Available : CatalogPlayabilityStatus.Unavailable,
+            candidates.Count,
+            candidates);
     }
+
+    public CatalogItem ApplyTo(CatalogItem item) => item with
+    {
+        PlayabilityStatus = Status,
+        PlayableSourceCount = PlayableSourceCount,
+        CandidateSources = CandidateSources,
+        PlayableSources = null,
+    };
 }
 
 public static class CatalogPlayabilityBadge
@@ -69,16 +82,19 @@ public static class CatalogPlayabilityBadge
     public static string? GetLabel(CatalogPlayabilityStatus status, int? playableSourceCount) =>
         status switch
         {
-            CatalogPlayabilityStatus.Playable when playableSourceCount.GetValueOrDefault() > 0 =>
+            CatalogPlayabilityStatus.Available or CatalogPlayabilityStatus.Playable
+                when playableSourceCount.GetValueOrDefault() > 0 =>
                 $"{playableSourceCount.GetValueOrDefault()}\u6e90",
+            CatalogPlayabilityStatus.Available => "0\u6e90",
             CatalogPlayabilityStatus.Playable => "\u53ef\u64ad",
             CatalogPlayabilityStatus.Unavailable => "\u6682\u65e0\u8d44\u6e90",
+            CatalogPlayabilityStatus.Checking => "\u68c0\u6d4b\u4e2d",
             _ => null,
         };
 }
 
 /// <summary>
-/// 当前应用会话内的豆瓣可播性结果缓存。
+/// 当前应用会话内的首页候选线路计数与快照缓存。
 /// 首页视图会在切换顶层页面时销毁，结果不能只放在卡片对象里。
 /// </summary>
 public sealed class CatalogPlayabilityCache
@@ -115,7 +131,7 @@ public sealed class CatalogPlayabilityCache
 
     public bool Store(CatalogItem item, CatalogPlayability playability, int generation)
     {
-        if (playability.Status is not (CatalogPlayabilityStatus.Playable or CatalogPlayabilityStatus.Unavailable))
+        if (playability.Status is not (CatalogPlayabilityStatus.Available or CatalogPlayabilityStatus.Unavailable))
         {
             return false;
         }
@@ -195,7 +211,109 @@ public sealed record PlayRecordItem(
     string Year,
     long SaveTime = 0,
     string? LocalMediaId = null,
-    IReadOnlyList<string>? LocalEpisodes = null);
+    IReadOnlyList<string>? LocalEpisodes = null,
+    string? PlaybackSourceKey = null,
+    string? EpisodeLabel = null,
+    int? EpisodeNumber = null);
+
+public static class PlaybackResumePolicy
+{
+    public const double RewindMilliseconds = 10_000;
+
+    public static double StartPositionMilliseconds(double savedPositionMilliseconds) =>
+        Math.Max(0, savedPositionMilliseconds - RewindMilliseconds);
+
+    public static int FindEpisodeIndex(
+        IReadOnlyList<string>? episodeLabels,
+        int episodeCount,
+        int fallbackIndex,
+        string? savedEpisodeLabel,
+        int? savedEpisodeNumber)
+    {
+        if (episodeCount <= 0)
+        {
+            return -1;
+        }
+
+        if (!string.IsNullOrWhiteSpace(savedEpisodeLabel) && episodeLabels is not null)
+        {
+            var label = savedEpisodeLabel.Trim();
+            for (var index = 0; index < Math.Min(episodeLabels.Count, episodeCount); index++)
+            {
+                if (string.Equals(episodeLabels[index]?.Trim(), label, StringComparison.OrdinalIgnoreCase))
+                {
+                    return index;
+                }
+            }
+        }
+
+        if (savedEpisodeNumber is > 0)
+        {
+            var hasNumberedLabels = false;
+            if (episodeLabels is not null)
+            {
+                for (var index = 0; index < Math.Min(episodeLabels.Count, episodeCount); index++)
+                {
+                    if (!EpisodeLabelFormatter.TryGetNumber(episodeLabels[index], out var number))
+                    {
+                        continue;
+                    }
+
+                    hasNumberedLabels = true;
+                    if (number == savedEpisodeNumber.Value)
+                    {
+                        return index;
+                    }
+                }
+            }
+
+            if (!hasNumberedLabels && savedEpisodeNumber.Value <= episodeCount)
+            {
+                return savedEpisodeNumber.Value - 1;
+            }
+
+            return -1;
+        }
+
+        return Math.Clamp(fallbackIndex, 0, episodeCount - 1);
+    }
+
+    public static SearchResult? FindOriginalPlaybackLine(
+        IEnumerable<SearchResult> results,
+        string id,
+        string? playbackSourceKey,
+        string? savedSourceName = null)
+    {
+        var matches = results.Where(result => result.Id == id).ToList();
+        if (matches.Count == 0)
+        {
+            matches = results.ToList();
+        }
+
+        var lines = matches.SelectMany(SearchResultSources.Expand).ToList();
+        if (!string.IsNullOrWhiteSpace(playbackSourceKey))
+        {
+            return lines.FirstOrDefault(result =>
+                string.Equals(
+                    result.PlaybackSourceKey,
+                    playbackSourceKey,
+                    StringComparison.Ordinal));
+        }
+
+        if (string.IsNullOrWhiteSpace(savedSourceName))
+        {
+            return null;
+        }
+
+        var expectedSourceName = savedSourceName.Trim();
+        return lines.FirstOrDefault(result =>
+            result.Episodes.Count > 0
+            && string.Equals(
+                result.SourceName.Trim(),
+                expectedSourceName,
+                StringComparison.OrdinalIgnoreCase));
+    }
+}
 
 /// <summary>直播频道（对齐安卓 m3u Channel）。</summary>
 public sealed record LiveChannel(
@@ -302,15 +420,13 @@ public enum PlaybackStartupSignal
     Paused,
     Ended,
     TimeAdvanced,
+    VideoOutputStarted,
     Error,
 }
 
 public static class PlaybackStartupPolicy
 {
     public static bool ResolvesStartup(PlaybackStartupSignal signal) =>
-        signal is PlaybackStartupSignal.Playing
-            or PlaybackStartupSignal.Paused
-            or PlaybackStartupSignal.Ended
-            or PlaybackStartupSignal.TimeAdvanced
+        signal is PlaybackStartupSignal.VideoOutputStarted
             or PlaybackStartupSignal.Error;
 }

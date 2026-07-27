@@ -75,7 +75,16 @@ public static class AppleCmsUrlBuilder
 
 public static class AppleCmsEpisodeParser
 {
+    private sealed record ParsedEpisode(string Label, string Url);
+
     public static IReadOnlyList<string> Parse(string? playUrl, string? baseUrl = null)
+    {
+        return ParseEpisodes(playUrl, baseUrl)
+            .Select(episode => episode.Url)
+            .ToList();
+    }
+
+    private static IReadOnlyList<ParsedEpisode> ParseEpisodes(string? playUrl, string? baseUrl = null)
     {
         if (string.IsNullOrWhiteSpace(playUrl))
         {
@@ -89,23 +98,24 @@ public static class AppleCmsEpisodeParser
         }
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        var urls = new List<string>();
+        var episodes = new List<ParsedEpisode>();
         foreach (var group in playUrl.Split("$$$", StringSplitOptions.None))
         {
             foreach (var episode in group.Split('#', StringSplitOptions.RemoveEmptyEntries))
             {
                 var separatorIndex = episode.IndexOf('$');
+                var label = separatorIndex >= 0 ? episode[..separatorIndex].Trim() : "";
                 var raw = (separatorIndex >= 0 ? episode[(separatorIndex + 1)..] : episode).Trim();
                 if (TryResolvePlayUrl(raw, baseUri) is not { } url || !seen.Add(url))
                 {
                     continue;
                 }
 
-                urls.Add(url);
+                episodes.Add(new ParsedEpisode(label, url));
             }
         }
 
-        return urls;
+        return episodes;
     }
 
     public static IReadOnlyList<PlaybackSource> ParseSources(string? playFrom, string? playUrl, string? baseUrl = null)
@@ -120,7 +130,8 @@ public static class AppleCmsEpisodeParser
         var result = new List<PlaybackSource>();
         for (var index = 0; index < groups.Length; index++)
         {
-            var episodes = Parse(groups[index], baseUrl);
+            var parsedEpisodes = ParseEpisodes(groups[index], baseUrl);
+            var episodes = parsedEpisodes.Select(episode => episode.Url).ToList();
             if (episodes.Count == 0)
             {
                 continue;
@@ -129,10 +140,52 @@ public static class AppleCmsEpisodeParser
             var name = index < names.Length && !string.IsNullOrWhiteSpace(names[index])
                 ? names[index].Trim()
                 : $"线路 {index + 1}";
-            result.Add(new PlaybackSource($"{index}:{name}", name, episodes));
+            var labels = parsedEpisodes.Select(episode => episode.Label).ToList();
+            result.Add(new PlaybackSource(
+                $"{index}:{name}",
+                name,
+                episodes,
+                labels.Any(label => !string.IsNullOrWhiteSpace(label)) ? labels : null));
         }
 
-        return result;
+        return result
+            .Where(candidate => !result.Any(direct => IsMatchingDirectHlsRoute(candidate, direct)))
+            .ToList();
+    }
+
+    private static bool IsMatchingDirectHlsRoute(PlaybackSource candidate, PlaybackSource direct)
+    {
+        if (ReferenceEquals(candidate, direct)
+            || candidate.Episodes.Count == 0
+            || candidate.Episodes.Count != direct.Episodes.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < candidate.Episodes.Count; index++)
+        {
+            if (!IsDirectHlsVariant(candidate.Episodes[index], direct.Episodes[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsDirectHlsVariant(string pageUrl, string directUrl)
+    {
+        if (!Uri.TryCreate(pageUrl, UriKind.Absolute, out var page)
+            || !Uri.TryCreate(directUrl, UriKind.Absolute, out var direct)
+            || !string.Equals(page.Scheme, direct.Scheme, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(page.Host, direct.Host, StringComparison.OrdinalIgnoreCase)
+            || page.Port != direct.Port)
+        {
+            return false;
+        }
+
+        var expectedPath = page.AbsolutePath.TrimEnd('/') + "/index.m3u8";
+        return string.Equals(expectedPath, direct.AbsolutePath, StringComparison.Ordinal);
     }
 
     /// <summary>将相对播放地址解析为绝对 URL；无法解析则返回 null。</summary>
@@ -199,6 +252,7 @@ public static class SearchResultSources
             .Select(playbackSource => result with
             {
                 Episodes = playbackSource.Episodes,
+                EpisodeLabels = playbackSource.EpisodeLabels,
                 SourceName = $"{result.SourceName} · {playbackSource.Name}",
                 PlaybackSourceKey = playbackSource.Key,
             })
@@ -223,7 +277,8 @@ public static class AppleCmsMapper
             Description: item.VodBlurb ?? item.VodContent ?? item.VodRemarks,
             TypeName: item.TypeName,
             Class: item.VodClass,
-            PlaybackSources: playbackSources.Count > 0 ? playbackSources : null);
+            PlaybackSources: playbackSources.Count > 0 ? playbackSources : null,
+            EpisodeLabels: playbackSources.FirstOrDefault()?.EpisodeLabels);
     }
 
     public static VideoDetail ToVideoDetail(VideoSource source, AppleCmsVodItem item)

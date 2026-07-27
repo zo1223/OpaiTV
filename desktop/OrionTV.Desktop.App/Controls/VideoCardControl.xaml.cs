@@ -47,18 +47,26 @@ public partial class VideoCardControl : UserControl
         ImageLoader.SetSourceUrl(PosterImage, item.Poster);
         TitleText.Text = item.Title;
 
-        var playabilityLabel = item.Source == "douban"
-            ? CatalogPlayabilityBadge.GetLabel(item.PlayabilityStatus, item.PlayableSourceCount)
-            : null;
+        var playabilityLabel = CatalogPlayabilityBadge.GetLabel(
+            item.PlayabilityStatus,
+            item.PlayableSourceCount);
         if (!string.IsNullOrWhiteSpace(playabilityLabel))
         {
             SourceText.Text = playabilityLabel;
-            SourceBadge.Background = item.PlayabilityStatus == CatalogPlayabilityStatus.Playable
-                ? new SolidColorBrush(Color.FromArgb(0xCC, 0x00, 0xA8, 0x62))
-                : new SolidColorBrush(Color.FromArgb(0xCC, 0x7F, 0x1D, 0x1D));
+            SourceBadge.Background = item.PlayabilityStatus switch
+            {
+                CatalogPlayabilityStatus.Playable =>
+                    new SolidColorBrush(Color.FromArgb(0xCC, 0x00, 0xA8, 0x62)),
+                CatalogPlayabilityStatus.Available or CatalogPlayabilityStatus.Checking =>
+                    new SolidColorBrush(Color.FromArgb(0xCC, 0x34, 0x3A, 0x3C)),
+                _ => new SolidColorBrush(Color.FromArgb(0xCC, 0x7F, 0x1D, 0x1D)),
+            };
             SourceBadge.Visibility = Visibility.Visible;
         }
-        else if (!string.IsNullOrWhiteSpace(item.SourceName) && item.Source != "douban")
+        else if (!string.IsNullOrWhiteSpace(item.SourceName)
+            && item.Source != "douban"
+            && item.CandidateSources is null
+            && item.PlayabilityStatus != CatalogPlayabilityStatus.Checking)
         {
             SourceText.Text = item.SourceName;
             SourceBadge.Background = new SolidColorBrush(Color.FromArgb(0xB3, 0x00, 0x00, 0x00));

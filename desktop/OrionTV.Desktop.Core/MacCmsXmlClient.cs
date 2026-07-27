@@ -192,17 +192,17 @@ public sealed class MacCmsXmlClient(HttpClient httpClient) : IVodSourceClient
                 baseUrl);
 
             results.Add(new SearchResult(
-                id.Trim(),
-                name.Trim(),
-                AppleCmsEpisodeParser.TryResolvePlayUrl(pic, baseUri) ?? pic ?? "",
-                playbackSources.FirstOrDefault()?.Episodes ?? AppleCmsEpisodeParser.Parse(playUrl, baseUrl),
-                source.Key,
-                source.Name,
-                year ?? "",
-                des,
-                typeName,
-                null,
-                playbackSources.Count > 0 ? playbackSources : null));
+                Id: id.Trim(),
+                Title: name.Trim(),
+                Poster: AppleCmsEpisodeParser.TryResolvePlayUrl(pic, baseUri) ?? pic ?? "",
+                Episodes: playbackSources.FirstOrDefault()?.Episodes ?? AppleCmsEpisodeParser.Parse(playUrl, baseUrl),
+                Source: source.Key,
+                SourceName: source.Name,
+                Year: year ?? "",
+                Description: des,
+                TypeName: typeName,
+                PlaybackSources: playbackSources.Count > 0 ? playbackSources : null,
+                EpisodeLabels: playbackSources.FirstOrDefault()?.EpisodeLabels));
         }
 
         return results;

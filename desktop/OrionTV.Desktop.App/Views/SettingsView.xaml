@@ -15,6 +15,30 @@
             <StackPanel MaxWidth="720" HorizontalAlignment="Stretch">
                 <Border Style="{StaticResource CardPanelStyle}">
                     <StackPanel>
+                        <DockPanel>
+                            <Button x:Name="CheckUpdateButton" DockPanel.Dock="Right" Content="检查更新"
+                                    Width="128" Height="38" Margin="14,0,0,0"
+                                    Style="{StaticResource SecondaryButtonStyle}" Click="CheckUpdateButton_Click" />
+                            <StackPanel>
+                                <TextBlock Text="软件更新" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" />
+                                <TextBlock x:Name="CurrentVersionText" Foreground="{StaticResource MutedTextBrush}"
+                                           FontSize="12" Margin="0,5,0,0" />
+                            </StackPanel>
+                        </DockPanel>
+                        <ProgressBar x:Name="UpdateProgressBar" Height="5" Minimum="0" Maximum="100"
+                                     Margin="0,14,0,0" Foreground="{StaticResource PrimaryBrush}"
+                                     Background="{StaticResource InputBrush}" BorderThickness="0"
+                                     Visibility="Collapsed" />
+                        <TextBlock x:Name="UpdateStatusText" Foreground="{StaticResource MutedTextBrush}"
+                                   FontSize="12" Margin="0,9,0,0" TextWrapping="Wrap" />
+                        <TextBlock x:Name="UpdateNotesText" Foreground="{StaticResource SoftTextBrush}"
+                                   FontSize="12" Margin="0,8,0,0" TextWrapping="Wrap"
+                                   Visibility="Collapsed" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <StackPanel>
                         <TextBlock Text="API 地址" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,10" />
                         <TextBox x:Name="ApiBox" Tag="输入服务器地址（可选）" TextChanged="OnFieldChanged" />
                     </StackPanel>

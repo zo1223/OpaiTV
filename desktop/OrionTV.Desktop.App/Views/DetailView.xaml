@@ -42,7 +42,7 @@
                     <StackPanel Orientation="Horizontal" Margin="0,26,0,10">
                         <Rectangle Width="4" Height="16" RadiusX="2" RadiusY="2" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Center" />
                         <TextBlock x:Name="SourcesHeader" Text="选择播放源" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" Margin="8,0,0,0" />
-                        <Button x:Name="ScanButton" Style="{StaticResource SecondaryButtonStyle}" Height="32" Padding="14,0" Margin="12,0,0,0" FontSize="13" Content="测速" Click="ScanButton_Click" ToolTip="检测各播放线路的延迟和速率" />
+                        <Button x:Name="ScanButton" Style="{StaticResource SecondaryButtonStyle}" Height="32" Padding="14,0" Margin="12,0,0,0" FontSize="13" Content="测速" Click="ScanButton_Click" ToolTip="检测各播放线路的延迟和速率；Mbps 是兆比特/秒，2 Mbps 约等于 244 KB/s" />
                         <TextBlock x:Name="ScanSummaryText" Foreground="{StaticResource MutedTextBrush}" FontSize="13" Margin="10,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                     <WrapPanel x:Name="SourceBar" />

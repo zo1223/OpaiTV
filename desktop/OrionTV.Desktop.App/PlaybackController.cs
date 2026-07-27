@@ -32,7 +32,13 @@ public sealed class PlaybackController : IDisposable
     private Media? _currentMedia;
     private long _pendingSeekMs;
     private int _pendingSeekGeneration;
+    private int _pendingSeekAttempts;
+    private DateTimeOffset _lastPendingSeekAttemptAt;
     private int _generation;
+    private int _activeMediaGeneration;
+    private int _volume = 100;
+    private bool _mute;
+    private volatile bool _hasVideoOutput;
     private volatile bool _disposed;
     private Task? _disposeTask;
     private readonly object _disposeSync = new();
@@ -51,6 +57,7 @@ public sealed class PlaybackController : IDisposable
         });
         _player.Playing += (_, _) => Post(() =>
         {
+            ApplyAudioState();
             ApplyPendingSeek();
             SetState(PlaybackState.Playing);
         });
@@ -68,9 +75,26 @@ public sealed class PlaybackController : IDisposable
                 SetState(PlaybackState.Playing);
             }
 
+            ConfirmOrRetryPendingSeek(e.Time);
             TimeChanged?.Invoke(this, e.Time);
         });
-        _player.LengthChanged += (_, e) => Post(() => LengthChanged?.Invoke(this, e.Length));
+        _player.LengthChanged += (_, e) => Post(() =>
+        {
+            LengthChanged?.Invoke(this, e.Length);
+            ApplyPendingSeek();
+        });
+        _player.Vout += (_, e) =>
+        {
+            var generation = Volatile.Read(ref _activeMediaGeneration);
+            var hasVideoOutput = e.Count > 0;
+            Post(() =>
+            {
+                if (generation == _generation)
+                {
+                    SetVideoOutput(hasVideoOutput);
+                }
+            });
+        };
     }
 
     public MediaPlayer Player => _player;
@@ -82,6 +106,7 @@ public sealed class PlaybackController : IDisposable
     public event EventHandler<long>? TimeChanged;
     public event EventHandler<long>? LengthChanged;
     public event EventHandler? EndReached;
+    public event EventHandler<bool>? VideoOutputChanged;
 
     public long Length => _player.Length;
 
@@ -99,16 +124,26 @@ public sealed class PlaybackController : IDisposable
 
     public bool IsPlaying => _player.IsPlaying;
 
+    public bool HasVideoOutput => _hasVideoOutput;
+
     public int Volume
     {
-        get => _player.Volume < 0 ? 0 : _player.Volume;
-        set => _player.Volume = Math.Clamp(value, 0, 100);
+        get => _volume;
+        set
+        {
+            _volume = Math.Clamp(value, 0, 100);
+            _player.Volume = _volume;
+        }
     }
 
     public bool Mute
     {
-        get => _player.Mute;
-        set => _player.Mute = value;
+        get => _mute;
+        set
+        {
+            _mute = value;
+            _player.Mute = value;
+        }
     }
 
     /// <summary>切换到新地址播放（线程安全、按代次防抖）。startMs 为起播位置（用于续播）。</summary>
@@ -122,6 +157,9 @@ public sealed class PlaybackController : IDisposable
         var generation = ++_generation;
         _pendingSeekMs = startMs;
         _pendingSeekGeneration = generation;
+        _pendingSeekAttempts = 0;
+        _lastPendingSeekAttemptAt = DateTimeOffset.MinValue;
+        SetVideoOutput(false);
         SetState(PlaybackState.Opening);
 
         Task.Run(() =>
@@ -137,6 +175,7 @@ public sealed class PlaybackController : IDisposable
                 try
                 {
                     _player.Stop();
+                    Volatile.Write(ref _activeMediaGeneration, generation);
                     var media = new Media(_libVlc, uri);
                     foreach (var option in PlaybackMediaOptions.ForUri(uri, networkCachingMs))
                     {
@@ -187,7 +226,9 @@ public sealed class PlaybackController : IDisposable
     public void Stop()
     {
         // 作废仍在排队的 SwitchTo 与未消费的续播 seek:Stop 之后不得再开播旧请求。
-        _generation++;
+        var generation = ++_generation;
+        Volatile.Write(ref _activeMediaGeneration, generation);
+        SetVideoOutput(false);
         Task.Run(() =>
         {
             lock (_sync)
@@ -210,15 +251,70 @@ public sealed class PlaybackController : IDisposable
 
         if (_pendingSeekMs > 0)
         {
-            _player.Time = _pendingSeekMs;
-            _pendingSeekMs = 0;
+            var length = _player.Length;
+            if (length <= 0 || _pendingSeekAttempts >= 3)
+            {
+                return;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (_pendingSeekAttempts > 0
+                && now - _lastPendingSeekAttemptAt < TimeSpan.FromMilliseconds(500))
+            {
+                return;
+            }
+
+            var target = Math.Clamp(_pendingSeekMs, 0, Math.Max(0, length - 1000));
+            _player.Time = target;
+            _pendingSeekAttempts++;
+            _lastPendingSeekAttemptAt = now;
         }
+    }
+
+    private void ApplyAudioState()
+    {
+        _player.Volume = _volume;
+        _player.Mute = _mute;
+    }
+
+    private void ConfirmOrRetryPendingSeek(long currentTimeMs)
+    {
+        if (_pendingSeekGeneration != _generation || _pendingSeekMs <= 0)
+        {
+            return;
+        }
+
+        var length = _player.Length;
+        if (length <= 0)
+        {
+            return;
+        }
+
+        var target = Math.Clamp(_pendingSeekMs, 0, Math.Max(0, length - 1000));
+        if (currentTimeMs >= Math.Max(0, target - 3000))
+        {
+            _pendingSeekMs = 0;
+            return;
+        }
+
+        ApplyPendingSeek();
     }
 
     private void SetState(PlaybackState state)
     {
         State = state;
         StateChanged?.Invoke(this, state);
+    }
+
+    private void SetVideoOutput(bool available)
+    {
+        if (_hasVideoOutput == available)
+        {
+            return;
+        }
+
+        _hasVideoOutput = available;
+        VideoOutputChanged?.Invoke(this, available);
     }
 
     private void Post(Action action)

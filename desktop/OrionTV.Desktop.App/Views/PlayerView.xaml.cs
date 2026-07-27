@@ -3,11 +3,103 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using OrionTV.Desktop.Core;
 using OrionTV.Desktop.App.LocalPlayback;
 
 namespace OrionTV.Desktop.App.Views;
+
+internal enum PlayerShortcutCommand
+{
+    TogglePlayPause,
+    SeekBackward,
+    SeekForward,
+    VolumeUp,
+    VolumeDown,
+    ToggleFullscreen,
+    ToggleMute,
+    Escape,
+}
+
+internal static class PlayerShortcutMap
+{
+    internal static bool TryResolve(Key key, ModifierKeys modifiers, out PlayerShortcutCommand command)
+    {
+        command = default;
+        if (modifiers != ModifierKeys.None)
+        {
+            return false;
+        }
+
+        command = key switch
+        {
+            Key.Space => PlayerShortcutCommand.TogglePlayPause,
+            Key.Left => PlayerShortcutCommand.SeekBackward,
+            Key.Right => PlayerShortcutCommand.SeekForward,
+            Key.Up => PlayerShortcutCommand.VolumeUp,
+            Key.Down => PlayerShortcutCommand.VolumeDown,
+            Key.F => PlayerShortcutCommand.ToggleFullscreen,
+            Key.M => PlayerShortcutCommand.ToggleMute,
+            Key.Escape => PlayerShortcutCommand.Escape,
+            _ => default,
+        };
+        return key is Key.Space or Key.Left or Key.Right or Key.Up or Key.Down or Key.F or Key.M or Key.Escape;
+    }
+}
+
+internal sealed record PlayerSourceSwitchCandidate(
+    SearchResult Source,
+    int EpisodeIndex,
+    SearchResult ProbeSource);
+
+internal static class PlayerSourceSwitchPolicy
+{
+    internal static IReadOnlyList<PlayerSourceSwitchCandidate> SelectCandidates(
+        IEnumerable<SearchResult> sources,
+        PlaybackResumeContext target)
+    {
+        var result = new List<PlayerSourceSwitchCandidate>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var source in sources)
+        {
+            var episodeIndex = target.FindEpisodeIndex(source.EpisodeLabels, source.Episodes.Count);
+            if (episodeIndex < 0
+                || episodeIndex >= source.Episodes.Count
+                || string.IsNullOrWhiteSpace(source.Episodes[episodeIndex]))
+            {
+                continue;
+            }
+
+            var key = SearchResultSources.SelectionKeyOf(source);
+            if (!seen.Add(key))
+            {
+                continue;
+            }
+
+            var label = EpisodeLabelFormatter.DisplayAt(source.EpisodeLabels, episodeIndex);
+            var probeSource = source with
+            {
+                Episodes = [source.Episodes[episodeIndex]],
+                EpisodeLabels = [label],
+                PlaybackSources = null,
+            };
+            result.Add(new PlayerSourceSwitchCandidate(source, episodeIndex, probeSource));
+        }
+
+        return result;
+    }
+}
+
+internal static class PlayerEpisodeAdvancePolicy
+{
+    private const long EndToleranceMs = 10_000;
+
+    internal static bool ShouldAdvance(bool playbackConfirmed, long currentTimeMs, long lengthMs) =>
+        playbackConfirmed
+        && lengthMs > 0
+        && currentTimeMs >= Math.Max(0, lengthMs - EndToleranceMs);
+}
 
 public partial class PlayerView : UserControl, INavigationAware, IDisposable
 {
@@ -17,6 +109,8 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         Elapsed,
         Countdown,
     }
+
+    private const int WmKeyDown = 0x0100;
 
     private const string PlayGlyph = "";
     private const string PauseGlyph = "";
@@ -29,6 +123,7 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
     private PlaybackController? _controller;
     private MpvLocalEngine? _localEngine;
+    private PlayerKeyboardHook? _keyboardHook;
     private bool _usingLocalEngine;
     private OsdController? _osd;
     private DispatcherTimer? _singleClickTimer;
@@ -43,9 +138,8 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
     private string? _playbackSourceKey;
     private string _poster = "";
     private List<string> _episodes = new();
+    private List<string> _episodeLabels = new();
     private int _episodeIndex;
-    private List<SearchResult> _altSources = new();
-    private readonly HashSet<string> _failedSources = new(StringComparer.Ordinal);
 
     private long _lengthMs;
     private long _currentTimeMs;
@@ -55,8 +149,21 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
     private bool _updatingSlider;
     private bool _disposed;
     private bool _initializingController;
-    private bool? _pendingLocalFullscreen;
+    private bool _restartOnNextLoad;
+    private bool _nativeShortcutHookAttached;
     private int _localLayoutRefreshVersion;
+    private bool _awaitingVideoOutput;
+    private long _currentPlaybackStartMs;
+    private PlaybackResumeContext? _resumeContext;
+    private string? _historySource;
+    private string? _historyId;
+    private bool _returningToDetail;
+    private bool _playbackConfirmed;
+    private bool _resumePositionReached;
+
+    private CancellationTokenSource? _sourceSwitchCts;
+    private IReadOnlyList<PlayerSourceSwitchCandidate> _sourceSwitchCandidates = [];
+    private readonly Dictionary<string, VodSourceHealthResult> _sourceSwitchHealth = new(StringComparer.Ordinal);
 
     private LoadingNoticeMode _loadingNoticeMode;
     private DateTimeOffset _loadingNoticeStartedAt;
@@ -74,6 +181,8 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         InitializeComponent();
         _host = host;
         Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
+        IsVisibleChanged += OnVisibilityChanged;
         _loadingNoticeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _loadingNoticeTimer.Tick += LoadingNoticeTimer_Tick;
     }
@@ -85,6 +194,16 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             return;
         }
 
+        CancelSourceSwitchScan();
+        SourceSwitchPanel.Visibility = Visibility.Collapsed;
+        SidePanel.Visibility = Visibility.Collapsed;
+
+        var wasInitialized = _controller is not null || _localEngine is not null;
+        if (wasInitialized)
+        {
+            SaveRecord();
+        }
+
         _title = request.Title;
         _id = request.Id;
         _sourceKey = request.Source;
@@ -92,16 +211,52 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         _playbackSourceKey = request.PlaybackSourceKey;
         _poster = request.Poster;
         _episodes = request.Episodes.ToList();
+        _episodeLabels = request.EpisodeLabels?.ToList() ?? [];
         _episodeIndex = Math.Clamp(request.EpisodeIndex, 0, Math.Max(0, _episodes.Count - 1));
-        _altSources = request.AltSources.ToList();
-        _failedSources.Clear();
         _pendingSeekMs = (long)request.PositionMs;
+        _resumeContext = request.Resume;
+        _historySource = request.Resume?.HistorySource;
+        _historyId = request.Resume?.HistoryId;
+        _returningToDetail = false;
+        UpdateHistoryPlaybackControls();
+
+        // 播放页常驻后，打开另一部影片会复用同一个视图；已有播放器时立即切换媒体。
+        if (wasInitialized)
+        {
+            BuildEpisodeButtons();
+            if (IsLoaded)
+            {
+                _restartOnNextLoad = false;
+                PlayEpisode(_episodeIndex, _pendingSeekMs);
+            }
+            else
+            {
+                _restartOnNextLoad = true;
+            }
+        }
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
+        AttachNativeShortcutHook();
         if (_controller is not null || _initializingController)
         {
+            if (_controller is not null)
+            {
+                // 视图重新挂回窗口时重新绑定视频表面，但不重启媒体。
+                if (!_usingLocalEngine)
+                {
+                    VideoSurface.MediaPlayer = _controller.Player;
+                }
+
+                BuildEpisodeButtons();
+                if (_restartOnNextLoad)
+                {
+                    _restartOnNextLoad = false;
+                    PlayEpisode(_episodeIndex, _pendingSeekMs);
+                }
+            }
+
             return;
         }
 
@@ -146,9 +301,11 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         _controller.TimeChanged += Controller_TimeChanged;
         _controller.LengthChanged += Controller_LengthChanged;
         _controller.EndReached += Controller_EndReached;
+        _controller.VideoOutputChanged += Controller_VideoOutputChanged;
 
         var volume = Math.Clamp(_host.Services.Settings.Volume, 0, 100);
         _controller.Volume = volume;
+        _controller.Mute = false;
         _updatingSlider = true;
         VolumeSlider.Value = volume;
         _updatingSlider = false;
@@ -168,7 +325,6 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         _osd.Show();
         Focus();
 
-        BuildSourceChips();
         BuildEpisodeButtons();
 
         if (_episodes.Count > 0)
@@ -191,6 +347,78 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         }
     }
 
+    private void OnUnloaded(object sender, RoutedEventArgs e) => DetachNativeShortcutHook();
+
+    private void OnVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (!IsVisible)
+        {
+            CancelSourceSwitchScan();
+            SaveRecord();
+            return;
+        }
+
+        if (_controller is null)
+        {
+            return;
+        }
+
+        AttachNativeShortcutHook();
+        if (_usingLocalEngine)
+        {
+            RequestLocalLayoutRefresh();
+        }
+        else
+        {
+            // 某些 WPF 原生宿主在 Hidden -> Visible 时会重建视频窗口，重新绑定但不重启媒体。
+            VideoSurface.MediaPlayer = _controller.Player;
+        }
+    }
+
+    private void AttachNativeShortcutHook()
+    {
+        if (_nativeShortcutHookAttached || _disposed)
+        {
+            return;
+        }
+
+        ComponentDispatcher.ThreadPreprocessMessage += OnThreadPreprocessMessage;
+        if (Window.GetWindow(this) is { } owner)
+        {
+            _keyboardHook = PlayerKeyboardHook.TryCreate(owner, QueueShortcutFromNativeHook);
+        }
+        _nativeShortcutHookAttached = true;
+    }
+
+    private void DetachNativeShortcutHook()
+    {
+        if (!_nativeShortcutHookAttached)
+        {
+            return;
+        }
+
+        ComponentDispatcher.ThreadPreprocessMessage -= OnThreadPreprocessMessage;
+        _keyboardHook?.Dispose();
+        _keyboardHook = null;
+        _nativeShortcutHookAttached = false;
+    }
+
+    private void OnThreadPreprocessMessage(ref MSG message, ref bool handled)
+    {
+        if (handled || message.message != WmKeyDown || _disposed || !IsVisible)
+        {
+            return;
+        }
+
+        var key = KeyInterop.KeyFromVirtualKey(message.wParam.ToInt32());
+        handled = HandleShortcut(key, Keyboard.Modifiers);
+    }
+
     private void PlayEpisode(int index, long seekMs = 0) => _ = PlayEpisodeAsync(index, seekMs);
 
     private async Task PlayEpisodeAsync(int index, long seekMs = 0)
@@ -200,8 +428,21 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             return;
         }
 
+        if (index != _episodeIndex)
+        {
+            CancelSourceSwitchScan();
+            SourceSwitchPanel.Visibility = Visibility.Collapsed;
+            SaveRecord();
+            _resumeContext = null;
+            _returningToDetail = false;
+        }
+
         _episodeIndex = index;
         var playSeq = ++_playSeq;
+        DisarmStartupWatchdog();
+        _awaitingVideoOutput = false;
+        _playbackConfirmed = false;
+        _resumePositionReached = _resumeContext is null || seekMs <= 0;
         ShowElapsedLoadingNotice(
             "第 2/2 步 · 正在准备视频",
             "正在连接播放源，程序没有卡死…",
@@ -211,7 +452,7 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         _lastSavedSecond = 0;
         _adRanges = new List<AdRange>();
         _lastSkippedAdEndMs = -1;
-        TitleText.Text = $"{_title}  第 {index + 1} 集";
+        TitleText.Text = $"{_title}  {EpisodeLabelFormatter.DisplayAt(_episodeLabels, index)}";
         HighlightEpisode();
 
         var url = _episodes[index];
@@ -224,6 +465,8 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         }
 
         var isRemote = IsRemoteHttpUrl(url);
+        _currentPlaybackStartMs = seekMs;
+        _awaitingVideoOutput = true;
         if (_host.Services.Settings.AutoSkipAds && isRemote)
         {
             _ = LoadAdRangesAsync(_playSeq, url);
@@ -238,13 +481,13 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         ShowCountdownLoadingNotice(
             "第 2/2 步 · 正在等待画面",
             isRemote
-                ? "正在连接播放源并等待首帧；超时后会自动尝试其他播放源"
+                ? "正在使用 LibVLC 连接播放源并等待首帧…"
                 : "正在打开本地文件（便携 mpv 内嵌）…",
             _startupWatchdog.Timeout,
             playSeq);
 
         // 本地：便携 mpv 内嵌（FFmpeg demux + d3d11va）；无 mpv 时回退 LibVLC。
-        // 在线：始终 LibVLC。不再默认外启 PotPlayer。
+        // 在线：始终使用 LibVLC，与线路探测的播放器口径保持一致。
         if (!isRemote && TryEnsureLocalEngine())
         {
             try
@@ -256,7 +499,19 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"Local mpv failed, fallback VLC: {ex.Message}");
+                if (_disposed || playSeq != _playSeq)
+                {
+                    return;
+                }
+
                 UseLocalSurface(false);
+                _awaitingVideoOutput = true;
+                ArmStartupWatchdog();
+                ShowCountdownLoadingNotice(
+                    "正在切换兼容播放器",
+                    "内嵌 mpv 启动失败，正在改用 LibVLC 打开本地文件…",
+                    _startupWatchdog.Timeout,
+                    playSeq);
             }
         }
         else
@@ -286,7 +541,8 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             return true;
         }
 
-        LocalVideoHost.Visibility = Visibility.Visible;
+        // Hidden 会参与布局并创建 HWND，同时不会在首帧前把原生黑底暴露给用户。
+        LocalVideoHost.Visibility = Visibility.Hidden;
         LocalVideoHost.UpdateLayout();
         var hwnd = LocalVideoHost.HostHandle;
         if (hwnd == IntPtr.Zero)
@@ -299,18 +555,23 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         _localEngine.TimeChanged += Controller_TimeChanged;
         _localEngine.LengthChanged += Controller_LengthChanged;
         _localEngine.EndReached += Controller_EndReached;
-        _localEngine.FullscreenChanged += LocalEngine_FullscreenChanged;
+        _localEngine.VideoOutputChanged += Controller_VideoOutputChanged;
         _localEngine.Volume = (int)Math.Round(VolumeSlider.Value);
+        _localEngine.Mute = IsActiveMuted();
         LocalVideoHost.SyncNativeBounds();
         return true;
     }
 
     private void UseLocalSurface(bool local)
     {
+        var mute = IsActiveMuted();
         _usingLocalEngine = local;
+        SetActiveVolume((int)Math.Round(VolumeSlider.Value));
+        SetActiveMute(mute);
         if (local)
         {
-            LocalVideoHost.Visibility = Visibility.Visible;
+            // mpv 必须先在最终尺寸的隐藏 HWND 上完成输出初始化；收到视频输出事件后再显示。
+            LocalVideoHost.Visibility = Visibility.Hidden;
             LocalVideoHost.UpdateLayout();
             LocalVideoHost.SyncNativeBounds();
             try { _controller?.Stop(); } catch { }
@@ -323,37 +584,24 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         }
         else
         {
+            LocalVideoHost.Visibility = Visibility.Hidden;
             VideoSurface.MediaPlayer = _controller?.Player;
             VideoSurface.Visibility = Visibility.Visible;
-            LocalVideoHost.Visibility = Visibility.Collapsed;
             try { _localEngine?.Stop(); } catch { }
         }
     }
 
-    private void LocalEngine_FullscreenChanged(object? sender, bool enabled)
+    private void RevealLocalSurface()
     {
-        if (_disposed || !_usingLocalEngine)
+        if (!_usingLocalEngine || LocalVideoHost.Visibility == Visibility.Visible)
         {
             return;
         }
 
-        if (_pendingLocalFullscreen is { } pending)
-        {
-            if (pending != enabled)
-            {
-                return;
-            }
-
-            _pendingLocalFullscreen = null;
-        }
-
-        if (_host.IsFullscreen != enabled)
-        {
-            _host.SetFullscreen(enabled);
-        }
-
-        FullscreenButton.Content = enabled ? ExitFullscreenGlyph : FullscreenGlyph;
-        RequestLocalLayoutRefresh();
+        LocalVideoHost.UpdateLayout();
+        LocalVideoHost.SyncNativeBounds();
+        LocalVideoHost.Visibility = Visibility.Visible;
+        LocalVideoHost.SyncNativeBounds();
     }
 
     private void RequestLocalLayoutRefresh()
@@ -390,6 +638,140 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
     private static bool IsRemoteHttpUrl(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri)
         && uri.Scheme is "http" or "https";
+
+    private bool IsActivePlaybackSender(object? sender) =>
+        _usingLocalEngine
+            ? ReferenceEquals(sender, _localEngine)
+            : ReferenceEquals(sender, _controller);
+
+    private bool HasActiveVideoOutput() =>
+        _usingLocalEngine
+            ? _localEngine?.HasVideoOutput == true
+            : _controller?.HasVideoOutput == true;
+
+    private void Controller_VideoOutputChanged(object? sender, bool available)
+    {
+        if (available && IsActivePlaybackSender(sender))
+        {
+            CompleteStartupIfVideoReady();
+        }
+    }
+
+    private bool CompleteStartupIfVideoReady()
+    {
+        if (!HasActiveVideoOutput()
+            || !PlaybackStartupPolicy.ResolvesStartup(PlaybackStartupSignal.VideoOutputStarted))
+        {
+            return false;
+        }
+
+        if (_usingLocalEngine)
+        {
+            RevealLocalSurface();
+        }
+
+        if (_awaitingVideoOutput)
+        {
+            _awaitingVideoOutput = false;
+            DisarmStartupWatchdog();
+        }
+
+        HideLoadingNotice();
+        ErrorOverlay.Visibility = Visibility.Collapsed;
+        _playbackConfirmed = true;
+        return true;
+    }
+
+    private void FailPlayback(string message)
+    {
+        _awaitingVideoOutput = false;
+        DisarmStartupWatchdog();
+        if (_usingLocalEngine)
+        {
+            _localEngine?.Stop();
+        }
+        else
+        {
+            _controller?.Stop();
+        }
+
+        HideLoadingNotice();
+        if (QueueReturnToHistoryDetail())
+        {
+            return;
+        }
+
+        ErrorText.Text = message;
+        ErrorOverlay.Visibility = Visibility.Visible;
+        PlayPauseButton.Content = PlayGlyph;
+    }
+
+    private bool IsOnlineHistoryPlayback =>
+        !string.Equals(_sourceKey, "local", StringComparison.OrdinalIgnoreCase)
+        && !string.IsNullOrWhiteSpace(_historySource)
+        && !string.IsNullOrWhiteSpace(_historyId);
+
+    private void UpdateHistoryPlaybackControls()
+    {
+        SourceSwitchButton.Visibility = IsOnlineHistoryPlayback
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        if (!IsOnlineHistoryPlayback)
+        {
+            SourceSwitchPanel.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private bool QueueReturnToHistoryDetail()
+    {
+        if (!IsOnlineHistoryPlayback)
+        {
+            return false;
+        }
+
+        if (_returningToDetail)
+        {
+            return true;
+        }
+
+        _returningToDetail = true;
+        CancelSourceSwitchScan();
+        SaveRecord();
+        var resume = CurrentResumeContext();
+        var parameter = new DetailParameter(
+            _title,
+            _sourceKey,
+            _id,
+            PlaybackSourceKey: _playbackSourceKey,
+            Resume: resume);
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Background,
+            new Action(() => _host.Navigate(AppPage.Detail, parameter)));
+        return true;
+    }
+
+    private PlaybackResumeContext CurrentResumeContext()
+    {
+        var label = EpisodeLabelFormatter.DisplayAt(_episodeLabels, _episodeIndex);
+        var episodeNumber = EpisodeLabelFormatter.TryGetNumber(label, out var number)
+            ? number
+            : (int?)null;
+        var currentPositionMs = ActivePlaybackPositionMs();
+        var positionMs = _playbackConfirmed && _resumePositionReached && currentPositionMs > 0
+            ? currentPositionMs
+            : _resumeContext?.PositionMs ?? _currentPlaybackStartMs;
+        return new PlaybackResumeContext(
+            _episodeIndex,
+            positionMs,
+            label,
+            episodeNumber,
+            _historySource,
+            _historyId);
+    }
+
+    private long ActivePlaybackPositionMs() => _usingLocalEngine && _localEngine is not null
+        ? Math.Max(0, _localEngine.Time)
+        : Math.Max(0, _currentTimeMs);
 
     private void ToggleActivePlayPause()
     {
@@ -528,22 +910,23 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
     private void Controller_StateChanged(object? sender, PlaybackState state)
     {
+        if (!IsActivePlaybackSender(sender))
+        {
+            return;
+        }
+
         if (state == PlaybackState.Error)
         {
-            DisarmStartupWatchdog();
-            if (TryPlayFallback())
-            {
-                return;
-            }
+            FailPlayback("LibVLC 播放失败，请重试或返回详情页更换线路");
+            return;
+        }
 
-            HideLoadingNotice();
-        }
-        else if (PlaybackStartupPolicy.ResolvesStartup(ToStartupSignal(state)))
+        if (state is PlaybackState.Paused or PlaybackState.Ended)
         {
-            DisarmStartupWatchdog();
-            HideLoadingNotice();
+            SaveRecord();
         }
-        else if (state is PlaybackState.Opening or PlaybackState.Buffering)
+
+        if (state is PlaybackState.Opening or PlaybackState.Buffering)
         {
             if (_loadingNoticeMode == LoadingNoticeMode.None)
             {
@@ -557,26 +940,39 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
                 LoadingOverlay.Visibility = Visibility.Visible;
             }
         }
+        else if (state == PlaybackState.Playing)
+        {
+            CompleteStartupIfVideoReady();
+        }
 
         PlayPauseButton.Content = state == PlaybackState.Playing ? PauseGlyph : PlayGlyph;
-        ErrorOverlay.Visibility = state == PlaybackState.Error ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void Controller_LengthChanged(object? sender, long length)
     {
+        if (!IsActivePlaybackSender(sender))
+        {
+            return;
+        }
+
         _lengthMs = length;
         DurationText.Text = FormatTime(_lengthMs);
     }
 
     private void Controller_TimeChanged(object? sender, long time)
     {
-        if (time > 0 && PlaybackStartupPolicy.ResolvesStartup(PlaybackStartupSignal.TimeAdvanced))
+        if (!IsActivePlaybackSender(sender))
         {
-            DisarmStartupWatchdog();
-            HideLoadingNotice();
+            return;
         }
 
         _currentTimeMs = time;
+        if (_resumeContext is not null
+            && !_resumePositionReached
+            && time >= Math.Max(0, EffectiveResumeTargetMs() - 3000))
+        {
+            _resumePositionReached = true;
+        }
 
         if (!_draggingSlider)
         {
@@ -590,16 +986,9 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         SaveRecordThrottled();
     }
 
-    private static PlaybackStartupSignal ToStartupSignal(PlaybackState state) => state switch
-    {
-        PlaybackState.Opening => PlaybackStartupSignal.Opening,
-        PlaybackState.Buffering => PlaybackStartupSignal.Buffering,
-        PlaybackState.Playing => PlaybackStartupSignal.Playing,
-        PlaybackState.Paused => PlaybackStartupSignal.Paused,
-        PlaybackState.Ended => PlaybackStartupSignal.Ended,
-        PlaybackState.Error => PlaybackStartupSignal.Error,
-        _ => PlaybackStartupSignal.Opening,
-    };
+    private long EffectiveResumeTargetMs() => _lengthMs > 0
+        ? Math.Clamp(_currentPlaybackStartMs, 0, Math.Max(0, _lengthMs - 1000))
+        : Math.Max(0, _currentPlaybackStartMs);
 
     private void ArmStartupWatchdog()
     {
@@ -616,26 +1005,23 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
     private void StartupTimer_Tick(object? sender, EventArgs e)
     {
+        if (CompleteStartupIfVideoReady())
+        {
+            return;
+        }
+
         if (!_startupWatchdog.IsTimedOut(DateTimeOffset.UtcNow))
         {
             return;
         }
 
         DisarmStartupWatchdog();
-        if (TryPlayFallback())
-        {
-            return;
-        }
-
-        _controller?.Stop();
-        HideLoadingNotice();
-        ErrorOverlay.Visibility = Visibility.Visible;
-        PlayPauseButton.Content = PlayGlyph;
+        FailPlayback("LibVLC 播放启动超时，请返回详情页更换线路");
     }
 
     private void MaybeSkipAd()
     {
-        if (_controller is null || _adRanges.Count == 0 || !_host.Services.Settings.AutoSkipAds)
+        if (_adRanges.Count == 0 || !_host.Services.Settings.AutoSkipAds)
         {
             return;
         }
@@ -645,7 +1031,10 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         {
             // 只有 seek 真正生效才消费跳过标记:时长未知时 LibVLC 会丢弃 seek,
             // 此时保留标记让后续进度回调重试,否则片头广告会完整播完。
-            if (_lastSkippedAdEndMs != range.EndMs && _controller.TrySeek((long)range.EndMs))
+            if (_lastSkippedAdEndMs != range.EndMs
+                && (_usingLocalEngine
+                    ? _localEngine?.TrySeek((long)range.EndMs) == true
+                    : _controller?.TrySeek((long)range.EndMs) == true))
             {
                 _lastSkippedAdEndMs = range.EndMs;
                 ShowAdSkipBadge();
@@ -676,86 +1065,19 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
     private void Controller_EndReached(object? sender, EventArgs e)
     {
+        if (!IsActivePlaybackSender(sender)
+            || !PlayerEpisodeAdvancePolicy.ShouldAdvance(
+                _playbackConfirmed,
+                ActivePlaybackPositionMs(),
+                _lengthMs))
+        {
+            return;
+        }
+
         if (_episodeIndex + 1 < _episodes.Count)
         {
             PlayEpisode(_episodeIndex + 1);
         }
-    }
-
-    private void BuildSourceChips()
-    {
-        if (_altSources.Count <= 1)
-        {
-            SourceBar.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        SourceBar.Children.Clear();
-        foreach (var source in _altSources)
-        {
-            var label = source.Episodes.Count > 1 ? $"{source.SourceName} · {source.Episodes.Count}集" : source.SourceName;
-            var chip = new RadioButton
-            {
-                Style = (Style)FindResource("ChipRadioStyle"),
-                GroupName = "playerSource",
-                Content = label,
-                Tag = source,
-                IsChecked = SearchResultSources.SelectionKeyOf(source)
-                    == SearchResultSources.SelectionKeyOf(_sourceKey, _id, _playbackSourceKey),
-            };
-            chip.Checked += SourceChip_Checked;
-            SourceBar.Children.Add(chip);
-        }
-    }
-
-    private void SourceChip_Checked(object sender, RoutedEventArgs e)
-    {
-        if (sender is not RadioButton { Tag: SearchResult source }
-            || SearchResultSources.SelectionKeyOf(source)
-            == SearchResultSources.SelectionKeyOf(_sourceKey, _id, _playbackSourceKey))
-        {
-            return;
-        }
-
-        _sourceKey = source.Source;
-        _sourceName = source.SourceName;
-        _playbackSourceKey = source.PlaybackSourceKey;
-        _id = source.Id;
-        _poster = source.Poster;
-        _episodes = source.Episodes.ToList();
-        var index = Math.Clamp(_episodeIndex, 0, Math.Max(0, _episodes.Count - 1));
-        BuildEpisodeButtons();
-        PlayEpisode(index);
-    }
-
-    private bool TryPlayFallback()
-    {
-        if (_altSources.Count <= 1 || string.IsNullOrEmpty(_sourceKey))
-        {
-            return false;
-        }
-
-        _failedSources.Add(SearchResultSources.SelectionKeyOf(_sourceKey, _id, _playbackSourceKey));
-        var fallback = PlaybackFallbackSelector.SelectNext(
-            _altSources,
-            SearchResultSources.SelectionKeyOf(_sourceKey, _id, _playbackSourceKey),
-            _failedSources,
-            _episodeIndex);
-        if (fallback is null)
-        {
-            return false;
-        }
-
-        _sourceKey = fallback.Source;
-        _sourceName = fallback.SourceName;
-        _playbackSourceKey = fallback.PlaybackSourceKey;
-        _id = fallback.Id;
-        _poster = fallback.Poster;
-        _episodes = fallback.Episodes.ToList();
-        BuildSourceChips();
-        BuildEpisodeButtons();
-        PlayEpisode(Math.Clamp(_episodeIndex, 0, Math.Max(0, _episodes.Count - 1)));
-        return true;
     }
 
     private void BuildEpisodeButtons()
@@ -765,7 +1087,7 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         {
             var button = new Button
             {
-                Content = $"{index + 1}",
+                Content = EpisodeLabelFormatter.CompactAt(_episodeLabels, index),
                 Style = (Style)FindResource("SecondaryButtonStyle"),
                 Height = 36,
                 MinWidth = 48,
@@ -809,6 +1131,10 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
     private void StopButton_Click(object sender, RoutedEventArgs e)
     {
+        SaveRecord();
+        _playSeq++;
+        _awaitingVideoOutput = false;
+        DisarmStartupWatchdog();
         if (_usingLocalEngine)
         {
             _localEngine?.Stop();
@@ -818,7 +1144,6 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             _controller?.Stop();
         }
 
-        _playSeq++;
         HideLoadingNotice();
         PlayPauseButton.Content = PlayGlyph;
     }
@@ -842,8 +1167,328 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
     private void EpisodesButton_Click(object sender, RoutedEventArgs e)
     {
         var show = SidePanel.Visibility != Visibility.Visible;
+        if (show)
+        {
+            CloseSourceSwitchPanel();
+        }
         SidePanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         _osd?.Pin(show);
+    }
+
+    private void SourceSwitchButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (SourceSwitchPanel.Visibility == Visibility.Visible)
+        {
+            CloseSourceSwitchPanel();
+            return;
+        }
+
+        if (!IsOnlineHistoryPlayback)
+        {
+            return;
+        }
+
+        SidePanel.Visibility = Visibility.Collapsed;
+        SourceSwitchPanel.Visibility = Visibility.Visible;
+        SourceSwitchEpisodeText.Text = $"{EpisodeLabelFormatter.DisplayAt(_episodeLabels, _episodeIndex)} · {_sourceName}";
+        _osd?.Pin(true);
+        StartSourceSwitchScan();
+    }
+
+    private void SourceScanButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_sourceSwitchCts is not null)
+        {
+            CancelSourceSwitchScan();
+            SourceScanSummaryText.Text = "测速已停止";
+            RenderSourceSwitchResults();
+            return;
+        }
+
+        StartSourceSwitchScan();
+    }
+
+    private void StartSourceSwitchScan()
+    {
+        if (_disposed || !IsOnlineHistoryPlayback)
+        {
+            return;
+        }
+
+        CancelSourceSwitchScan();
+        var cts = new CancellationTokenSource();
+        _sourceSwitchCts = cts;
+        _sourceSwitchCandidates = [];
+        _sourceSwitchHealth.Clear();
+        SourceScanButton.Content = "停止测速";
+        SourceScanSummaryText.Text = "正在查找线路…";
+        ShowSourceSwitchMessage("正在查找线路…");
+        _ = RunSourceSwitchScanAsync(cts);
+    }
+
+    private async Task RunSourceSwitchScanAsync(CancellationTokenSource cts)
+    {
+        var scanFailed = false;
+        var target = CurrentResumeContext();
+        var current = new SearchResult(
+            _id,
+            _title,
+            _poster,
+            _episodes.ToArray(),
+            _sourceKey,
+            _sourceName,
+            "",
+            PlaybackSourceKey: _playbackSourceKey,
+            EpisodeLabels: _episodeLabels.ToArray());
+
+        try
+        {
+            var loaded = (await _host.Services.Catalog.GetDetailSourcesAsync(
+                    _host.Services.Sources,
+                    _title,
+                    cts.Token)
+                .ConfigureAwait(true)).ToList();
+            cts.Token.ThrowIfCancellationRequested();
+
+            var currentKey = SearchResultSources.SelectionKeyOf(current);
+            loaded.RemoveAll(source => SearchResultSources.SelectionKeyOf(source) == currentKey);
+            loaded.Insert(0, current);
+
+            var hydrated = new List<SearchResult>(loaded.Count);
+            foreach (var source in loaded)
+            {
+                cts.Token.ThrowIfCancellationRequested();
+                var item = source.Episodes.Count == 0
+                    ? await _host.Services.Catalog.HydrateEpisodesAsync(
+                            _host.Services.Sources,
+                            source,
+                            cts.Token)
+                        .ConfigureAwait(true) ?? source
+                    : source;
+                hydrated.Add(item);
+            }
+
+            var candidates = PlayerSourceSwitchPolicy.SelectCandidates(hydrated, target);
+            if (!ReferenceEquals(_sourceSwitchCts, cts) || cts.IsCancellationRequested || _disposed)
+            {
+                return;
+            }
+
+            _sourceSwitchCandidates = candidates;
+            if (candidates.Count == 0)
+            {
+                SourceScanSummaryText.Text = "没有包含当前剧集的线路";
+                ShowSourceSwitchMessage("没有找到包含当前剧集的线路");
+                return;
+            }
+
+            var done = 0;
+            SourceScanSummaryText.Text = $"测速中 0/{candidates.Count}";
+            ShowSourceSwitchMessage("正在检测可播放线路…");
+            await _host.Services.VodSourceHealth.ProbeManyAsync(
+                    candidates.Select(candidate => candidate.ProbeSource).ToList(),
+                    (key, health) => Dispatcher.Invoke(() =>
+                    {
+                        if (!ReferenceEquals(_sourceSwitchCts, cts)
+                            || cts.IsCancellationRequested
+                            || _disposed)
+                        {
+                            return;
+                        }
+
+                        _sourceSwitchHealth[key] = health;
+                        done++;
+                        SourceScanSummaryText.Text = $"测速中 {done}/{candidates.Count}";
+                        RenderSourceSwitchResults();
+                    }),
+                    concurrency: 4,
+                    cts.Token)
+                .ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            scanFailed = true;
+            if (ReferenceEquals(_sourceSwitchCts, cts) && !_disposed)
+            {
+                SourceScanSummaryText.Text = "测速失败";
+                ShowSourceSwitchMessage($"测速失败：{ShortSourceSwitchError(ex)}");
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_sourceSwitchCts, cts))
+            {
+                _sourceSwitchCts = null;
+                if (!_disposed)
+                {
+                    SourceScanButton.Content = "重新测速";
+                    if (!scanFailed && _sourceSwitchCandidates.Count > 0)
+                    {
+                        SourceScanSummaryText.Text = VodSourceHealthDisplay.SummaryOf(_sourceSwitchHealth.Values);
+                        RenderSourceSwitchResults();
+                    }
+                }
+            }
+
+            cts.Dispose();
+        }
+    }
+
+    private void RenderSourceSwitchResults()
+    {
+        SourceSwitchList.Children.Clear();
+        var playableCount = 0;
+        var currentKey = SearchResultSources.SelectionKeyOf(_sourceKey, _id, _playbackSourceKey);
+        foreach (var candidate in _sourceSwitchCandidates)
+        {
+            var key = SearchResultSources.SelectionKeyOf(candidate.Source);
+            if (!_sourceSwitchHealth.TryGetValue(key, out var health)
+                || health.Status != VodSourceProbeStatus.Playable)
+            {
+                continue;
+            }
+
+            playableCount++;
+            var sourceName = string.IsNullOrWhiteSpace(candidate.Source.SourceName)
+                ? candidate.Source.Source
+                : candidate.Source.SourceName;
+            if (key == currentKey)
+            {
+                sourceName += " · 当前";
+            }
+
+            var content = new StackPanel();
+            content.Children.Add(new TextBlock
+            {
+                Text = sourceName,
+                Foreground = (System.Windows.Media.Brush)FindResource("TextBrush"),
+                FontWeight = FontWeights.SemiBold,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            content.Children.Add(new TextBlock
+            {
+                Text = health.DisplayLabel,
+                Foreground = (System.Windows.Media.Brush)FindResource("SoftTextBrush"),
+                FontSize = 12,
+                Margin = new Thickness(0, 4, 0, 0),
+                TextWrapping = TextWrapping.Wrap,
+            });
+
+            var button = new Button
+            {
+                Style = (Style)FindResource("SecondaryButtonStyle"),
+                Tag = candidate,
+                Content = content,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                MinHeight = 58,
+                Padding = new Thickness(12, 8, 12, 8),
+                Margin = new Thickness(0, 0, 0, 8),
+            };
+            button.Click += SourceSwitchCandidate_Click;
+            System.Windows.Automation.AutomationProperties.SetName(
+                button,
+                $"{sourceName} · {health.DisplayLabel}");
+            SourceSwitchList.Children.Add(button);
+        }
+
+        if (playableCount == 0)
+        {
+            ShowSourceSwitchMessage(_sourceSwitchCts is null
+                ? "当前未检测到可播放线路"
+                : "正在检测可播放线路…");
+        }
+    }
+
+    private void ShowSourceSwitchMessage(string message)
+    {
+        SourceSwitchList.Children.Clear();
+        SourceSwitchList.Children.Add(new TextBlock
+        {
+            Text = message,
+            Foreground = (System.Windows.Media.Brush)FindResource("SoftTextBrush"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(2, 8, 2, 0),
+        });
+    }
+
+    private void SourceSwitchCandidate_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: PlayerSourceSwitchCandidate candidate }
+            || candidate.EpisodeIndex < 0
+            || candidate.EpisodeIndex >= candidate.Source.Episodes.Count)
+        {
+            return;
+        }
+
+        var activePositionMs = ActivePlaybackPositionMs();
+        var positionMs = activePositionMs > 0
+            ? activePositionMs
+            : CurrentResumeContext().PositionMs;
+        SaveRecord();
+
+        _sourceKey = candidate.Source.Source;
+        _sourceName = candidate.Source.SourceName;
+        _playbackSourceKey = candidate.Source.PlaybackSourceKey;
+        _id = candidate.Source.Id;
+        _poster = string.IsNullOrWhiteSpace(candidate.Source.Poster)
+            ? _poster
+            : candidate.Source.Poster;
+        _episodes = candidate.Source.Episodes.ToList();
+        _episodeLabels = candidate.Source.EpisodeLabels?.ToList() ?? [];
+        _episodeIndex = candidate.EpisodeIndex;
+
+        var label = EpisodeLabelFormatter.DisplayAt(_episodeLabels, _episodeIndex);
+        var episodeNumber = EpisodeLabelFormatter.TryGetNumber(label, out var number)
+            ? number
+            : (int?)null;
+        _resumeContext = new PlaybackResumeContext(
+            _episodeIndex,
+            positionMs,
+            label,
+            episodeNumber,
+            _historySource,
+            _historyId);
+        _returningToDetail = false;
+
+        CancelSourceSwitchScan();
+        SourceSwitchPanel.Visibility = Visibility.Collapsed;
+        _osd?.Pin(false);
+        ErrorOverlay.Visibility = Visibility.Collapsed;
+        BuildEpisodeButtons();
+        UpdateHistoryPlaybackControls();
+        PlayEpisode(_episodeIndex, (long)_resumeContext.StartPositionMs);
+    }
+
+    private void CloseSourceSwitchPanel()
+    {
+        CancelSourceSwitchScan();
+        SourceSwitchPanel.Visibility = Visibility.Collapsed;
+        _osd?.Pin(SidePanel.Visibility == Visibility.Visible);
+    }
+
+    private void CancelSourceSwitchScan()
+    {
+        var cts = _sourceSwitchCts;
+        if (cts is null)
+        {
+            return;
+        }
+
+        _sourceSwitchCts = null;
+        cts.Cancel();
+        if (!_disposed)
+        {
+            SourceScanButton.Content = "重新测速";
+        }
+    }
+
+    private static string ShortSourceSwitchError(Exception error)
+    {
+        var message = error.Message?.Trim() ?? "未知错误";
+        return message.Length <= 80 ? message : message[..80] + "…";
     }
 
     private void RetryButton_Click(object sender, RoutedEventArgs e)
@@ -859,7 +1504,15 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         }
     }
 
-    private void BackButton_Click(object sender, RoutedEventArgs e) => _host.GoBack();
+    private void BackButton_Click(object sender, RoutedEventArgs e) => ReturnFromPlayer();
+
+    private void ReturnFromPlayer()
+    {
+        if (!QueueReturnToHistoryDetail())
+        {
+            _host.GoBack();
+        }
+    }
 
     private void SeekSlider_DragStarted(object sender, DragStartedEventArgs e) => _draggingSlider = true;
 
@@ -943,14 +1596,19 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
     private void FullscreenButton_Click(object sender, RoutedEventArgs e) => ToggleFullscreen();
 
-    private void ToggleFullscreen()
+    private bool IsFullscreenActive() => _host.IsFullscreen;
+
+    private void ToggleFullscreen() => SetFullscreen(!IsFullscreenActive());
+
+    private void SetFullscreen(bool enabled)
     {
-        var enabled = !_host.IsFullscreen;
-        _pendingLocalFullscreen = _usingLocalEngine ? enabled : null;
-        _host.SetFullscreen(enabled);
+        if (_host.IsFullscreen != enabled)
+        {
+            _host.SetFullscreen(enabled);
+        }
+
         if (_usingLocalEngine)
         {
-            _localEngine?.SetFullscreen(enabled);
             RequestLocalLayoutRefresh();
         }
 
@@ -959,46 +1617,83 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        switch (e.Key)
+        if (HandleShortcut(e.Key, Keyboard.Modifiers))
         {
-            case Key.Space:
+            e.Handled = true;
+        }
+    }
+
+    private bool QueueShortcutFromNativeHook(Key key, ModifierKeys modifiers)
+    {
+        if (_disposed || !IsVisible)
+        {
+            return false;
+        }
+
+        if (!PlayerShortcutMap.TryResolve(key, modifiers, out var command))
+        {
+            return false;
+        }
+
+        _ = Dispatcher.InvokeAsync(() => ExecuteShortcut(command), DispatcherPriority.Input);
+        return true;
+    }
+
+    private bool HandleShortcut(Key key, ModifierKeys modifiers)
+    {
+        if (!PlayerShortcutMap.TryResolve(key, modifiers, out var command))
+        {
+            return false;
+        }
+
+        ExecuteShortcut(command);
+        return true;
+    }
+
+    private void ExecuteShortcut(PlayerShortcutCommand command)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        switch (command)
+        {
+            case PlayerShortcutCommand.TogglePlayPause:
                 ToggleActivePlayPause();
                 break;
-            case Key.Left:
+            case PlayerShortcutCommand.SeekBackward:
                 SeekBy(-5000);
                 break;
-            case Key.Right:
+            case PlayerShortcutCommand.SeekForward:
                 SeekBy(5000);
                 break;
-            case Key.Up:
+            case PlayerShortcutCommand.VolumeUp:
                 AdjustVolume(5);
                 break;
-            case Key.Down:
+            case PlayerShortcutCommand.VolumeDown:
                 AdjustVolume(-5);
                 break;
-            case Key.F:
+            case PlayerShortcutCommand.ToggleFullscreen:
                 ToggleFullscreen();
                 break;
-            case Key.M:
+            case PlayerShortcutCommand.ToggleMute:
                 ToggleMute();
                 break;
-            case Key.Escape:
-                if (_host.IsFullscreen)
+            case PlayerShortcutCommand.Escape:
+                if (IsFullscreenActive())
                 {
-                    ToggleFullscreen();
+                    SetFullscreen(false);
                 }
                 else
                 {
-                    _host.GoBack();
+                    ReturnFromPlayer();
                 }
 
                 break;
-            default:
-                return;
         }
 
         _osd?.Show();
-        e.Handled = true;
     }
 
     private void SeekBy(long deltaMs)
@@ -1056,12 +1751,17 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
     private void Bar_MouseEnter(object sender, MouseEventArgs e) => _osd?.Pin(true);
 
     private void Bar_MouseLeave(object sender, MouseEventArgs e) =>
-        _osd?.Pin(SidePanel.Visibility == Visibility.Visible);
+        _osd?.Pin(
+            SidePanel.Visibility == Visibility.Visible
+            || SourceSwitchPanel.Visibility == Visibility.Visible);
 
     private void SaveRecordThrottled()
     {
         var second = _currentTimeMs / 1000;
-        if (second == _lastSavedSecond || second % 5 != 0 || string.IsNullOrEmpty(_sourceKey) || string.IsNullOrEmpty(_id))
+        if (second <= 0
+            || Math.Abs(second - _lastSavedSecond) < 5
+            || string.IsNullOrEmpty(_sourceKey)
+            || string.IsNullOrEmpty(_id))
         {
             return;
         }
@@ -1077,6 +1777,11 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             return;
         }
 
+        if (_resumeContext is not null && (!_playbackConfirmed || !_resumePositionReached))
+        {
+            return;
+        }
+
         try
         {
             var isLocal = string.Equals(_sourceKey, "local", StringComparison.OrdinalIgnoreCase);
@@ -1085,6 +1790,11 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             {
                 poster = _host.Services.LocalMedia.Get(_id)?.Poster ?? "";
             }
+
+            var episodeLabel = EpisodeLabelFormatter.DisplayAt(_episodeLabels, _episodeIndex);
+            var episodeNumber = EpisodeLabelFormatter.TryGetNumber(episodeLabel, out var number)
+                ? number
+                : (int?)null;
 
             _host.Services.PlayRecords.Save(_sourceKey, _id, new PlayRecordItem(
                 Title: _title,
@@ -1096,7 +1806,30 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
                 TotalTime: _lengthMs / 1000.0,
                 Year: "",
                 LocalMediaId: isLocal ? _id : null,
-                LocalEpisodes: isLocal ? _episodes.ToArray() : null));
+                LocalEpisodes: isLocal ? _episodes.ToArray() : null,
+                PlaybackSourceKey: _playbackSourceKey,
+                EpisodeLabel: episodeLabel,
+                EpisodeNumber: episodeNumber));
+            if (_playbackConfirmed
+                && !string.IsNullOrWhiteSpace(_historySource)
+                && !string.IsNullOrWhiteSpace(_historyId)
+                && (!string.Equals(_historySource, _sourceKey, StringComparison.Ordinal)
+                    || !string.Equals(_historyId, _id, StringComparison.Ordinal)))
+            {
+                _host.Services.PlayRecords.Remove(
+                    _historySource,
+                    _historyId);
+                _historySource = _sourceKey;
+                _historyId = _id;
+                if (_resumeContext is not null)
+                {
+                    _resumeContext = _resumeContext with
+                    {
+                        HistorySource = _historySource,
+                        HistoryId = _historyId,
+                    };
+                }
+            }
         }
         catch
         {
@@ -1137,7 +1870,9 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             return;
         }
 
+        CancelSourceSwitchScan();
         _disposed = true;
+        DetachNativeShortcutHook();
         _playSeq++;
         _adBadgeTimer?.Stop();
         _singleClickTimer?.Stop();
@@ -1152,7 +1887,7 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             _localEngine.TimeChanged -= Controller_TimeChanged;
             _localEngine.LengthChanged -= Controller_LengthChanged;
             _localEngine.EndReached -= Controller_EndReached;
-            _localEngine.FullscreenChanged -= LocalEngine_FullscreenChanged;
+            _localEngine.VideoOutputChanged -= Controller_VideoOutputChanged;
             _localEngine.Dispose();
             _localEngine = null;
         }
@@ -1168,6 +1903,7 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             _controller.TimeChanged -= Controller_TimeChanged;
             _controller.LengthChanged -= Controller_LengthChanged;
             _controller.EndReached -= Controller_EndReached;
+            _controller.VideoOutputChanged -= Controller_VideoOutputChanged;
             VideoSurface.MediaPlayer = null;
             _host.Services.DisposePlaybackInBackground(_controller);
             _controller = null;

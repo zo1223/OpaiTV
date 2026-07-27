@@ -147,9 +147,14 @@ public sealed class VodCacheService : IDisposable
     private const int MaxDownloadAttempts = 3;
     private const int MaxResumePlanAttempts = 3;
     private const int MetadataReplaceAttempts = 8;
+    private const int MaxConcurrentSegmentDownloadsPerSession = 4;
+    private const int MaxConcurrentSegmentDownloadsTotal = 8;
 
     private readonly ConcurrentDictionary<string, VodCacheSession> _sessions = new(StringComparer.Ordinal);
     private readonly HttpClient _http;
+    private readonly SemaphoreSlim _segmentDownloadGate = new(
+        MaxConcurrentSegmentDownloadsTotal,
+        MaxConcurrentSegmentDownloadsTotal);
     private readonly TcpListener _listener;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly Task _acceptLoop;
@@ -172,7 +177,8 @@ public sealed class VodCacheService : IDisposable
         _listener.Start();
         _port = ((IPEndPoint)_listener.LocalEndpoint).Port;
         _acceptLoop = Task.Run(AcceptLoopAsync);
-        VodCacheLog.Info($"service-start port={_port}");
+        VodCacheLog.Info(
+            $"service-start port={_port} segmentConcurrency={MaxConcurrentSegmentDownloadsPerSession}/{MaxConcurrentSegmentDownloadsTotal}");
     }
 
     public static bool IsHlsUrl(string url) =>
@@ -776,8 +782,11 @@ public sealed class VodCacheService : IDisposable
                 continue;
             }
 
-            var uriLine = lines.Skip(index + 1).Select(value => value.Trim()).FirstOrDefault(value => !string.IsNullOrEmpty(value));
-            if (string.IsNullOrEmpty(uriLine) || uriLine.StartsWith('#'))
+            var uriLine = lines
+                .Skip(index + 1)
+                .Select(value => value.Trim())
+                .FirstOrDefault(value => !string.IsNullOrEmpty(value) && !value.StartsWith('#'));
+            if (string.IsNullOrEmpty(uriLine))
             {
                 continue;
             }
@@ -950,40 +959,76 @@ public sealed class VodCacheService : IDisposable
                 await DownloadFileAsync(file, token).ConfigureAwait(false);
             }
 
-            for (var index = completedSegments; index < session.Segments.Count; index++)
+            using var segmentPipelineCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var segmentToken = segmentPipelineCancellation.Token;
+            var pendingSegments = new Dictionary<int, Task>();
+            var nextSegmentToSchedule = completedSegments;
+
+            try
             {
-                token.ThrowIfCancellationRequested();
-                var segment = session.Segments[index];
-                if (!segment.Completed.Task.IsCompletedSuccessfully)
+                while (completedSegments < session.Segments.Count)
                 {
-                    await DownloadFileAsync(segment, token).ConfigureAwait(false);
+                    token.ThrowIfCancellationRequested();
+                    ScheduleSegmentDownloads(
+                        session,
+                        pendingSegments,
+                        ref nextSegmentToSchedule,
+                        segmentToken);
+
+                    if (!pendingSegments.TryGetValue(completedSegments, out var nextInOrder))
+                    {
+                        throw new InvalidOperationException($"SEGMENT_PIPELINE_GAP {completedSegments}");
+                    }
+
+                    await nextInOrder.ConfigureAwait(false);
+
+                    // Commit only the contiguous prefix. Later segments may finish first, but the
+                    // offline playlist and merged.ts must always remain in media order.
+                    while (pendingSegments.TryGetValue(completedSegments, out var completedTask)
+                           && completedTask.IsCompletedSuccessfully)
+                    {
+                        pendingSegments.Remove(completedSegments);
+                        var segment = session.Segments[completedSegments];
+                        completedSegments++;
+                        downloadedSeconds += segment.DurationSeconds;
+                        downloadedBytes += segment.Length;
+                    }
+
+                    // Refill the window before disk bookkeeping so network requests continue while
+                    // the contiguous batch is merged and metadata is persisted.
+                    ScheduleSegmentDownloads(
+                        session,
+                        pendingSegments,
+                        ref nextSegmentToSchedule,
+                        segmentToken);
+
+                    if (session.MergeSupported)
+                    {
+                        await AppendSegmentsToMergedAsync(session, upToExclusive: completedSegments, token).ConfigureAwait(false);
+                    }
+
+                    WriteOfflinePlaylist(session);
+                    await WriteMetadataAsync(session, false, completedSegments, token).ConfigureAwait(false);
+
+                    var progress = new VodCacheProgress(
+                        completedSegments,
+                        session.Segments.Count,
+                        downloadedSeconds,
+                        totalSeconds,
+                        downloadedBytes,
+                        false);
+                    session.Report(progress);
+                    if (downloadedSeconds >= session.PrebufferSeconds || completedSegments >= 1)
+                    {
+                        session.MarkReady();
+                    }
                 }
-
-                completedSegments++;
-                downloadedSeconds += segment.DurationSeconds;
-                downloadedBytes += segment.Length;
-
-                // 边下边追加合并：本地视频页始终能看到单文件，未下完也可播已合并部分。
-                if (session.MergeSupported)
-                {
-                    await AppendSegmentsToMergedAsync(session, upToExclusive: completedSegments, token).ConfigureAwait(false);
-                }
-
-                WriteOfflinePlaylist(session);
-                await WriteMetadataAsync(session, false, completedSegments, token).ConfigureAwait(false);
-
-                var progress = new VodCacheProgress(
-                    completedSegments,
-                    session.Segments.Count,
-                    downloadedSeconds,
-                    totalSeconds,
-                    downloadedBytes,
-                    false);
-                session.Report(progress);
-                if (downloadedSeconds >= session.PrebufferSeconds || completedSegments >= 1)
-                {
-                    session.MarkReady();
-                }
+            }
+            catch
+            {
+                segmentPipelineCancellation.Cancel();
+                await ObservePendingDownloadsAsync(pendingSegments.Values).ConfigureAwait(false);
+                throw;
             }
 
             WriteOfflinePlaylist(session, complete: true);
@@ -1089,9 +1134,11 @@ public sealed class VodCacheService : IDisposable
             return;
         }
 
-        var completed = Math.Max(
-            session.MergedSegments,
-            Math.Max(session.Progress.CompletedSegments, CountExistingSegments(session.Directory)));
+        var completed = Math.Max(session.MergedSegments, session.Progress.CompletedSegments);
+        while (completed < session.Segments.Count && File.Exists(session.Segments[completed].FullPath))
+        {
+            completed++;
+        }
         if (completed <= 0)
         {
             return;
@@ -1200,7 +1247,6 @@ public sealed class VodCacheService : IDisposable
                 64 * 1024,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
             await input.CopyToAsync(output, 64 * 1024, cancellationToken).ConfigureAwait(false);
-            await output.FlushAsync(cancellationToken).ConfigureAwait(false);
 
             var segmentLength = new FileInfo(segment.FullPath).Length;
             segment.Length = segmentLength;
@@ -1209,6 +1255,74 @@ public sealed class VodCacheService : IDisposable
                 session.MergedSegmentLengths.Add(segmentLength);
                 session.MergedSegments = index + 1;
             }
+        }
+
+        await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private void ScheduleSegmentDownloads(
+        VodCacheSession session,
+        IDictionary<int, Task> pendingSegments,
+        ref int nextSegmentToSchedule,
+        CancellationToken cancellationToken)
+    {
+        while (nextSegmentToSchedule < session.Segments.Count
+               && pendingSegments.Count < MaxConcurrentSegmentDownloadsPerSession)
+        {
+            var index = nextSegmentToSchedule++;
+            pendingSegments[index] = EnsureSegmentDownloadedAsync(
+                session.Segments[index],
+                cancellationToken);
+        }
+    }
+
+    private async Task EnsureSegmentDownloadedAsync(CacheFile segment, CancellationToken cancellationToken)
+    {
+        if (TryUseExistingFile(segment))
+        {
+            return;
+        }
+
+        await _segmentDownloadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!TryUseExistingFile(segment))
+            {
+                await DownloadFileAsync(segment, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _segmentDownloadGate.Release();
+        }
+    }
+
+    private static bool TryUseExistingFile(CacheFile file)
+    {
+        if (file.Completed.Task.IsCompletedSuccessfully)
+        {
+            return true;
+        }
+
+        if (!File.Exists(file.FullPath))
+        {
+            return false;
+        }
+
+        file.Length = new FileInfo(file.FullPath).Length;
+        file.Completed.TrySetResult(file.FullPath);
+        return true;
+    }
+
+    private static async Task ObservePendingDownloadsAsync(IEnumerable<Task> pendingDownloads)
+    {
+        try
+        {
+            await Task.WhenAll(pendingDownloads).ConfigureAwait(false);
+        }
+        catch
+        {
+            // The original ordered-pipeline failure is reported by the caller.
         }
     }
 
@@ -2374,6 +2488,7 @@ public sealed class VodCacheService : IDisposable
         }
         try { _acceptLoop.GetAwaiter().GetResult(); } catch { }
         _http.Dispose();
+        _segmentDownloadGate.Dispose();
         _lifetime.Dispose();
     }
 

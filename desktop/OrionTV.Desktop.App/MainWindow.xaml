@@ -44,6 +44,7 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="0,8">
                         <TextBlock Text="主要功能" Style="{StaticResource SectionHeaderStyle}" />
+                        <RadioButton x:Name="NavPlayer" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE768;" Content="正在播放" Visibility="Collapsed" Click="Nav_Click" />
                         <RadioButton x:Name="NavHome" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE80F;" Content="首页" Click="Nav_Click" />
                         <RadioButton x:Name="NavSearch" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE721;" Content="搜索" Click="Nav_Click" />
                         <RadioButton x:Name="NavLive" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE714;" Content="直播" Click="Nav_Click" />
@@ -61,6 +62,10 @@
             </DockPanel>
         </Border>
 
-        <ContentControl x:Name="ContentHost" Grid.Column="1" />
+        <Grid Grid.Column="1">
+            <ContentControl x:Name="ContentHost" />
+            <!-- 播放页独立常驻；切到侧栏其他栏目时只隐藏，不卸载播放器原生宿主。 -->
+            <ContentControl x:Name="PlayerHost" Visibility="Collapsed" Panel.ZIndex="10" />
+        </Grid>
     </Grid>
 </Window>

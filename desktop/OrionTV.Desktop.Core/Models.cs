@@ -37,7 +37,11 @@ public static class VideoSourceProtocols
 
 public sealed record VideoSourceSubscriptionConfig(IReadOnlyList<VideoSource> Sources);
 
-public sealed record PlaybackSource(string Key, string Name, IReadOnlyList<string> Episodes);
+public sealed record PlaybackSource(
+    string Key,
+    string Name,
+    IReadOnlyList<string> Episodes,
+    IReadOnlyList<string>? EpisodeLabels = null);
 
 public sealed record SearchResult(
     string Id,
@@ -51,7 +55,59 @@ public sealed record SearchResult(
     string? TypeName = null,
     string? Class = null,
     IReadOnlyList<PlaybackSource>? PlaybackSources = null,
-    string? PlaybackSourceKey = null);
+    string? PlaybackSourceKey = null,
+    IReadOnlyList<string>? EpisodeLabels = null);
+
+public static class EpisodeLabelFormatter
+{
+    public static string DisplayAt(IReadOnlyList<string>? labels, int index)
+    {
+        if (labels is not null && index >= 0 && index < labels.Count)
+        {
+            var label = labels[index]?.Trim();
+            if (!string.IsNullOrWhiteSpace(label))
+            {
+                return label;
+            }
+        }
+
+        return $"第{index + 1}集";
+    }
+
+    public static string CompactAt(IReadOnlyList<string>? labels, int index)
+    {
+        var label = DisplayAt(labels, index);
+        return TryGetNumber(label, out var number)
+            ? number.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : label;
+    }
+
+    public static bool TryGetNumber(string? label, out int number)
+    {
+        number = 0;
+        if (string.IsNullOrWhiteSpace(label))
+        {
+            return false;
+        }
+
+        var value = label.Trim();
+        if (value.StartsWith('第'))
+        {
+            value = value[1..].Trim();
+        }
+
+        if (value.EndsWith('集'))
+        {
+            value = value[..^1].Trim();
+        }
+
+        return int.TryParse(
+            value,
+            System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out number);
+    }
+}
 
 public sealed record VideoDetail(
     string Id,

@@ -183,7 +183,7 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
                 return;
             }
 
-            var displayResults = PreparePlayabilityResults(results);
+            var displayResults = PrepareSourceCountResults(results);
             Grid.ShowResults(displayResults, "该分类下暂无内容");
             _shownKeys.Clear();
             foreach (var item in displayResults)
@@ -194,7 +194,7 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
             // 固定步长推进,保证订阅源站的 pg 页码单调递增,不会同页重复拉取
             _pageStart = PageSize;
             _hasMore = results.Count > 0;
-            StartPlayabilityProbes(displayResults, token);
+            StartSourceCountQueries(displayResults, token);
         }
         catch (Exception)
         {
@@ -245,14 +245,14 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
             }
 
             // 跨页去重:源站不同页可能返回重复条目(HashSet.Add 返回 false 即为重复)
-            var displayResults = PreparePlayabilityResults(results)
+            var displayResults = PrepareSourceCountResults(results)
                 .Where(item => _shownKeys.Add($"{item.Source}+{item.Id}"))
                 .ToList();
             Grid.AppendResults(displayResults);
             _pageStart += PageSize;
             // 用原始返回数判断是否还有更多:整页都是重复时也要继续向后翻页
             _hasMore = results.Count > 0;
-            StartPlayabilityProbes(displayResults, token);
+            StartSourceCountQueries(displayResults, token);
         }
         catch
         {
@@ -337,103 +337,100 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
         }
     }
 
-    private List<CatalogItem> PreparePlayabilityResults(IEnumerable<CatalogItem> results)
+    private List<CatalogItem> PrepareSourceCountResults(IEnumerable<CatalogItem> results)
     {
         return results.Select(item =>
         {
-            if (item.Source != "douban")
+            if (_host.Services.PlayabilityCache.TryGet(item, out var cached))
             {
-                return item;
+                return cached.ApplyTo(item);
             }
 
-            return _host.Services.PlayabilityCache.TryGet(item, out var cached)
-                ? item with
-                {
-                    PlayabilityStatus = cached.Status,
-                    PlayableSourceCount = cached.PlayableSourceCount,
-                }
-                : item with
-                {
-                    PlayabilityStatus = CatalogPlayabilityStatus.Checking,
-                    PlayableSourceCount = null,
-                };
+            return item with
+            {
+                PlayabilityStatus = CatalogPlayabilityStatus.Checking,
+                PlayableSourceCount = null,
+                PlayableSources = null,
+            };
         }).ToList();
     }
 
-    private void StartPlayabilityProbes(IReadOnlyList<CatalogItem> items, CancellationToken token)
+    private void StartSourceCountQueries(IReadOnlyList<CatalogItem> items, CancellationToken token)
     {
-        var doubanItems = items
-            .Where(item => item.Source == "douban"
-                && item.PlayabilityStatus != CatalogPlayabilityStatus.Playable
+        var pendingItems = items
+            .Where(item => item.PlayabilityStatus != CatalogPlayabilityStatus.Available
                 && item.PlayabilityStatus != CatalogPlayabilityStatus.Unavailable)
             .ToList();
-        if (doubanItems.Count == 0)
+        if (pendingItems.Count == 0)
         {
             return;
         }
 
-        _ = ProbeDoubanPlayabilityAsync(doubanItems, token);
+        _ = QueryCatalogSourceCountsAsync(pendingItems, token);
     }
 
-    private async Task ProbeDoubanPlayabilityAsync(IReadOnlyList<CatalogItem> items, CancellationToken token)
+    private async Task QueryCatalogSourceCountsAsync(IReadOnlyList<CatalogItem> items, CancellationToken token)
     {
-        foreach (var item in items)
+        using var gate = new SemaphoreSlim(2);
+        var tasks = items.Select(async item =>
         {
-            if (token.IsCancellationRequested)
-            {
-                return;
-            }
-
+            var entered = false;
             try
             {
-                if (_host.Services.PlayabilityCache.TryGet(item, out var cached))
-                {
-                    Grid.ReplaceItem(item, item with
-                    {
-                        PlayabilityStatus = cached.Status,
-                        PlayableSourceCount = cached.PlayableSourceCount,
-                    });
-                    continue;
-                }
-
-                var cacheGeneration = _host.Services.PlayabilityCache.Generation;
-                var sourceSnapshot = _host.Services.Sources;
-                var sources = await _host.Services.Catalog.GetDetailSourcesAsync(sourceSnapshot, item.Title, token);
+                await gate.WaitAsync(token);
+                entered = true;
                 if (token.IsCancellationRequested)
                 {
                     return;
                 }
 
-                var playability = CatalogPlayability.FromDetailSources(item.Title, sources);
-                if (!_host.Services.PlayabilityCache.Store(item, playability, cacheGeneration))
+                if (_host.Services.PlayabilityCache.TryGet(item, out var cached))
+                {
+                    Grid.ReplaceItem(item, cached.ApplyTo(item));
+                    return;
+                }
+
+                var cacheGeneration = _host.Services.PlayabilityCache.Generation;
+                var sourceSnapshot = _host.Services.Sources;
+                var sources = await _host.Services.Catalog.GetDetailSourcesAsync(
+                    sourceSnapshot,
+                    item.Title,
+                    token);
+                if (token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                var availability = CatalogPlayability.FromDetailSources(item.Title, sources);
+                if (!_host.Services.PlayabilityCache.Store(item, availability, cacheGeneration))
                 {
                     if (_host.Services.PlayabilityCache.TryGet(item, out var current))
                     {
-                        Grid.ReplaceItem(item, item with
-                        {
-                            PlayabilityStatus = current.Status,
-                            PlayableSourceCount = current.PlayableSourceCount,
-                        });
+                        Grid.ReplaceItem(item, current.ApplyTo(item));
                     }
 
-                    continue;
+                    return;
                 }
 
-                Grid.ReplaceItem(item, item with
-                {
-                    PlayabilityStatus = playability.Status,
-                    PlayableSourceCount = playability.PlayableSourceCount,
-                });
+                Grid.ReplaceItem(item, availability.ApplyTo(item));
             }
             catch when (token.IsCancellationRequested)
             {
-                return;
             }
             catch
             {
                 Grid.ReplaceItem(item, item with { PlayabilityStatus = CatalogPlayabilityStatus.Unknown, PlayableSourceCount = null });
             }
-        }
+            finally
+            {
+                if (entered)
+                {
+                    gate.Release();
+                }
+            }
+        }).ToList();
+
+        await Task.WhenAll(tasks);
     }
 
     private void OnCardClicked(CatalogItem item)
@@ -444,9 +441,12 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
             return;
         }
 
-        var parameter = item.Source == "douban"
-            ? new DetailParameter(item.Title)
-            : new DetailParameter(item.Title, item.Source, item.Id);
+        var parameter = new DetailParameter(
+            item.Title,
+            item.Source == "douban" ? null : item.Source,
+            item.Source == "douban" ? null : item.Id,
+            item.CandidateSources,
+            item.PlayableSources);
         _host.Navigate(AppPage.Detail, parameter);
     }
 
@@ -458,21 +458,40 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
             return;
         }
 
+        var record = _host.Services.PlayRecords.Get(item.Source, item.Id);
+        var resume = CreateResumeContext(item, record);
         var source = _host.Services.FindSource(item.Source);
         if (source is not null)
         {
             try
             {
                 var results = await _host.Services.VodClients.For(source).GetByIdAsync(source, item.Id);
-                var match = results.FirstOrDefault(r => r.Id == item.Id) ?? results.FirstOrDefault();
-                if (match is not null && match.Episodes.Count > 0)
+                var line = PlaybackResumePolicy.FindOriginalPlaybackLine(
+                    results,
+                    item.Id,
+                    record?.PlaybackSourceKey,
+                    record?.SourceName);
+                if (line is not null && line.Episodes.Count > 0)
                 {
-                    var index = Math.Clamp(item.EpisodeIndex ?? 0, 0, match.Episodes.Count - 1);
-                    var poster = string.IsNullOrWhiteSpace(item.Poster) ? match.Poster : item.Poster;
-                    _host.Navigate(AppPage.Player, new PlayParameter(
-                        item.Title, item.Source, item.SourceName, item.Id, match.Episodes, index,
-                        item.PlayTime * 1000, [], poster));
-                    return;
+                    var index = resume.FindEpisodeIndex(line.EpisodeLabels, line.Episodes.Count);
+                    if (index >= 0)
+                    {
+                        var poster = string.IsNullOrWhiteSpace(item.Poster) ? line.Poster : item.Poster;
+                        _host.Navigate(AppPage.Player, new PlayParameter(
+                            item.Title,
+                            line.Source,
+                            line.SourceName,
+                            line.Id,
+                            line.Episodes,
+                            index,
+                            resume.StartPositionMs,
+                            [],
+                            poster,
+                            line.PlaybackSourceKey,
+                            line.EpisodeLabels,
+                            resume));
+                        return;
+                    }
                 }
             }
             catch
@@ -481,12 +500,18 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
             }
         }
 
-        _host.Navigate(AppPage.Detail, new DetailParameter(item.Title, item.Source, item.Id));
+        _host.Navigate(AppPage.Detail, new DetailParameter(
+            item.Title,
+            item.Source,
+            item.Id,
+            PlaybackSourceKey: record?.PlaybackSourceKey,
+            Resume: resume));
     }
 
     private void ResumeLocalRecord(CatalogItem item)
     {
         var record = _host.Services.PlayRecords.Get(item.Source, item.Id);
+        var resume = CreateResumeContext(item, record);
         var libraryItem = _host.Services.LocalMedia.Get(record?.LocalMediaId ?? item.Id);
         var candidates = libraryItem is not null
             ? libraryItem.Episodes.Select(episode => episode.Path).ToList()
@@ -508,8 +533,8 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
             return;
         }
 
-        var index = Math.Clamp(item.EpisodeIndex ?? record?.Index ?? 0, 0, episodes.Count - 1);
-        if (string.IsNullOrWhiteSpace(episodes[index]))
+        var index = resume.FindEpisodeIndex(null, episodes.Count);
+        if (index < 0 || string.IsNullOrWhiteSpace(episodes[index]))
         {
             index = episodes.FindIndex(path => !string.IsNullOrWhiteSpace(path));
         }
@@ -526,9 +551,30 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
             item.Id,
             episodes,
             Math.Max(0, index),
-            item.PlayTime * 1000,
+            resume.StartPositionMs,
             [localSource],
-            poster));
+            poster,
+            Resume: resume));
+    }
+
+    private static PlaybackResumeContext CreateResumeContext(CatalogItem item, PlayRecordItem? record)
+    {
+        var episodeIndex = item.EpisodeIndex ?? record?.Index ?? 0;
+        var episodeLabel = record?.EpisodeLabel;
+        var episodeNumber = record?.EpisodeNumber;
+        if (episodeNumber is null
+            && EpisodeLabelFormatter.TryGetNumber(episodeLabel, out var parsedNumber))
+        {
+            episodeNumber = parsedNumber;
+        }
+
+        return new PlaybackResumeContext(
+            episodeIndex,
+            (record?.PlayTime ?? item.PlayTime) * 1000,
+            episodeLabel,
+            episodeNumber,
+            item.Source,
+            item.Id);
     }
 
     private List<string> FindCachedLocalEpisodes(string title)

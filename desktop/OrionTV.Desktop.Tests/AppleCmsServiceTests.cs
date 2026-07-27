@@ -53,20 +53,69 @@ public class AppleCmsServiceTests
     }
 
     [Fact]
+    public void ParseSources_RemovesWebRouteWhenMatchingDirectHlsRouteExists()
+    {
+        var sources = AppleCmsEpisodeParser.ParseSources(
+            "hnyun$$$hnm3u8",
+            "第1集$https://hn.example/play/one#第2集$https://hn.example/play/two$$$" +
+            "第1集$https://hn.example/play/one/index.m3u8#第2集$https://hn.example/play/two/index.m3u8");
+
+        var source = Assert.Single(sources);
+        Assert.Equal("hnm3u8", source.Name);
+        Assert.Equal("1:hnm3u8", source.Key);
+        Assert.Equal(
+            ["https://hn.example/play/one/index.m3u8", "https://hn.example/play/two/index.m3u8"],
+            source.Episodes);
+        Assert.Equal(["第1集", "第2集"], source.EpisodeLabels);
+    }
+
+    [Fact]
+    public void ParseSources_KeepsExtensionlessRouteWithoutMatchingDirectVariant()
+    {
+        var sources = AppleCmsEpisodeParser.ParseSources(
+            "custom$$$backup",
+            "正片$https://api.example/stream/one$$$正片$https://cdn.example/one.m3u8");
+
+        Assert.Equal(2, sources.Count);
+    }
+
+    [Fact]
+    public void ParseSources_KeepsLabelsAlignedWhenNumberedEpisodesHaveGapsAndSpecials()
+    {
+        var source = Assert.Single(AppleCmsEpisodeParser.ParseSources(
+            "hnm3u8",
+            "第122集$https://hn.example/122/index.m3u8#" +
+            "第124集$https://hn.example/124/index.m3u8#" +
+            "虚天战纪下$https://hn.example/special-down/index.m3u8#" +
+            "虚天战纪上$https://hn.example/special-up/index.m3u8#" +
+            "第180集$https://hn.example/180/index.m3u8"));
+
+        Assert.Equal(
+            ["第122集", "第124集", "虚天战纪下", "虚天战纪上", "第180集"],
+            source.EpisodeLabels);
+        var episode180Index = source.EpisodeLabels!.ToList().IndexOf("第180集");
+        Assert.Equal("https://hn.example/180/index.m3u8", source.Episodes[episode180Index]);
+        Assert.Equal("180", EpisodeLabelFormatter.CompactAt(source.EpisodeLabels, episode180Index));
+        Assert.Equal("虚天战纪下", EpisodeLabelFormatter.DisplayAt(source.EpisodeLabels, 2));
+    }
+
+    [Fact]
     public void ExpandSources_CreatesOneSelectableResultPerPlaybackLine()
     {
         var result = new SearchResult(
             "7", "Movie", "", ["https://video.example/qiyi.m3u8"], "primary", "主线路", "",
             PlaybackSources:
             [
-                new PlaybackSource("0:qiyi", "qiyi", ["https://video.example/qiyi.m3u8"]),
-                new PlaybackSource("1:qq", "qq", ["https://video.example/qq.m3u8"]),
+                new PlaybackSource("0:qiyi", "qiyi", ["https://video.example/qiyi.m3u8"], ["正片"]),
+                new PlaybackSource("1:qq", "qq", ["https://video.example/qq.m3u8"], ["第1集"]),
             ]);
 
         var expanded = SearchResultSources.Expand(result);
 
         Assert.Equal(2, expanded.Count);
         Assert.Equal(["主线路 · qiyi", "主线路 · qq"], expanded.Select(item => item.SourceName));
+        Assert.Equal(["正片"], expanded[0].EpisodeLabels);
+        Assert.Equal(["第1集"], expanded[1].EpisodeLabels);
         Assert.NotEqual(SearchResultSources.KeyOf(expanded[0]), SearchResultSources.KeyOf(expanded[1]));
     }
 
@@ -89,6 +138,7 @@ public class AppleCmsServiceTests
         Assert.Equal("主线路 · WS☛最全", expanded.SourceName);
         Assert.Equal("0:WS☛最全", expanded.PlaybackSourceKey);
         Assert.Equal(["https://video.example/notice.m3u8"], expanded.Episodes);
+        Assert.Equal(["第1集"], expanded.EpisodeLabels);
     }
 
     [Fact]
@@ -233,6 +283,68 @@ public class AppleCmsServiceTests
     }
 
     [Fact]
+    public async Task SearchAllAsync_CollapsesSameTitleAndCountsDetailRoutes()
+    {
+        using var http = new HttpClient(new StubHandler(request => request.RequestUri!.Host switch
+        {
+            "first.example" =>
+                """
+                {
+                  "list": [
+                    {
+                      "vod_id": 1,
+                      "vod_name": "Movie",
+                      "vod_play_from": "A$$$B",
+                      "vod_play_url": "第1集$https://video.example/a.m3u8$$$第1集$https://video.example/b.m3u8"
+                    },
+                    {
+                      "vod_id": 3,
+                      "vod_name": "Movie Extra",
+                      "vod_pic": "https://image.example/extra.jpg",
+                      "vod_play_url": "第1集$https://video.example/extra.m3u8"
+                    }
+                  ]
+                }
+                """,
+            "second.example" =>
+                """
+                {
+                  "list": [
+                    {
+                      "vod_id": 2,
+                      "vod_name": " movie ",
+                      "vod_pic": "https://image.example/movie.jpg",
+                      "vod_play_from": "C",
+                      "vod_play_url": "第1集$https://video.example/c.m3u8"
+                    }
+                  ]
+                }
+                """,
+            _ => "{ \"list\": [] }",
+        }));
+        var service = new CatalogService(http, new DoubanClient(http));
+        var sources = new[]
+        {
+            new VideoSource("first", "First", "https://first.example/vod"),
+            new VideoSource("second", "Second", "https://second.example/vod"),
+        };
+
+        var results = await service.SearchAllAsync(sources, "Movie");
+
+        Assert.Equal(2, results.Count);
+        var movie = results[0];
+        Assert.Equal("2", movie.Id);
+        Assert.Equal("second", movie.Source);
+        Assert.Equal("https://image.example/movie.jpg", movie.Poster);
+        Assert.Equal(CatalogPlayabilityStatus.Available, movie.PlayabilityStatus);
+        Assert.Equal(3, movie.PlayableSourceCount);
+        Assert.Equal(3, movie.CandidateSources!.Count);
+        Assert.Null(movie.PlayableSources);
+        Assert.Equal("Movie Extra", results[1].Title);
+        Assert.Single(results[1].CandidateSources!);
+    }
+
+    [Fact]
     public void PlaybackFallbackSelector_SkipsCurrentFailedAndSourcesWithoutRequestedEpisode()
     {
         var results = new[]
@@ -269,9 +381,10 @@ public class AppleCmsServiceTests
 
         var playability = CatalogPlayability.FromDetailSources("Movie", results);
 
-        Assert.Equal(CatalogPlayabilityStatus.Playable, playability.Status);
+        Assert.Equal(CatalogPlayabilityStatus.Available, playability.Status);
         // source+id 去重：1,4,2,5,6 → 5（不含 Movie Extra）
         Assert.Equal(5, playability.PlayableSourceCount);
+        Assert.Equal(5, playability.CandidateSources!.Count);
     }
 
     [Fact]
@@ -293,8 +406,9 @@ public class AppleCmsServiceTests
 
         var playability = CatalogPlayability.FromDetailSources("Movie", [multiLine]);
 
-        Assert.Equal(CatalogPlayabilityStatus.Playable, playability.Status);
+        Assert.Equal(CatalogPlayabilityStatus.Available, playability.Status);
         Assert.Equal(2, playability.PlayableSourceCount);
+        Assert.Equal(2, playability.CandidateSources!.Count);
     }
 
     [Fact]
@@ -309,6 +423,7 @@ public class AppleCmsServiceTests
 
         Assert.Equal(CatalogPlayabilityStatus.Unavailable, playability.Status);
         Assert.Equal(0, playability.PlayableSourceCount);
+        Assert.Empty(playability.CandidateSources!);
     }
 
     [Fact]
@@ -320,10 +435,11 @@ public class AppleCmsServiceTests
     }
 
     [Theory]
+    [InlineData(CatalogPlayabilityStatus.Available, 2, "2\u6e90")]
     [InlineData(CatalogPlayabilityStatus.Playable, 2, "2\u6e90")]
     [InlineData(CatalogPlayabilityStatus.Playable, 1, "1\u6e90")]
     [InlineData(CatalogPlayabilityStatus.Unavailable, 0, "\u6682\u65e0\u8d44\u6e90")]
-    [InlineData(CatalogPlayabilityStatus.Checking, null, null)]
+    [InlineData(CatalogPlayabilityStatus.Checking, null, "\u68c0\u6d4b\u4e2d")]
     [InlineData(CatalogPlayabilityStatus.Unknown, null, null)]
     public void CatalogPlayabilityBadge_GetLabel_ReturnsCompactVisibleStates(
         CatalogPlayabilityStatus status,
@@ -339,7 +455,7 @@ public class AppleCmsServiceTests
         var cache = new CatalogPlayabilityCache();
         var firstViewItem = new CatalogItem("douban-1295644", "这个杀手不太冷", "one.jpg", "douban", "豆瓣", "1994");
         var nextViewItem = new CatalogItem("douban-1295644", "这个杀手不太冷", "two.jpg", "douban", "豆瓣", "1994");
-        var result = new CatalogPlayability(CatalogPlayabilityStatus.Playable, 3);
+        var result = new CatalogPlayability(CatalogPlayabilityStatus.Available, 3);
 
         Assert.True(cache.Store(firstViewItem, result, cache.Generation));
         Assert.True(cache.TryGet(nextViewItem, out var cached));
@@ -351,7 +467,7 @@ public class AppleCmsServiceTests
     {
         var cache = new CatalogPlayabilityCache();
         var item = new CatalogItem("douban-1295644", "这个杀手不太冷", "poster.jpg", "douban", "豆瓣", "1994");
-        var result = new CatalogPlayability(CatalogPlayabilityStatus.Playable, 3);
+        var result = new CatalogPlayability(CatalogPlayabilityStatus.Available, 3);
         var oldGeneration = cache.Generation;
 
         Assert.True(cache.Store(item, result, oldGeneration));
@@ -408,9 +524,11 @@ public class AppleCmsServiceTests
     [Theory]
     [InlineData(PlaybackStartupSignal.Buffering, false)]
     [InlineData(PlaybackStartupSignal.LengthChanged, false)]
-    [InlineData(PlaybackStartupSignal.Playing, true)]
-    [InlineData(PlaybackStartupSignal.TimeAdvanced, true)]
-    public void PlaybackStartupPolicy_OnlyResolvesAfterRealPlaybackProgress(
+    [InlineData(PlaybackStartupSignal.Playing, false)]
+    [InlineData(PlaybackStartupSignal.TimeAdvanced, false)]
+    [InlineData(PlaybackStartupSignal.VideoOutputStarted, true)]
+    [InlineData(PlaybackStartupSignal.Error, true)]
+    public void PlaybackStartupPolicy_OnlyResolvesAfterVideoOutputOrTerminalError(
         PlaybackStartupSignal signal,
         bool expected)
     {

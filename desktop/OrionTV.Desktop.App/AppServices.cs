@@ -17,6 +17,7 @@ public sealed class AppServices : IDisposable
     {
         Http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         Http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OpaiTV-Desktop");
+        Updates = new DesktopUpdateService();
         VodClients = new VodSourceClientFactory(Http);
         AppleCms = VodClients.AppleCms;
         Douban = new DoubanClient(Http);
@@ -24,6 +25,15 @@ public sealed class AppServices : IDisposable
         M3u = new M3uParser(Http);
         Hls = new HlsAdSkip(Http);
         ChannelHealth = new ChannelHealthProbe(Http);
+        VodSourceHealth = new VodSourceHealthProbe(ChannelHealth, new LibVlcMediaDecodeProbe(GetLibVlcAsync));
+        VodPlayableSources = new VodPlayableSourceResolver(
+            (title, cancellationToken) => Catalog.GetDetailSourcesAsync(Sources, title, cancellationToken),
+            (item, cancellationToken) => Catalog.HydrateEpisodesAsync(Sources, item, cancellationToken),
+            (items, onResult, cancellationToken) => VodSourceHealth.ProbeManyAsync(
+                items,
+                onResult,
+                concurrency: 4,
+                cancellationToken));
         VodCache = new VodCacheService();
         Downloads = new VodDownloadManager(VodCache);
         Settings = SettingsStore.Load();
@@ -32,6 +42,7 @@ public sealed class AppServices : IDisposable
     }
 
     public HttpClient Http { get; }
+    public DesktopUpdateService Updates { get; }
     public VodSourceClientFactory VodClients { get; }
     public AppleCmsClient AppleCms { get; }
     public DoubanClient Douban { get; }
@@ -39,6 +50,8 @@ public sealed class AppServices : IDisposable
     public M3uParser M3u { get; }
     public HlsAdSkip Hls { get; }
     public ChannelHealthProbe ChannelHealth { get; }
+    internal VodSourceHealthProbe VodSourceHealth { get; }
+    internal VodPlayableSourceResolver VodPlayableSources { get; }
     public VodCacheService VodCache { get; }
     public VodDownloadManager Downloads { get; }
     public CatalogPlayabilityCache PlayabilityCache { get; } = new();
@@ -209,6 +222,7 @@ public sealed class AppServices : IDisposable
     {
         Sources = VideoSourceMerger.Merge(_subscriptionSources, _extraSources);
         PlayabilityCache.Invalidate();
+        VodPlayableSources.Invalidate();
     }
 
     public void ClearSources()
@@ -240,6 +254,8 @@ public sealed class AppServices : IDisposable
 
     public void Dispose()
     {
+        Updates.Dispose();
+        VodPlayableSources.Dispose();
         Downloads.Dispose();
         VodCache.Dispose();
         Task[] pendingCleanups;
