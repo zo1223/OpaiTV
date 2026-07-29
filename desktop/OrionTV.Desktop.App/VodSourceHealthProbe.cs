@@ -400,7 +400,10 @@ internal sealed class LibVlcMediaDecodeProbe(Func<Task<LibVLC>> getLibVlc) : IMe
     }
 
     internal static IReadOnlyList<string> BuildMediaOptions(Uri uri) =>
-        PlaybackMediaOptions.ForUri(uri, networkCachingMs: 6000);
+    [
+        .. PlaybackMediaOptions.ForUri(uri, networkCachingMs: 6000),
+        ":no-audio",
+    ];
 
     private static MediaDecodeProbeResult ProbeCore(
         LibVLC libVlc,
@@ -431,7 +434,6 @@ internal sealed class LibVlcMediaDecodeProbe(Func<Task<LibVLC>> getLibVlc) : IMe
             using var player = new MediaPlayer(libVlc)
             {
                 Hwnd = hwnd,
-                Mute = true,
                 EnableKeyInput = false,
                 EnableMouseInput = false,
             };

@@ -1722,18 +1722,15 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             return;
         }
 
-        var current = _usingLocalEngine && _localEngine is not null
-            ? _localEngine.Time
-            : _currentTimeMs;
-        var target = Math.Clamp(current + deltaMs, 0, _lengthMs);
         if (_usingLocalEngine && _localEngine is not null)
         {
-            _localEngine.TrySeek(target);
+            _localEngine.TrySeekBy(deltaMs);
             return;
         }
 
         if (_controller is not null)
         {
+            var target = Math.Clamp(_currentTimeMs + deltaMs, 0, _lengthMs);
             _controller.Time = target;
         }
     }

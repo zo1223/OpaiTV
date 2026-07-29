@@ -291,50 +291,6 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
         StatusText.Text = $"已从列表移除《{item.Card.Title}》，视频文件仍保留在原位置";
     }
 
-    private async void OptimizeSeekButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { DataContext: LocalCacheItem item } button)
-        {
-            return;
-        }
-
-        if (!LocalMediaRemuxer.IsFfmpegAvailable())
-        {
-            StatusText.Text = "未找到 ffmpeg。请安装 ffmpeg 并加入 PATH 后重试（用于 TS→MP4 快速拖动优化）";
-            return;
-        }
-
-        button.IsEnabled = false;
-        try
-        {
-            StatusText.Text = $"正在优化《{item.Title}》拖动体验（转封装 MP4，不重编码）…";
-            var source = item.MergedTsPath;
-            if (string.IsNullOrWhiteSpace(source) || !File.Exists(source))
-            {
-                StatusText.Text = "未找到可优化的 merged.ts";
-                button.IsEnabled = true;
-                return;
-            }
-
-            var output = await LocalMediaRemuxer.TryRemuxToFastSeekMp4Async(source, item.Directory)
-                .ConfigureAwait(true);
-            if (string.IsNullOrWhiteSpace(output))
-            {
-                StatusText.Text = "优化失败：ffmpeg 转封装未成功（仍可继续播 TS）";
-                button.IsEnabled = true;
-                return;
-            }
-
-            StatusText.Text = $"《{item.Title}》已优化为可快速拖动文件（{new FileInfo(output).Length / 1024d / 1024d:0.0} MB）";
-            RefreshAll();
-        }
-        catch (Exception error)
-        {
-            StatusText.Text = $"优化失败：{ShortError(error)}";
-            button.IsEnabled = true;
-        }
-    }
-
     private async void CancelActiveButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { DataContext: ActiveJobItem item })
@@ -416,7 +372,9 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
 
         try
         {
-            await _host.Services.VodCache.DeleteEntryAsync(item.Directory);
+            await _host.Services.VodCache.DeleteEntryAsync(
+                item.Directory,
+                _host.Services.Settings.VodCacheDirectory);
             StatusText.Text = $"已删除《{item.Title}》缓存";
             RefreshAll();
         }
@@ -534,25 +492,16 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
             CanResume = entry.CanResumeDownload;
             CanDecrypt = entry.CanDecryptMerge;
 
-            var mergedTs = Path.Combine(entry.Directory, VodCacheSession.MergedFileName);
-            MergedTsPath = File.Exists(mergedTs) ? mergedTs : null;
-            var hasFastSeek = LocalMediaRemuxer.HasFastSeekFile(entry.Directory);
-            CanOptimize = !hasFastSeek
-                && !string.IsNullOrWhiteSpace(MergedTsPath)
-                && !(entry.PlaylistPath?.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase) ?? false);
-
             var state = entry.IsComplete
                 ? "整集已完成"
                 : $"已下载 {entry.CompletedSegments}/{Math.Max(entry.TotalSegments, entry.CompletedSegments)} 段";
-            var merged = hasFastSeek
-                ? " · 快速拖动 MP4"
-                : !string.IsNullOrWhiteSpace(entry.MergedFilePath)
-                    ? (entry.IsComplete ? " · 单文件 TS" : $" · 单文件已合并 {entry.MergedSegments} 段")
-                    : entry.CanDecryptMerge
-                        ? " · AES 加密，可一键解密合并"
-                        : entry.MergeSupported
-                            ? ""
-                            : " · 加密源（需解密后才能合成单文件）";
+            var merged = !string.IsNullOrWhiteSpace(entry.MergedFilePath)
+                ? (entry.IsComplete ? " · 单文件 TS" : $" · 单文件已合并 {entry.MergedSegments} 段")
+                : entry.CanDecryptMerge
+                    ? " · AES 加密，可一键解密合并"
+                    : entry.MergeSupported
+                        ? ""
+                        : " · 加密源（需解密后才能合成单文件）";
             Summary = $"{state}{merged} · {entry.SizeBytes / 1024d / 1024d:0.0} MB · {entry.CreatedAt:yyyy-MM-dd HH:mm}";
         }
 
@@ -562,13 +511,10 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
         public string Poster { get; }
         public string Summary { get; }
         public string SourceUrl { get; }
-        public string? MergedTsPath { get; }
         public bool CanResume { get; }
         public bool CanDecrypt { get; }
-        public bool CanOptimize { get; }
         public Visibility ResumeVisibility => CanResume ? Visibility.Visible : Visibility.Collapsed;
         public Visibility DecryptVisibility => CanDecrypt ? Visibility.Visible : Visibility.Collapsed;
-        public Visibility OptimizeVisibility => CanOptimize ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private sealed class LocalMediaCardItem

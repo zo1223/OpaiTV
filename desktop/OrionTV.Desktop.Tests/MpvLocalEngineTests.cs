@@ -1,5 +1,6 @@
 using OrionTV.Desktop.App.LocalPlayback;
 using System.Text.Json;
+using System.Windows.Threading;
 
 namespace OrionTV.Desktop.Tests;
 
@@ -56,6 +57,129 @@ public sealed class MpvLocalEngineTests
         var command = MpvLocalEngine.BuildLoadCommand(@"E:\Videos\episode.mkv", 0);
 
         Assert.Equal(["loadfile", @"E:\Videos\episode.mkv", "replace"], command);
+    }
+
+    [Fact]
+    public void BuildSeekCommand_uses_exact_absolute_seek_for_keyboard_and_slider()
+    {
+        var command = MpvLocalEngine.BuildSeekCommand(970_565);
+
+        Assert.Equal("seek", command[0]);
+        Assert.Equal("970.565", command[1]);
+        Assert.Equal("absolute+exact", command[2]);
+    }
+
+    [Theory]
+    [InlineData(230_000, 225_000, 230_050, false)]
+    [InlineData(230_000, 225_000, 228_500, false)]
+    [InlineData(230_000, 225_000, 225_250, true)]
+    [InlineData(230_000, 215_000, 218_500, true)]
+    [InlineData(230_000, 200_000, 210_000, true)]
+    [InlineData(230_000, 235_000, 230_050, false)]
+    [InlineData(230_000, 235_000, 234_750, true)]
+    [InlineData(230_000, 245_000, 241_500, true)]
+    [InlineData(230_000, 260_000, 250_000, true)]
+    [InlineData(230_000, 230_000, 230_000, true)]
+    public void SeekObservationFilter_rejects_pre_seek_position_until_target_is_reported(
+        long originMs,
+        long targetMs,
+        long observedMs,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            MpvLocalEngine.HasReachedSeekTarget(originMs, targetMs, observedMs));
+    }
+
+    [Fact]
+    public void SeekBurstOrigin_survives_intermediate_confirmation_and_resets_on_reversal()
+    {
+        const int generation = 7;
+        const long deadline = 2_000;
+
+        Assert.Equal(
+            (230_000L, 240_000L),
+            MpvLocalEngine.ResolveRelativeSeekBurst(
+                existingOriginMs: 230_000,
+                existingTargetMs: 235_000,
+                existingGeneration: generation,
+                existingDeadline: deadline,
+                currentMs: 235_000,
+                deltaMs: 5_000,
+                generation: generation,
+                now: 1_000));
+
+        Assert.Equal(
+            (240_000L, 235_000L),
+            MpvLocalEngine.ResolveRelativeSeekBurst(
+                existingOriginMs: 230_000,
+                existingTargetMs: 240_000,
+                existingGeneration: generation,
+                existingDeadline: deadline,
+                currentMs: 240_000,
+                deltaMs: -5_000,
+                generation: generation,
+                now: 1_001));
+
+        Assert.Equal(
+            (235_000L, 240_000L),
+            MpvLocalEngine.ResolveRelativeSeekBurst(
+                existingOriginMs: 230_000,
+                existingTargetMs: 235_000,
+                existingGeneration: generation,
+                existingDeadline: deadline,
+                currentMs: 235_000,
+                deltaMs: 5_000,
+                generation: generation,
+                now: deadline));
+
+        Assert.Equal(
+            (235_000L, 240_000L),
+            MpvLocalEngine.ResolveRelativeSeekBurst(
+                existingOriginMs: 230_000,
+                existingTargetMs: 235_000,
+                existingGeneration: generation,
+                existingDeadline: deadline,
+                currentMs: 235_000,
+                deltaMs: 5_000,
+                generation: generation + 1,
+                now: 1_000));
+    }
+
+    [Fact]
+    public void RelativeSeekBurst_keeps_requested_targets_stable_across_ts_corrections()
+    {
+        using var engine = new MpvLocalEngine(new IntPtr(1), Dispatcher.CurrentDispatcher);
+
+        Assert.True(engine.TrySeekBy(5_000));
+        Assert.Equal(5_000, engine.Time);
+        Assert.True(engine.TryApplyObservedTime(11_000));
+
+        Assert.True(engine.TrySeekBy(5_000));
+        Assert.Equal(10_000, engine.Time);
+        Assert.True(engine.TryApplyObservedTime(16_000));
+
+        Assert.True(engine.TrySeekBy(5_000));
+        Assert.Equal(15_000, engine.Time);
+        Assert.True(engine.TryApplyObservedTime(21_000));
+
+        Assert.True(engine.TrySeekBy(-5_000));
+        Assert.Equal(16_000, engine.Time);
+    }
+
+    [Fact]
+    public void AbsoluteSeek_ends_relative_burst_before_next_keyboard_seek()
+    {
+        using var engine = new MpvLocalEngine(new IntPtr(1), Dispatcher.CurrentDispatcher);
+
+        Assert.True(engine.TrySeekBy(5_000));
+        Assert.True(engine.TryApplyObservedTime(11_000));
+
+        Assert.True(engine.TrySeek(30_000));
+        Assert.True(engine.TryApplyObservedTime(36_000));
+
+        Assert.True(engine.TrySeekBy(5_000));
+        Assert.Equal(41_000, engine.Time);
     }
 
     [Theory]

@@ -96,9 +96,6 @@
                                 <DockPanel>
                                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="14,0,0,0">
                                         <Button Content="播放" Style="{StaticResource PrimaryButtonStyle}" Height="34" Padding="15,0" Click="PlayCacheButton_Click" />
-                                        <Button Content="优化拖动" Style="{StaticResource SecondaryButtonStyle}" Height="34" Padding="15,0" Margin="8,0,0,0"
-                                                Visibility="{Binding OptimizeVisibility}" Click="OptimizeSeekButton_Click"
-                                                ToolTip="把 TS 转封装为可快速拖动的 MP4（不重编码，需本机安装 ffmpeg）" />
                                         <Button Content="一键解密合并" Style="{StaticResource SecondaryButtonStyle}" Height="34" Padding="15,0" Margin="8,0,0,0"
                                                 Visibility="{Binding DecryptVisibility}" Click="DecryptMergeButton_Click"
                                                 ToolTip="将 AES-128 加密分片解密并合并为单个 merged.ts" />

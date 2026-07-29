@@ -179,7 +179,7 @@ public class VodSourceHealthProbeTests
     }
 
     [Fact]
-    public void LibVlc_decode_probe_uses_the_same_online_request_options_as_playback()
+    public void LibVlc_decode_probe_uses_playback_network_options_without_audio_output()
     {
         var options = LibVlcMediaDecodeProbe.BuildMediaOptions(
             new Uri("https://video.example:8443/episode.m3u8"));
@@ -188,7 +188,7 @@ public class VodSourceHealthProbeTests
         Assert.Contains(":http-referrer=https://video.example:8443/", options);
         Assert.Contains(":http-reconnect", options);
         Assert.Contains(":network-caching=6000", options);
-        Assert.DoesNotContain(":no-audio", options);
+        Assert.Contains(":no-audio", options);
         Assert.Equal(PlaybackStartupWatchdog.DefaultTimeout, LibVlcMediaDecodeProbe.DecodeTimeout);
     }
 

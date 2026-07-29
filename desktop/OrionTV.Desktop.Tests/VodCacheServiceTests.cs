@@ -390,6 +390,43 @@ public sealed class VodCacheServiceTests
     }
 
     [Fact]
+    public void CompletedCacheIgnoresLegacyPlaybackMp4AndUsesMergedTs()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-legacy-playback-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Combine(root, "Legacy Series", "第1集-test");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            const string title = "Legacy Series 第1集";
+            const string sourceUrl = "https://video.example/legacy.m3u8";
+            var mergedPath = Path.Combine(directory, VodCacheSession.MergedFileName);
+            var legacyPlaybackPath = Path.Combine(directory, "playback.mp4");
+            File.WriteAllBytes(mergedPath, new byte[1024]);
+            File.WriteAllBytes(legacyPlaybackPath, new byte[2048]);
+            File.WriteAllText(
+                Path.Combine(directory, "cache.json"),
+                JsonSerializer.Serialize(new CacheMetadata(
+                    title,
+                    sourceUrl,
+                    DateTimeOffset.UtcNow,
+                    IsComplete: true,
+                    CompletedSegments: 1,
+                    TotalSegments: 1,
+                    MergedSegments: 1,
+                    MergedFileName: VodCacheSession.MergedFileName)));
+
+            using var service = new VodCacheService();
+            Assert.Equal(mergedPath, service.FindCompletedPlaybackPath(root, sourceUrl, title));
+            Assert.Equal(mergedPath, Assert.Single(service.GetEntries(root)).PlaylistPath);
+            Assert.True(File.Exists(legacyPlaybackPath));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public async Task TransientMetadataFileLockDoesNotFailCompletedDownload()
     {
         await using var upstream = new FakeHlsServer(delayThirdSegment: true);
@@ -460,6 +497,59 @@ public sealed class VodCacheServiceTests
     }
 
     [Fact]
+    public async Task DeleteEntryPrunesSeriesOnlyAfterLastEpisodeAndKeepsCacheRoot()
+    {
+        using var service = new VodCacheService();
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-delete-series-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var seriesDirectory = Path.Combine(root, "Delete Series");
+            var first = CreateCacheEntry(seriesDirectory, "第1集-test");
+            var second = CreateCacheEntry(seriesDirectory, "第2集-test");
+
+            await service.DeleteEntryAsync(first, root);
+
+            Assert.False(Directory.Exists(first));
+            Assert.True(Directory.Exists(seriesDirectory));
+            Assert.True(Directory.Exists(second));
+
+            await service.DeleteEntryAsync(second, root);
+
+            Assert.False(Directory.Exists(second));
+            Assert.False(Directory.Exists(seriesDirectory));
+            Assert.True(Directory.Exists(root));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task DeleteEntryKeepsSeriesDirectoryWhenUnmanagedFilesRemain()
+    {
+        using var service = new VodCacheService();
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-delete-content-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var seriesDirectory = Path.Combine(root, "Keep Series");
+            var entry = CreateCacheEntry(seriesDirectory, "第1集-test");
+            var unrelatedFile = Path.Combine(seriesDirectory, "keep.txt");
+            await File.WriteAllTextAsync(unrelatedFile, "keep");
+
+            await service.DeleteEntryAsync(entry, root);
+
+            Assert.False(Directory.Exists(entry));
+            Assert.True(Directory.Exists(seriesDirectory));
+            Assert.True(File.Exists(unrelatedFile));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public async Task GroupedEpisodeCacheResumesFromItsNestedDirectory()
     {
         await using var upstream = new FakeHlsServer(delayThirdSegment: true);
@@ -509,12 +599,20 @@ public sealed class VodCacheServiceTests
             Assert.True(File.Exists(session.MergedFilePath));
             Assert.Empty(Directory.EnumerateFiles(session.Directory, "segment_*.*"));
             Assert.True(Assert.Single(service.GetEntries(root)).IsComplete);
-            await service.DeleteEntryAsync(session.Directory);
+            await service.DeleteEntryAsync(session.Directory, root);
         }
         finally
         {
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
+    }
+
+    private static string CreateCacheEntry(string parent, string name)
+    {
+        var directory = Path.Combine(parent, name);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "cache.json"), "{}");
+        return directory;
     }
 
     [Fact]

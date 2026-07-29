@@ -62,8 +62,6 @@ public sealed class VodCacheSession
     public string OfflinePlaylistPath => Path.Combine(Directory, "offline.m3u8");
     public string MergedFilePath => Path.Combine(Directory, MergedFileName);
     public const string MergedFileName = "merged.ts";
-    public const string FastSeekFileName = LocalMediaRemuxer.FastSeekFileName;
-    public string FastSeekFilePath => Path.Combine(Directory, FastSeekFileName);
     public Task<string> Ready => _ready.Task;
     public Task DownloadTask { get; internal set; } = Task.CompletedTask;
     public VodCacheProgress Progress { get; internal set; } = new(0, 0, 0, 0, 0, false);
@@ -214,13 +212,8 @@ public sealed class VodCacheService : IDisposable
                 var mergedPath = Path.Combine(
                     directory,
                     metadata.MergedFileName ?? VodCacheSession.MergedFileName);
-                var fastSeekPath = Path.Combine(directory, LocalMediaRemuxer.FastSeekFileName);
                 string? playbackPath = null;
-                if (File.Exists(fastSeekPath) && new FileInfo(fastSeekPath).Length > 0)
-                {
-                    playbackPath = fastSeekPath;
-                }
-                else if (File.Exists(mergedPath) && new FileInfo(mergedPath).Length > 0)
+                if (File.Exists(mergedPath) && new FileInfo(mergedPath).Length > 0)
                 {
                     playbackPath = mergedPath;
                 }
@@ -494,14 +487,7 @@ public sealed class VodCacheService : IDisposable
             }
 
             var playlist = Path.Combine(directory, "offline.m3u8");
-            var fastSeekPath = Path.Combine(directory, LocalMediaRemuxer.FastSeekFileName);
-            var hasFastSeek = File.Exists(fastSeekPath) && new FileInfo(fastSeekPath).Length > 0;
-            // 优先播可快速 seek 的 mp4，其次 merged.ts，再退回 offline.m3u8。
-            var playPath = hasFastSeek
-                ? fastSeekPath
-                : hasMerged
-                    ? mergedPath
-                    : playlist;
+            var playPath = hasMerged ? mergedPath : playlist;
             if (!File.Exists(playPath))
             {
                 continue;
@@ -530,7 +516,7 @@ public sealed class VodCacheService : IDisposable
                 completed,
                 total,
                 files.Sum(file => file.Length),
-                hasFastSeek ? fastSeekPath : (hasMerged ? mergedPath : null),
+                hasMerged ? mergedPath : null,
                 metadata?.MergedSegments ?? (hasMerged ? completed : 0),
                 metadata?.MergeSupported ?? hasMerged,
                 metadata?.SourceUrl ?? "",
@@ -615,18 +601,6 @@ public sealed class VodCacheService : IDisposable
         TryDeleteKeyAssets(directory);
         VodCacheLog.Info(
             $"decrypt-merge-done dir={directory} segs={mergedSegments} size={mergedInfo.Length}");
-        // 解密合并后后台转封装 mp4，提升拖动 seek 手感。
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await LocalMediaRemuxer.TryRemuxToFastSeekMp4Async(mergedPath, directory, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-            catch
-            {
-            }
-        });
         return mergedPath;
     }
 
@@ -695,20 +669,39 @@ public sealed class VodCacheService : IDisposable
         }
     }
 
-    public async Task DeleteEntryAsync(string directory)
+    public async Task DeleteEntryAsync(string directory, string cacheDirectory)
     {
-        if (_sessions.Values.Any(session => session.Directory.Equals(directory, StringComparison.OrdinalIgnoreCase)))
+        var root = VodCacheSettings.ResolveDirectory(cacheDirectory);
+        var target = Path.GetFullPath(directory);
+        var parent = Path.GetDirectoryName(target);
+        var isTopLevelEntry = parent is not null && PathsEqual(parent, root);
+        var groupDirectory = !isTopLevelEntry
+            && parent is not null
+            && Path.GetDirectoryName(parent) is { } grandparent
+            && PathsEqual(grandparent, root)
+                ? parent
+                : null;
+        if (!isTopLevelEntry && groupDirectory is null)
+        {
+            throw new InvalidOperationException("CACHE_ENTRY_OUTSIDE_ROOT");
+        }
+
+        if (_sessions.Values.Any(session => PathsEqual(session.Directory, target)))
         {
             throw new InvalidOperationException("CACHE_ENTRY_IS_ACTIVE");
         }
 
-        if (!File.Exists(Path.Combine(directory, "cache.json"))
-            && !File.Exists(Path.Combine(directory, "offline.m3u8")))
+        if (!File.Exists(Path.Combine(target, "cache.json"))
+            && !File.Exists(Path.Combine(target, "offline.m3u8")))
         {
             throw new InvalidOperationException("NOT_ORION_CACHE_ENTRY");
         }
 
-        await DeleteDirectoryWithRetryAsync(directory).ConfigureAwait(false);
+        await DeleteDirectoryWithRetryAsync(target).ConfigureAwait(false);
+        if (groupDirectory is not null)
+        {
+            TryDeleteEmptyDirectory(groupDirectory);
+        }
     }
 
     public async Task<int> ClearAsync(string cacheDirectory)
@@ -1048,12 +1041,6 @@ public sealed class VodCacheService : IDisposable
             session.MarkReady();
             VodCacheLog.Info(
                 $"complete id={session.Id} title={session.Title} segs={completedSegments}/{session.Segments.Count} merged={session.MergedSegments} bytes={downloadedBytes}");
-            if (session.MergeSupported
-                && File.Exists(session.MergedFilePath)
-                && new FileInfo(session.MergedFilePath).Length > 0)
-            {
-                QueueRemux(session.Directory, session.MergedFilePath);
-            }
 
             RemoveDetachedSession(session);
         }
@@ -1149,33 +1136,6 @@ public sealed class VodCacheService : IDisposable
             .ConfigureAwait(false);
         VodCacheLog.Info(
             $"merge-finalized id={session.Id} merged={session.MergedSegments}/{session.Segments.Count} path={session.MergedFilePath}");
-        if ((session.Progress.IsComplete || completed >= session.Segments.Count)
-            && File.Exists(session.MergedFilePath)
-            && new FileInfo(session.MergedFilePath).Length > 0)
-        {
-            QueueRemux(session.Directory, session.MergedFilePath);
-        }
-    }
-
-    private static void QueueRemux(string directory, string mergedPath)
-    {
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                if (LocalMediaRemuxer.HasFastSeekFile(directory))
-                {
-                    return;
-                }
-
-                await LocalMediaRemuxer.TryRemuxToFastSeekMp4Async(mergedPath, directory, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception error)
-            {
-                VodCacheLog.Warn($"queue-remux-failed dir={directory} err={error.Message}");
-            }
-        });
     }
 
     /// <summary>

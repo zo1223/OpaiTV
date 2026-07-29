@@ -17,6 +17,10 @@ public sealed class MpvLocalEngine : IDisposable
     internal const string PreferredSubtitleLanguages = "zh-Hans,zh-CN,chs,sc,zho,chi,zh";
     internal const string PreferredSubtitleFont = "Microsoft YaHei UI";
     private const int SeekCoalesceDelayMilliseconds = 20;
+    private const int SeekBurstTimeoutMilliseconds = 1_200;
+    private const int SeekObservationTimeoutMilliseconds = 10_000;
+    private const long MinimumSeekObservationToleranceMilliseconds = 1_500;
+    private const long MinimumObservedSeekMovementMilliseconds = 500;
 
     private readonly IntPtr _wid;
     private readonly Dispatcher _dispatcher;
@@ -36,6 +40,14 @@ public sealed class MpvLocalEngine : IDisposable
     private Task? _stderrDrainTask;
     private long? _pendingSeekMs;
     private int _pendingSeekGeneration;
+    private long? _pendingSeekObservationTargetMs;
+    private long _pendingSeekObservationOriginMs;
+    private long _pendingSeekObservationDeadline;
+    private int _pendingSeekObservationGeneration;
+    private long? _seekBurstTargetMs;
+    private long _seekBurstOriginMs;
+    private long _seekBurstDeadline;
+    private int _seekBurstGeneration;
     private bool _seekPumpRunning;
     private int _generation;
     private bool _disposed;
@@ -206,18 +218,21 @@ public sealed class MpvLocalEngine : IDisposable
         SetState(PlaybackState.Paused);
     }
 
-    public bool TrySeek(long ms)
+    public bool TrySeek(long ms) => TrySeekCore(ms, isRelative: false);
+
+    public bool TrySeekBy(long deltaMs) => TrySeekCore(deltaMs, isRelative: true);
+
+    private bool TrySeekCore(long valueMs, bool isRelative)
     {
         if (_disposed)
         {
             return false;
         }
 
+        var currentMs = Time;
         var length = Length;
-        var targetMs = length > 0
-            ? Math.Clamp(ms, 0, length)
-            : Math.Max(0, ms);
         var startPump = false;
+        long targetMs;
 
         lock (_seekSync)
         {
@@ -226,8 +241,47 @@ public sealed class MpvLocalEngine : IDisposable
                 return false;
             }
 
+            var generation = Volatile.Read(ref _generation);
+            var now = Environment.TickCount64;
+            var observationOriginMs = currentMs;
+            var requestedTargetMs = valueMs;
+            if (isRelative)
+            {
+                (observationOriginMs, requestedTargetMs) = _seekBurstTargetMs is { } existingTargetMs
+                    ? ResolveRelativeSeekBurst(
+                        _seekBurstOriginMs,
+                        existingTargetMs,
+                        _seekBurstGeneration,
+                        _seekBurstDeadline,
+                        currentMs,
+                        valueMs,
+                        generation,
+                        now)
+                    : (currentMs, currentMs + valueMs);
+            }
+
+            targetMs = length > 0
+                ? Math.Clamp(requestedTargetMs, 0, length)
+                : Math.Max(0, requestedTargetMs);
+
             _pendingSeekMs = targetMs;
-            _pendingSeekGeneration = Volatile.Read(ref _generation);
+            _pendingSeekGeneration = generation;
+            _pendingSeekObservationOriginMs = observationOriginMs;
+            _pendingSeekObservationTargetMs = targetMs;
+            _pendingSeekObservationGeneration = generation;
+            _pendingSeekObservationDeadline = now + SeekObservationTimeoutMilliseconds;
+            if (isRelative)
+            {
+                _seekBurstOriginMs = observationOriginMs;
+                _seekBurstTargetMs = targetMs;
+                _seekBurstGeneration = generation;
+                _seekBurstDeadline = now + SeekBurstTimeoutMilliseconds;
+            }
+            else
+            {
+                ClearSeekBurst_NoLock();
+            }
+
             if (!_seekPumpRunning)
             {
                 _seekPumpRunning = true;
@@ -243,6 +297,58 @@ public sealed class MpvLocalEngine : IDisposable
         }
 
         return true;
+    }
+
+    internal static object[] BuildSeekCommand(long targetMs)
+    {
+        var targetSeconds = (targetMs / 1000d).ToString("0.###", CultureInfo.InvariantCulture);
+        return ["seek", targetSeconds, "absolute+exact"];
+    }
+
+    internal static bool HasReachedSeekTarget(long originMs, long targetMs, long observedMs)
+    {
+        var distanceMs = Math.Abs(targetMs - originMs);
+        if (distanceMs == 0)
+        {
+            return true;
+        }
+
+        var proportionalToleranceMs = distanceMs * 2 / 5;
+        var toleranceMs = Math.Max(
+            proportionalToleranceMs,
+            MinimumSeekObservationToleranceMilliseconds);
+        toleranceMs = Math.Min(
+            toleranceMs,
+            Math.Max(0, distanceMs - MinimumObservedSeekMovementMilliseconds));
+
+        if (targetMs < originMs)
+        {
+            return observedMs <= targetMs + toleranceMs;
+        }
+
+        return observedMs >= targetMs - toleranceMs;
+    }
+
+    internal static (long OriginMs, long TargetMs) ResolveRelativeSeekBurst(
+        long existingOriginMs,
+        long existingTargetMs,
+        int existingGeneration,
+        long existingDeadline,
+        long currentMs,
+        long deltaMs,
+        int generation,
+        long now)
+    {
+        if (existingGeneration != generation || now >= existingDeadline)
+        {
+            return (currentMs, currentMs + deltaMs);
+        }
+
+        var existingDirection = Math.Sign(existingTargetMs - existingOriginMs);
+        var newDirection = Math.Sign(deltaMs);
+        return existingDirection != 0 && existingDirection == newDirection
+            ? (existingOriginMs, existingTargetMs + deltaMs)
+            : (currentMs, currentMs + deltaMs);
     }
 
     public void Stop()
@@ -515,7 +621,11 @@ public sealed class MpvLocalEngine : IDisposable
                     case "time-pos" when data.ValueKind == JsonValueKind.Number:
                     {
                         var ms = (long)Math.Round(data.GetDouble() * 1000);
-                        Interlocked.Exchange(ref _timeMs, ms);
+                        if (!TryApplyObservedTime(ms))
+                        {
+                            break;
+                        }
+
                         Post(() =>
                         {
                             if (_state is PlaybackState.Opening or PlaybackState.Buffering)
@@ -645,8 +755,7 @@ public sealed class MpvLocalEngine : IDisposable
                     continue;
                 }
 
-                var targetSeconds = (targetMs.Value / 1000d).ToString("0.###", CultureInfo.InvariantCulture);
-                await SendCommandAsync(["seek", targetSeconds, "absolute+exact"]).ConfigureAwait(false);
+                await SendCommandAsync(BuildSeekCommand(targetMs.Value)).ConfigureAwait(false);
             }
         }
         catch
@@ -676,7 +785,58 @@ public sealed class MpvLocalEngine : IDisposable
         lock (_seekSync)
         {
             _pendingSeekMs = null;
+            ClearSeekObservation_NoLock();
+            ClearSeekBurst_NoLock();
         }
+    }
+
+    internal bool ShouldAcceptObservedTime(long observedMs)
+    {
+        lock (_seekSync)
+        {
+            if (_pendingSeekObservationTargetMs is not { } targetMs)
+            {
+                return true;
+            }
+
+            if (_pendingSeekObservationGeneration != Volatile.Read(ref _generation)
+                || Environment.TickCount64 >= _pendingSeekObservationDeadline)
+            {
+                ClearSeekObservation_NoLock();
+                return true;
+            }
+
+            if (!HasReachedSeekTarget(_pendingSeekObservationOriginMs, targetMs, observedMs))
+            {
+                return false;
+            }
+
+            ClearSeekObservation_NoLock();
+            return true;
+        }
+    }
+
+    internal bool TryApplyObservedTime(long observedMs)
+    {
+        if (!ShouldAcceptObservedTime(observedMs))
+        {
+            return false;
+        }
+
+        Interlocked.Exchange(ref _timeMs, observedMs);
+        return true;
+    }
+
+    private void ClearSeekObservation_NoLock()
+    {
+        _pendingSeekObservationTargetMs = null;
+        _pendingSeekObservationDeadline = 0;
+    }
+
+    private void ClearSeekBurst_NoLock()
+    {
+        _seekBurstTargetMs = null;
+        _seekBurstDeadline = 0;
     }
 
     private async Task SendCommandAsync(
