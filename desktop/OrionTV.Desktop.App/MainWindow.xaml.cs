@@ -10,7 +10,8 @@ public partial class MainWindow : Window, IAppHost
     private static readonly HashSet<AppPage> TopLevelPages =
         [AppPage.Home, AppPage.Search, AppPage.Favorites, AppPage.Live, AppPage.LocalVideo, AppPage.Settings];
 
-    private readonly Stack<UIElement> _backStack = new();
+    private readonly Dictionary<AppPage, SectionNavigationState> _sectionStates = new();
+    private AppPage? _activeSection;
     private UIElement? _current;
     private PlayerView? _playerView;
     private AiSourceWatcher? _aiSourceWatcher;
@@ -34,49 +35,24 @@ public partial class MainWindow : Window, IAppHost
             return;
         }
 
+        if (TopLevelPages.Contains(page))
+        {
+            NavigateToSection(page, parameter);
+            return;
+        }
+
         if (page == AppPage.Detail && TryNavigateFromPlayerToDetail(parameter))
         {
             return;
         }
 
-        var isTopLevel = TopLevelPages.Contains(page);
-        if (isTopLevel)
-        {
-            while (_backStack.Count > 0)
-            {
-                Discard(_backStack.Pop());
-            }
-
-            if (_current is PlayerView)
-            {
-                // 侧栏切换只隐藏播放页，不能销毁当前媒体与播放进度。
-                HidePlayerForNavigation();
-            }
-            else
-            {
-                Discard(_current);
-            }
-        }
-        else if (_current is not null)
-        {
-            if (_current is PlayerView)
-            {
-                HidePlayerForNavigation();
-            }
-            else
-            {
-                _backStack.Push(_current);
-            }
-        }
-
+        var section = EnsureActiveSection();
+        NotifyHidden(section.Current);
+        section.BackStack.Push(section.Current);
         var view = CreateView(page);
+        section.Current = view;
         _current = view;
         ShowContentView(view);
-
-        if (isTopLevel)
-        {
-            SyncSidebar(page);
-        }
 
         if (view is INavigationAware aware)
         {
@@ -89,26 +65,84 @@ public partial class MainWindow : Window, IAppHost
         if (_current is PlayerView)
         {
             ClosePlayer();
-            _current = null;
+            ShowActiveSection();
+            return;
         }
 
-        if (_backStack.Count > 0)
+        var section = EnsureActiveSection();
+        if (section.BackStack.Count > 0)
         {
-            if (_current is not null)
-            {
-                Discard(_current);
-            }
-
-            var previous = _backStack.Pop();
+            NotifyHidden(section.Current);
+            Discard(section.Current);
+            var previous = section.BackStack.Pop();
+            section.Current = previous;
             _current = previous;
             ShowContentView(previous);
             return;
         }
 
-        if (_current is not HomeView)
+        if (_activeSection != AppPage.Home)
         {
             Navigate(AppPage.Home);
         }
+    }
+
+    private void NavigateToSection(AppPage page, object? parameter)
+    {
+        var created = !_sectionStates.TryGetValue(page, out var section);
+        if (created)
+        {
+            section = new SectionNavigationState(CreateView(page));
+            _sectionStates.Add(page, section);
+        }
+
+        if (_current is PlayerView)
+        {
+            // 侧栏切换只隐藏播放页，不能销毁当前媒体与播放进度。
+            HidePlayerForNavigation();
+        }
+        else if (!ReferenceEquals(_current, section!.Current))
+        {
+            NotifyHidden(_current);
+        }
+
+        _activeSection = page;
+        _current = section!.Current;
+        ShowContentView(section.Current);
+        SyncSidebar(page);
+
+        if ((created || parameter is not null) && section.Current is INavigationAware aware)
+        {
+            aware.OnNavigatedTo(parameter);
+        }
+    }
+
+    private SectionNavigationState EnsureActiveSection()
+    {
+        var page = _activeSection ?? AppPage.Home;
+        _activeSection = page;
+        if (_sectionStates.TryGetValue(page, out var section))
+        {
+            return section;
+        }
+
+        var view = CreateView(page);
+        section = new SectionNavigationState(view);
+        _sectionStates.Add(page, section);
+        if (view is INavigationAware aware)
+        {
+            aware.OnNavigatedTo(null);
+        }
+
+        return section;
+    }
+
+    private void ShowActiveSection()
+    {
+        var section = EnsureActiveSection();
+        _current = section.Current;
+        ShowContentView(section.Current);
+        SyncSidebar(_activeSection!.Value);
     }
 
     private WindowStyle _prevWindowStyle;
@@ -165,9 +199,10 @@ public partial class MainWindow : Window, IAppHost
 
     private void NavigateToPlayer(object? parameter)
     {
-        if (_current is not PlayerView && _current is not null)
+        _ = EnsureActiveSection();
+        if (_current is not PlayerView)
         {
-            _backStack.Push(_current);
+            NotifyHidden(_current);
         }
 
         var player = (PlayerView)CreateView(AppPage.Player);
@@ -190,20 +225,23 @@ public partial class MainWindow : Window, IAppHost
             return false;
         }
 
+        var section = EnsureActiveSection();
         DetailView detail;
-        if (_backStack.Count > 0 && _backStack.Peek() is DetailView existing)
+        if (section.Current is DetailView existing)
         {
-            _backStack.Pop();
             detail = existing;
         }
         else
         {
             detail = new DetailView(this);
+            section.BackStack.Push(section.Current);
+            section.Current = detail;
         }
 
         ClosePlayer();
         _current = detail;
         ShowContentView(detail);
+        SyncSidebar(_activeSection!.Value);
         detail.OnNavigatedTo(parameter);
         return true;
     }
@@ -215,6 +253,11 @@ public partial class MainWindow : Window, IAppHost
         if (_playerView is not null)
         {
             PlayerHost.Visibility = Visibility.Hidden;
+        }
+
+        if (view is INavigationVisibilityAware aware)
+        {
+            aware.OnShown();
         }
     }
 
@@ -287,6 +330,14 @@ public partial class MainWindow : Window, IAppHost
         }
     }
 
+    private static void NotifyHidden(UIElement? view)
+    {
+        if (view is INavigationVisibilityAware aware)
+        {
+            aware.OnHidden();
+        }
+    }
+
     private void Nav_Click(object sender, RoutedEventArgs e)
     {
         if (sender == NavHome)
@@ -337,18 +388,21 @@ public partial class MainWindow : Window, IAppHost
 
     private void RestoreSidebarSelection()
     {
-        var page = _current switch
-        {
-            PlayerView => AppPage.Player,
-            HomeView => AppPage.Home,
-            SearchView => AppPage.Search,
-            LiveView => AppPage.Live,
-            LocalVideoView => AppPage.LocalVideo,
-            FavoritesView => AppPage.Favorites,
-            SettingsView => AppPage.Settings,
-            _ => AppPage.Home,
-        };
+        var page = _current is PlayerView
+            ? AppPage.Player
+            : _activeSection ?? AppPage.Home;
         SyncSidebar(page);
+    }
+
+    private sealed class SectionNavigationState
+    {
+        internal SectionNavigationState(UIElement current)
+        {
+            Current = current;
+        }
+
+        internal UIElement Current { get; set; }
+        internal Stack<UIElement> BackStack { get; } = new();
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -455,26 +509,22 @@ public partial class MainWindow : Window, IAppHost
         _aiSourceWatcher?.Dispose();
         _aiSourceWatcher = null;
 
-        while (_backStack.Count > 0)
-        {
-            Discard(_backStack.Pop());
-        }
-
-        if (_current is PlayerView)
-        {
-            ClosePlayer();
-            _current = null;
-        }
-        else
-        {
-            Discard(_current);
-        }
-
-        // 播放页可能已经被侧栏隐藏，但仍需在应用退出时释放。
         if (_playerView is not null)
         {
             ClosePlayer();
         }
+
+        foreach (var section in _sectionStates.Values)
+        {
+            Discard(section.Current);
+            while (section.BackStack.Count > 0)
+            {
+                Discard(section.BackStack.Pop());
+            }
+        }
+
+        _sectionStates.Clear();
+        _current = null;
 
         Services.Dispose();
     }

@@ -115,6 +115,8 @@ public sealed class FavoriteStore() : JsonDictionaryStore<FavoriteItem>(DesktopP
 }
 
 /// <summary>本地观看记录存储（对齐安卓 PlayRecordManager 的 localstorage 模式）。</summary>
+public sealed record PlayRecordHistoryEntry(string Source, string Id, PlayRecordItem Record);
+
 public sealed class PlayRecordStore : JsonDictionaryStore<PlayRecordItem>
 {
     public PlayRecordStore() : this(DesktopPaths.PlayRecordsFile)
@@ -127,6 +129,33 @@ public sealed class PlayRecordStore : JsonDictionaryStore<PlayRecordItem>
 
     public PlayRecordItem? Get(string source, string id) =>
         GetAll().TryGetValue(Key(source, id), out var record) ? record : null;
+
+    public IReadOnlyList<PlayRecordHistoryEntry> GetLatestByMedia()
+    {
+        return GetAll()
+            .Select(ToHistoryEntry)
+            .GroupBy(GetMediaKey, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var records = group
+                    .OrderByDescending(entry => entry.Record.SaveTime)
+                    .ToList();
+                var latest = records[0];
+                if (!string.IsNullOrWhiteSpace(latest.Record.Cover))
+                {
+                    return latest;
+                }
+
+                var cover = records
+                    .Select(entry => entry.Record.Cover)
+                    .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+                return string.IsNullOrWhiteSpace(cover)
+                    ? latest
+                    : latest with { Record = latest.Record with { Cover = cover } };
+            })
+            .OrderByDescending(entry => entry.Record.SaveTime)
+            .ToList();
+    }
 
     public void Save(string source, string id, PlayRecordItem record) =>
         Mutate(all => all[Key(source, id)] = record with { SaveTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
@@ -149,4 +178,31 @@ public sealed class PlayRecordStore : JsonDictionaryStore<PlayRecordItem>
     }
 
     public void Remove(string source, string id) => Mutate(all => all.Remove(Key(source, id)));
+
+    private static PlayRecordHistoryEntry ToHistoryEntry(KeyValuePair<string, PlayRecordItem> item)
+    {
+        var separator = item.Key.IndexOf('+');
+        var source = separator >= 0 ? item.Key[..separator] : item.Key;
+        var id = separator >= 0 ? item.Key[(separator + 1)..] : "";
+        return new PlayRecordHistoryEntry(source, id, item.Value);
+    }
+
+    private static string GetMediaKey(PlayRecordHistoryEntry entry)
+    {
+        if (string.Equals(entry.Source, "local", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"local:{entry.Record.LocalMediaId ?? entry.Id}";
+        }
+
+        var title = CatalogTitleMatcher.Normalize(entry.Record.Title);
+        if (!string.IsNullOrEmpty(title))
+        {
+            return $"online:title:{title}";
+        }
+
+        var cover = entry.Record.Cover?.Trim();
+        return string.IsNullOrEmpty(cover)
+            ? $"online:record:{entry.Source}+{entry.Id}"
+            : $"online:poster:{cover}";
+    }
 }

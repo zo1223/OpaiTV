@@ -39,6 +39,18 @@ public sealed record VodCacheEntry(
     bool CanDecryptMerge = false,
     string Poster = "");
 
+internal sealed record VodCacheBatchDecryptProgress(
+    int EntryIndex,
+    int TotalEntries,
+    VodCacheEntry CurrentEntry,
+    double CurrentEntryProgress);
+
+internal sealed record VodCacheBatchDecryptFailure(VodCacheEntry Entry, Exception Error);
+
+internal sealed record VodCacheBatchDecryptResult(
+    IReadOnlyList<VodCacheEntry> SucceededEntries,
+    IReadOnlyList<VodCacheBatchDecryptFailure> Failures);
+
 public sealed class VodCacheSession
 {
     private readonly TaskCompletionSource<string> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -149,6 +161,7 @@ public sealed class VodCacheService : IDisposable
     private const int MaxConcurrentSegmentDownloadsTotal = 8;
 
     private readonly ConcurrentDictionary<string, VodCacheSession> _sessions = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _decryptMergeGates = new(StringComparer.OrdinalIgnoreCase);
     private readonly HttpClient _http;
     private readonly SemaphoreSlim _segmentDownloadGate = new(
         MaxConcurrentSegmentDownloadsTotal,
@@ -545,11 +558,80 @@ public sealed class VodCacheService : IDisposable
         IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        if (string.IsNullOrWhiteSpace(directory))
         {
             throw new DirectoryNotFoundException(directory);
         }
 
+        var resolvedDirectory = Path.GetFullPath(directory);
+        if (!Directory.Exists(resolvedDirectory))
+        {
+            throw new DirectoryNotFoundException(resolvedDirectory);
+        }
+
+        var gate = _decryptMergeGates.GetOrAdd(resolvedDirectory, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await DecryptAndMergeCoreAsync(resolvedDirectory, progress, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    internal async Task<VodCacheBatchDecryptResult> DecryptAndMergeManyAsync(
+        IEnumerable<VodCacheEntry> entries,
+        IProgress<VodCacheBatchDecryptProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        var candidates = entries
+            .Where(entry => entry.IsComplete && entry.CanDecryptMerge && !string.IsNullOrWhiteSpace(entry.Directory))
+            .GroupBy(entry => Path.GetFullPath(entry.Directory), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderByDescending(entry => entry.CreatedAt).First())
+            .ToList();
+        var succeeded = new List<VodCacheEntry>(candidates.Count);
+        var failures = new List<VodCacheBatchDecryptFailure>();
+
+        for (var index = 0; index < candidates.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var entry = candidates[index];
+            progress?.Report(new VodCacheBatchDecryptProgress(index, candidates.Count, entry, 0));
+            var itemProgress = new InlineProgress<double>(ratio =>
+                progress?.Report(new VodCacheBatchDecryptProgress(
+                    index,
+                    candidates.Count,
+                    entry,
+                    Math.Clamp(ratio, 0, 1))));
+            try
+            {
+                await DecryptAndMergeAsync(entry.Directory, itemProgress, cancellationToken).ConfigureAwait(false);
+                succeeded.Add(entry);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                failures.Add(new VodCacheBatchDecryptFailure(entry, error));
+            }
+
+            progress?.Report(new VodCacheBatchDecryptProgress(index, candidates.Count, entry, 1));
+        }
+
+        return new VodCacheBatchDecryptResult(succeeded, failures);
+    }
+
+    private async Task<string> DecryptAndMergeCoreAsync(
+        string directory,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
         if (_sessions.Values.Any(session => session.Directory.Equals(directory, StringComparison.OrdinalIgnoreCase)))
         {
             throw new InvalidOperationException("CACHE_ENTRY_IS_ACTIVE");
@@ -2450,6 +2532,11 @@ public sealed class VodCacheService : IDisposable
         _http.Dispose();
         _segmentDownloadGate.Dispose();
         _lifetime.Dispose();
+    }
+
+    private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
     }
 
     private sealed record HttpRequest(string Method, string Path, string? RangeHeader);

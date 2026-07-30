@@ -35,6 +35,12 @@ public interface INavigationAware
     void OnNavigatedTo(object? parameter);
 }
 
+public interface INavigationVisibilityAware
+{
+    void OnShown();
+    void OnHidden();
+}
+
 public sealed record PlaybackResumeContext(
     int EpisodeIndex,
     double PositionMs,

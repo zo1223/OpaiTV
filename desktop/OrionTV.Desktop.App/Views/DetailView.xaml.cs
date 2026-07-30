@@ -19,6 +19,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
     private readonly Dictionary<string, VodSourceHealthResult> _health = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RadioButton> _sourceChips = new(StringComparer.Ordinal);
     private readonly Dictionary<int, Button> _downloadButtons = new();
+    private readonly HashSet<string> _decryptingDirectories = new(StringComparer.OrdinalIgnoreCase);
     private VodCacheLookup _cacheLookup = VodCacheLookup.Empty;
     private Task? _cacheRefreshTask;
     private CancellationTokenSource? _loadCts;
@@ -26,6 +27,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
     private PlaybackResumeContext? _resumeContext;
     private bool _disposed;
     private bool _listeningDownloads;
+    private bool _batchDecryptRunning;
 
     public DetailView(IAppHost host)
     {
@@ -496,6 +498,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         if (remote is null || remote.Episodes.Count == 0)
         {
             DownloadAllButton.IsEnabled = false;
+            RefreshDecryptMergeAllButtonState();
             DownloadStatusText.Text = "当前没有可下载的播放源";
             return;
         }
@@ -519,6 +522,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         }
 
         RefreshDownloadStatusSummary();
+        RefreshDecryptMergeAllButtonState();
     }
 
     private SearchResult? GetDownloadSource()
@@ -529,6 +533,62 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         }
 
         return _remoteResults.FirstOrDefault();
+    }
+
+    private List<DecryptEpisodeTarget> GetDecryptableEpisodeTargets(SearchResult? remote = null)
+    {
+        remote ??= GetDownloadSource();
+        if (remote is null)
+        {
+            return [];
+        }
+
+        var seenDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var targets = new List<DecryptEpisodeTarget>();
+        for (var index = 0; index < remote.Episodes.Count; index++)
+        {
+            var entry = _cacheLookup.FindCompleted(CacheTitleOf(index), remote.Episodes[index]);
+            if (entry is null || !entry.CanDecryptMerge)
+            {
+                continue;
+            }
+
+            var directoryKey = CacheDirectoryKey(entry.Directory);
+            if (seenDirectories.Add(directoryKey))
+            {
+                targets.Add(new DecryptEpisodeTarget(index, entry, directoryKey));
+            }
+        }
+
+        return targets;
+    }
+
+    private void RefreshDecryptMergeAllButtonState()
+    {
+        var count = GetDecryptableEpisodeTargets().Count;
+        if (_batchDecryptRunning)
+        {
+            DecryptMergeAllButton.IsEnabled = false;
+            return;
+        }
+
+        DecryptMergeAllButton.Content = count > 0 ? $"解密合并全部 ({count})" : "解密合并全部";
+        DecryptMergeAllButton.IsEnabled = count > 0 && _decryptingDirectories.Count == 0;
+        DecryptMergeAllButton.ToolTip = count > 0
+            ? $"将当前影片 {count} 集已下载完成的 AES-128 缓存解密并合并为单文件"
+            : "当前没有需要解密合并的已下载剧集";
+    }
+
+    private static string CacheDirectoryKey(string directory)
+    {
+        try
+        {
+            return Path.GetFullPath(directory);
+        }
+        catch
+        {
+            return directory;
+        }
     }
 
     private void ApplyDownloadButtonState(Button button, SearchResult remote, int index)
@@ -551,10 +611,16 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         {
             if (completedEntry.CanDecryptMerge)
             {
+                var decrypting = _batchDecryptRunning
+                    || _decryptingDirectories.Contains(CacheDirectoryKey(completedEntry.Directory));
                 button.Style = (Style)FindResource("PrimaryButtonStyle");
-                button.Content = $"第{index + 1}集 · 解密合并";
-                button.IsEnabled = true;
-                button.ToolTip = "已下载完成（AES 加密）；点击解密合并为单个文件";
+                button.Content = decrypting
+                    ? $"第{index + 1}集 · 解密中"
+                    : $"第{index + 1}集 · 解密合并";
+                button.IsEnabled = !decrypting;
+                button.ToolTip = decrypting
+                    ? "正在解密合并"
+                    : "已下载完成（AES 加密）；点击解密合并为单个文件";
                 button.Tag = new DownloadButtonTag(index, Decrypt: true);
                 return;
             }
@@ -667,6 +733,11 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
 
     private async Task DecryptEpisodeAsync(int episodeIndex)
     {
+        if (_batchDecryptRunning)
+        {
+            return;
+        }
+
         var remote = GetDownloadSource();
         if (remote is null)
         {
@@ -685,17 +756,30 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             return;
         }
 
+        var directoryKey = CacheDirectoryKey(directory);
+        if (!_decryptingDirectories.Add(directoryKey))
+        {
+            return;
+        }
+
+        RefreshDecryptMergeAllButtonState();
         if (_downloadButtons.TryGetValue(episodeIndex, out var button))
         {
             button.IsEnabled = false;
             button.Content = $"第{episodeIndex + 1}集 · 解密中";
         }
 
+        string finalMessage;
         try
         {
             DownloadStatusText.Text = $"正在解密合并第{episodeIndex + 1} 集…";
             var progress = new Progress<double>(ratio =>
             {
+                if (_disposed)
+                {
+                    return;
+                }
+
                 var percent = Math.Clamp((int)Math.Round(ratio * 100), 0, 100);
                 DownloadStatusText.Text = $"正在解密合并第{episodeIndex + 1} 集…{percent}%";
                 if (_downloadButtons.TryGetValue(episodeIndex, out var liveButton))
@@ -706,19 +790,101 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             var path = await _host.Services.VodCache
                 .DecryptAndMergeAsync(directory, progress)
                 .ConfigureAwait(true);
-            DownloadStatusText.Text =
+            finalMessage =
                 $"第{episodeIndex + 1} 集已解密合并（{new FileInfo(path).Length / 1024d / 1024d:0.0} MB）";
-            var token = _loadCts?.Token ?? CancellationToken.None;
-            QueueCacheLookupRefresh(token);
         }
         catch (Exception error)
         {
-            DownloadStatusText.Text = $"第{episodeIndex + 1} 集解密失败：{ShortError(error)}";
-            if (GetDownloadSource() is { } current
-                && _downloadButtons.TryGetValue(episodeIndex, out var failButton))
+            finalMessage = $"第{episodeIndex + 1} 集解密失败：{ShortError(error)}";
+        }
+        finally
+        {
+            _decryptingDirectories.Remove(directoryKey);
+            await RefreshCacheLookupAfterDecryptAsync().ConfigureAwait(true);
+            if (!_disposed)
             {
-                ApplyDownloadButtonState(failButton, current, episodeIndex);
+                BuildDownloadBar();
             }
+        }
+
+        if (!_disposed)
+        {
+            DownloadStatusText.Text = finalMessage;
+        }
+    }
+
+    private async void DecryptMergeAllButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_batchDecryptRunning || _decryptingDirectories.Count > 0)
+        {
+            return;
+        }
+
+        var remote = GetDownloadSource();
+        var targets = GetDecryptableEpisodeTargets(remote);
+        if (remote is null || targets.Count == 0)
+        {
+            DownloadStatusText.Text = "当前没有需要解密合并的已下载剧集";
+            RefreshDecryptMergeAllButtonState();
+            return;
+        }
+
+        _batchDecryptRunning = true;
+        RefreshDecryptMergeAllButtonState();
+        foreach (var (index, _, _) in targets)
+        {
+            if (_downloadButtons.TryGetValue(index, out var button))
+            {
+                ApplyDownloadButtonState(button, remote, index);
+            }
+        }
+
+        var targetsByDirectory = targets.ToDictionary(
+            target => target.DirectoryKey,
+            StringComparer.OrdinalIgnoreCase);
+        string finalMessage;
+        try
+        {
+            DownloadStatusText.Text = $"正在解密合并 1/{targets.Count} 集…";
+            var progress = new Progress<VodCacheBatchDecryptProgress>(update =>
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                var ordinal = Math.Clamp(update.EntryIndex + 1, 1, update.TotalEntries);
+                var percent = Math.Clamp((int)Math.Round(update.CurrentEntryProgress * 100), 0, 100);
+                DownloadStatusText.Text = $"正在解密合并第{ordinal}/{update.TotalEntries} 集…{percent}%";
+                DecryptMergeAllButton.Content = $"解密中 {ordinal}/{update.TotalEntries}";
+                if (targetsByDirectory.TryGetValue(CacheDirectoryKey(update.CurrentEntry.Directory), out var target)
+                    && _downloadButtons.TryGetValue(target.Index, out var button))
+                {
+                    button.Content = $"第{target.Index + 1}集 · 解密 {percent}%";
+                }
+            });
+            var result = await _host.Services.VodCache
+                .DecryptAndMergeManyAsync(targets.Select(target => target.Entry), progress)
+                .ConfigureAwait(true);
+            finalMessage = BatchDecryptResultMessage(result, targets.Count);
+        }
+        catch (Exception error)
+        {
+            finalMessage = $"批量解密合并失败：{ShortError(error)}";
+        }
+        finally
+        {
+            _batchDecryptRunning = false;
+            await RefreshCacheLookupAfterDecryptAsync().ConfigureAwait(true);
+            if (!_disposed)
+            {
+                BuildDownloadBar();
+            }
+        }
+
+        if (!_disposed)
+        {
+            DownloadStatusText.Text = finalMessage;
         }
     }
 
@@ -853,6 +1019,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             }
 
             RefreshDownloadStatusSummary();
+            RefreshDecryptMergeAllButtonState();
             if (_host.Services.Downloads.GetJobs().Any(job =>
                     job.Status == VodDownloadJobStatus.Completed
                     && (job.Title.StartsWith(_title + " ", StringComparison.OrdinalIgnoreCase)
@@ -951,6 +1118,25 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
     {
         var message = error.Message?.Trim() ?? "未知错误";
         return message.Length <= 80 ? message : message[..80] + "…";
+    }
+
+    private static string BatchDecryptResultMessage(VodCacheBatchDecryptResult result, int total)
+    {
+        if (result.Failures.Count == 0)
+        {
+            return $"已解密合并全部 {result.SucceededEntries.Count} 集；可在「本地已下载」播放";
+        }
+
+        var failedTitles = string.Join("、", result.Failures
+            .Select(failure => failure.Entry.Title)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(3));
+        if (result.Failures.Count > 3)
+        {
+            failedTitles += " 等";
+        }
+
+        return $"批量解密合并完成：成功 {result.SucceededEntries.Count}/{total} 集，失败 {result.Failures.Count} 集（{failedTitles}）";
     }
 
     private string SourceLabel(SearchResult result)
@@ -1059,6 +1245,22 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         _cacheRefreshTask = RefreshCacheLookupAsync(cancellationToken);
     }
 
+    private async Task RefreshCacheLookupAfterDecryptAsync()
+    {
+        if (_cacheRefreshTask is { IsCompleted: false } pendingRefresh)
+        {
+            await pendingRefresh.ConfigureAwait(true);
+        }
+
+        if (_disposed)
+        {
+            return;
+        }
+
+        var cancellationToken = _loadCts?.Token ?? CancellationToken.None;
+        await RefreshCacheLookupAsync(cancellationToken).ConfigureAwait(true);
+    }
+
     private async Task RefreshCacheLookupAsync(CancellationToken cancellationToken)
     {
         try
@@ -1073,6 +1275,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             }
 
             _cacheLookup = lookup;
+            RefreshDecryptMergeAllButtonState();
             if (HasCompletedCachedEpisode())
             {
                 RefreshLocalSourceInList();
@@ -1283,4 +1486,6 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
     }
 
     private sealed record DownloadButtonTag(int Index, bool Decrypt);
+
+    private sealed record DecryptEpisodeTarget(int Index, VodCacheEntry Entry, string DirectoryKey);
 }

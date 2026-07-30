@@ -86,6 +86,8 @@
                 <StackPanel Orientation="Horizontal" Margin="0,12,0,10">
                     <Rectangle Width="4" Height="16" RadiusX="2" RadiusY="2" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Center" />
                     <TextBlock Text="本地下载" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" Margin="8,0,0,0" />
+                    <Button x:Name="DecryptMergeAllButton" Content="解密合并全部" Style="{StaticResource SecondaryButtonStyle}" Height="32" Padding="14,0" Margin="12,0,0,0" FontSize="13"
+                            Click="DecryptMergeAllButton_Click" IsEnabled="False" ToolTip="将列表中所有已下载完成的 AES-128 缓存解密并合并为单文件" />
                 </StackPanel>
 
                 <TextBlock x:Name="EmptyText" Text="暂无本地下载；请在视频详情页下载" Foreground="{StaticResource MutedTextBrush}" FontSize="14" Margin="0,24" HorizontalAlignment="Center" />
@@ -97,7 +99,7 @@
                                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="14,0,0,0">
                                         <Button Content="播放" Style="{StaticResource PrimaryButtonStyle}" Height="34" Padding="15,0" Click="PlayCacheButton_Click" />
                                         <Button Content="一键解密合并" Style="{StaticResource SecondaryButtonStyle}" Height="34" Padding="15,0" Margin="8,0,0,0"
-                                                Visibility="{Binding DecryptVisibility}" Click="DecryptMergeButton_Click"
+                                                Visibility="{Binding DecryptVisibility}" IsEnabled="{Binding DecryptEnabled}" Click="DecryptMergeButton_Click"
                                                 ToolTip="将 AES-128 加密分片解密并合并为单个 merged.ts" />
                                         <Button Content="继续下载" Style="{StaticResource SecondaryButtonStyle}" Height="34" Padding="15,0" Margin="8,0,0,0"
                                                 Visibility="{Binding ResumeVisibility}" Click="ResumeCacheButton_Click" />

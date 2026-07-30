@@ -220,6 +220,84 @@ public sealed class VodCacheServiceTests
         }
     }
 
+    [Fact]
+    public async Task BatchDecryptContinuesAfterFailureAndLeavesOnlyFailedEntryForRetry()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-batch-decrypt-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var first = await CreateEncryptedCacheAsync(root, "episode-1", "Batch Show 第1集");
+            var broken = await CreateEncryptedCacheAsync(root, "episode-2", "Batch Show 第2集", writeKey: false);
+            var third = await CreateEncryptedCacheAsync(root, "episode-3", "Batch Show 第3集");
+            using var service = new VodCacheService();
+            var entries = service.GetEntries(root).ToDictionary(entry => entry.Title, StringComparer.Ordinal);
+            var ordered = new[]
+            {
+                entries["Batch Show 第1集"],
+                entries["Batch Show 第2集"],
+                entries["Batch Show 第3集"],
+            };
+            Assert.All(ordered, entry => Assert.True(entry.CanDecryptMerge));
+
+            var updates = new ConcurrentQueue<VodCacheBatchDecryptProgress>();
+            var result = await service.DecryptAndMergeManyAsync(
+                ordered,
+                new InlineProgress<VodCacheBatchDecryptProgress>(updates.Enqueue));
+
+            Assert.Equal(2, result.SucceededEntries.Count);
+            var failure = Assert.Single(result.Failures);
+            Assert.Equal("Batch Show 第2集", failure.Entry.Title);
+            Assert.Equal(first.Plain, await File.ReadAllBytesAsync(Path.Combine(first.Directory, VodCacheSession.MergedFileName)));
+            Assert.False(File.Exists(Path.Combine(broken.Directory, VodCacheSession.MergedFileName)));
+            Assert.Equal(third.Plain, await File.ReadAllBytesAsync(Path.Combine(third.Directory, VodCacheSession.MergedFileName)));
+            Assert.Contains(updates, update => update.EntryIndex == 2 && update.CurrentEntryProgress == 1);
+
+            var retryable = service.GetEntries(root).Where(entry => entry.CanDecryptMerge).ToList();
+            Assert.Equal("Batch Show 第2集", Assert.Single(retryable).Title);
+            var retry = await service.DecryptAndMergeManyAsync(retryable);
+            Assert.Empty(retry.SucceededEntries);
+            Assert.Single(retry.Failures);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentDecryptCallsForSameDirectoryReuseCompletedMerge()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-concurrent-decrypt-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var blockingProgress = new BlockingFirstProgress();
+        Task<string>? firstTask = null;
+        try
+        {
+            var cache = await CreateEncryptedCacheAsync(root, "episode", "Concurrent Episode", segmentSize: 256 * 1024);
+            using var service = new VodCacheService();
+            firstTask = service.DecryptAndMergeAsync(cache.Directory, blockingProgress);
+            await blockingProgress.Started.WaitAsync(TimeSpan.FromSeconds(10));
+
+            var secondTask = service.DecryptAndMergeAsync(cache.Directory);
+            blockingProgress.Release();
+            var paths = await Task.WhenAll(firstTask, secondTask).WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(paths[0], paths[1]);
+            Assert.Equal(cache.Plain, await File.ReadAllBytesAsync(paths[0]));
+            Assert.Empty(Directory.EnumerateFiles(cache.Directory, "*.decrypting"));
+        }
+        finally
+        {
+            blockingProgress.Release();
+            if (firstTask is not null)
+            {
+                try { await firstTask; } catch { }
+            }
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static byte[] EncryptAes128Cbc(byte[] plain, byte[] key, byte[] iv)
     {
         using var aes = System.Security.Cryptography.Aes.Create();
@@ -231,6 +309,57 @@ public sealed class VodCacheServiceTests
         aes.IV = iv;
         using var encryptor = aes.CreateEncryptor();
         return encryptor.TransformFinalBlock(plain, 0, plain.Length);
+    }
+
+    private static async Task<(string Directory, byte[] Plain)> CreateEncryptedCacheAsync(
+        string root,
+        string directoryName,
+        string title,
+        bool writeKey = true,
+        int segmentSize = 64)
+    {
+        var directory = Path.Combine(root, directoryName);
+        Directory.CreateDirectory(directory);
+        var key = Enumerable.Range(1, 16).Select(index => (byte)index).ToArray();
+        var iv = new byte[16];
+        if (writeKey)
+        {
+            await File.WriteAllBytesAsync(Path.Combine(directory, "asset_000.key"), key);
+        }
+
+        var plains = new[]
+        {
+            Enumerable.Repeat((byte)0x31, segmentSize).ToArray(),
+            Enumerable.Repeat((byte)0x42, segmentSize + 16).ToArray(),
+        };
+        for (var index = 0; index < plains.Length; index++)
+        {
+            await File.WriteAllBytesAsync(
+                Path.Combine(directory, $"segment_{index:D5}.ts"),
+                EncryptAes128Cbc(plains[index], key, iv));
+        }
+
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, "offline.m3u8"),
+            "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n" +
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"asset_000.key\",IV=0x00000000000000000000000000000000\n" +
+            "#EXTINF:6.0,\nsegment_00000.ts\n" +
+            "#EXTINF:6.0,\nsegment_00001.ts\n#EXT-X-ENDLIST\n");
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, "cache.json"),
+            JsonSerializer.Serialize(new
+            {
+                Title = title,
+                SourceUrl = $"http://example/{directoryName}.m3u8",
+                CreatedAt = DateTimeOffset.UtcNow,
+                IsComplete = true,
+                CompletedSegments = plains.Length,
+                TotalSegments = plains.Length,
+                MergedSegments = 0,
+                MergedFileName = (string?)null,
+                MergeSupported = false,
+            }));
+        return (directory, plains.SelectMany(plain => plain).ToArray());
     }
 
     [Fact]
@@ -724,6 +853,33 @@ public sealed class VodCacheServiceTests
         {
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
+    }
+
+    private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
+    }
+
+    private sealed class BlockingFirstProgress : IProgress<double>
+    {
+        private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _reported;
+
+        internal Task Started => _started.Task;
+
+        public void Report(double value)
+        {
+            if (Interlocked.Exchange(ref _reported, 1) != 0)
+            {
+                return;
+            }
+
+            _started.TrySetResult();
+            _release.Task.GetAwaiter().GetResult();
+        }
+
+        internal void Release() => _release.TrySetResult();
     }
 
     private sealed class FakeHlsServer : IAsyncDisposable

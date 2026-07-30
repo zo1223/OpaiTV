@@ -9,7 +9,7 @@ using OrionTV.Desktop.Core;
 
 namespace OrionTV.Desktop.App.Views;
 
-public partial class LiveView : UserControl, INavigationAware, IDisposable
+public partial class LiveView : UserControl, INavigationAware, INavigationVisibilityAware, IDisposable
 {
     private const string PlayGlyph = "";
     private const string PauseGlyph = "";
@@ -61,6 +61,9 @@ public partial class LiveView : UserControl, INavigationAware, IDisposable
     private DispatcherTimer? _subtitleHideTimer;
     private bool _translationRequested;
     private int _translationGeneration;
+    private bool _navigationActive;
+    private bool _pendingInitialPlayback;
+    private bool _stoppedForNavigation;
 
     public LiveView(IAppHost host)
     {
@@ -72,6 +75,60 @@ public partial class LiveView : UserControl, INavigationAware, IDisposable
 
     public void OnNavigatedTo(object? parameter)
     {
+    }
+
+    public void OnShown()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _navigationActive = true;
+        if (_statsVisible)
+        {
+            StartStatsTimer();
+        }
+
+        if (_pendingInitialPlayback && _currentChannel is not null)
+        {
+            _pendingInitialPlayback = false;
+            PlayChannel(_currentChannel);
+        }
+    }
+
+    public void OnHidden()
+    {
+        if (_disposed || !_navigationActive)
+        {
+            return;
+        }
+
+        _navigationActive = false;
+        _singleClickTimer?.Stop();
+        _badgeTimer?.Stop();
+        StopStatsTimer();
+        _stoppedForNavigation = _currentChannel is not null;
+        if (_controller?.IsPlaying == true)
+        {
+            _controller.Pause();
+        }
+
+        _controller?.Stop();
+        PlayPauseButton.Content = PlayGlyph;
+        LoadingOverlay.Visibility = Visibility.Collapsed;
+
+        if (_translationRequested || _translationController is not null)
+        {
+            _translationRequested = false;
+            UpdateTranslationButton();
+            _ = StopTranslationAsync(clearUi: true);
+        }
+
+        if (_host.IsFullscreen)
+        {
+            _host.SetFullscreen(false);
+        }
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -97,7 +154,7 @@ public partial class LiveView : UserControl, INavigationAware, IDisposable
         _singleClickTimer.Tick += (_, _) =>
         {
             _singleClickTimer!.Stop();
-            _controller?.TogglePlayPause();
+            TogglePlayPause();
         };
 
         _osd = new OsdController(OverlayRoot, ControlBar, ChannelTitleBadge);
@@ -203,7 +260,16 @@ public partial class LiveView : UserControl, INavigationAware, IDisposable
         HintText.Visibility = Visibility.Collapsed;
         if (currentUrl is null)
         {
-            PlayChannel(selected);
+            _currentChannel = selected;
+            NowPlayingText.Text = selected.Name;
+            if (_navigationActive)
+            {
+                PlayChannel(selected);
+            }
+            else
+            {
+                _pendingInitialPlayback = true;
+            }
         }
         else
         {
@@ -254,6 +320,8 @@ public partial class LiveView : UserControl, INavigationAware, IDisposable
             return;
         }
 
+        _pendingInitialPlayback = false;
+        _stoppedForNavigation = false;
         _currentChannel = channel;
         NowPlayingText.Text = channel.Name;
         ShowChannelBadge(channel.Name);
@@ -286,6 +354,16 @@ public partial class LiveView : UserControl, INavigationAware, IDisposable
 
     private void Controller_StateChanged(object? sender, PlaybackState state)
     {
+        if (!_navigationActive)
+        {
+            if (state == PlaybackState.Playing)
+            {
+                _controller?.Stop();
+            }
+
+            return;
+        }
+
         if (state == PlaybackState.Playing)
         {
             _hasPlayed = true;
@@ -307,6 +385,11 @@ public partial class LiveView : UserControl, INavigationAware, IDisposable
 
     private void Controller_Buffering(object? sender, float cache)
     {
+        if (!_navigationActive)
+        {
+            return;
+        }
+
         _lastCachePct = cache;
         if (cache >= 100f)
         {
@@ -322,7 +405,23 @@ public partial class LiveView : UserControl, INavigationAware, IDisposable
         }
     }
 
-    private void PlayPauseButton_Click(object sender, RoutedEventArgs e) => _controller?.TogglePlayPause();
+    private void PlayPauseButton_Click(object sender, RoutedEventArgs e) => TogglePlayPause();
+
+    private void TogglePlayPause()
+    {
+        if (_controller is null)
+        {
+            return;
+        }
+
+        if (_stoppedForNavigation && _currentChannel is not null)
+        {
+            PlayChannel(_currentChannel);
+            return;
+        }
+
+        _controller.TogglePlayPause();
+    }
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e) => Reconnect();
 
@@ -762,11 +861,15 @@ public partial class LiveView : UserControl, INavigationAware, IDisposable
 
     private async Task StopTranslationAsync(bool clearUi)
     {
-        Interlocked.Increment(ref _translationGeneration);
+        var generation = Interlocked.Increment(ref _translationGeneration);
         _translationCts?.Cancel();
         _translationCts?.Dispose();
         _translationCts = null;
         await StopTranslationControllerAsync();
+        if (generation != _translationGeneration)
+        {
+            return;
+        }
 
         if (_volumeBeforeDubbing >= 0 && _controller is not null)
         {
@@ -996,7 +1099,7 @@ public partial class LiveView : UserControl, INavigationAware, IDisposable
         switch (e.Key)
         {
             case Key.Space:
-                _controller?.TogglePlayPause();
+                TogglePlayPause();
                 break;
             case Key.Left:
                 StepChannel(-1);

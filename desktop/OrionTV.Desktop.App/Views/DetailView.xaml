@@ -58,6 +58,7 @@
                         <Rectangle Width="4" Height="16" RadiusX="2" RadiusY="2" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Center" />
                         <TextBlock Text="下载到本地" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" Margin="8,0,0,0" />
                         <Button x:Name="DownloadAllButton" Style="{StaticResource SecondaryButtonStyle}" Height="32" Padding="14,0" Margin="12,0,0,0" FontSize="13" Content="下载全部" Click="DownloadAllButton_Click" ToolTip="按当前播放源逐集下载到本地（仅 HLS）" />
+                        <Button x:Name="DecryptMergeAllButton" Style="{StaticResource SecondaryButtonStyle}" Height="32" Padding="14,0" Margin="8,0,0,0" FontSize="13" Content="解密合并全部" Click="DecryptMergeAllButton_Click" IsEnabled="False" ToolTip="将当前影片所有已下载完成的 AES-128 剧集合并为单文件" />
                     </StackPanel>
                     <TextBlock x:Name="DownloadHintText" Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8"
                                Text="下载与播放互不影响：正常播放始终走源站；整集下载完成后会出现「本地已下载」播放源。" />

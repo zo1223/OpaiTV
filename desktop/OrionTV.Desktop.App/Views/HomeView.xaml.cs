@@ -1,4 +1,3 @@
-using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using OrionTV.Desktop.Core;
@@ -267,14 +266,12 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
 
     private List<CatalogItem> LoadRecords()
     {
-        return _host.Services.PlayRecords.GetAll()
-            .OrderByDescending(kv => kv.Value.SaveTime)
-            .Select(kv =>
+        return _host.Services.PlayRecords.GetLatestByMedia()
+            .Select(entry =>
             {
-                var separator = kv.Key.IndexOf('+');
-                var source = separator >= 0 ? kv.Key[..separator] : kv.Key;
-                var id = separator >= 0 ? kv.Key[(separator + 1)..] : "";
-                var record = kv.Value;
+                var source = entry.Source;
+                var id = entry.Id;
+                var record = entry.Record;
                 var localItem = string.Equals(source, "local", StringComparison.OrdinalIgnoreCase)
                     ? _host.Services.LocalMedia.Get(record.LocalMediaId ?? id)
                     : null;
@@ -513,13 +510,87 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
         var record = _host.Services.PlayRecords.Get(item.Source, item.Id);
         var resume = CreateResumeContext(item, record);
         var libraryItem = _host.Services.LocalMedia.Get(record?.LocalMediaId ?? item.Id);
-        var candidates = libraryItem is not null
-            ? libraryItem.Episodes.Select(episode => episode.Path).ToList()
-            : record?.LocalEpisodes?.ToList() ?? [item.Id];
-        var episodes = candidates.Select(NormalizeLocalEpisode).ToList();
+        var importedEpisodes = libraryItem?.Episodes
+            .Select(episode => new
+            {
+                Uri = LocalCachePlaybackCatalog.NormalizePlayableUri(episode.Path),
+                Label = episode.Number is { } number ? $"第{number}集" : "",
+            })
+            .ToList();
+
+        var playbackId = libraryItem?.Id ?? item.Id;
+        var title = !string.IsNullOrWhiteSpace(libraryItem?.Title)
+            ? libraryItem.Title
+            : string.IsNullOrWhiteSpace(item.Title) ? "本地视频" : item.Title;
+        var poster = !string.IsNullOrWhiteSpace(item.Poster)
+            ? item.Poster
+            : libraryItem?.Poster ?? record?.Cover ?? "";
+        var episodes = importedEpisodes?.Select(episode => episode.Uri).ToList() ?? [];
+        IReadOnlyList<string>? episodeLabels = importedEpisodes?.Select(episode => episode.Label).ToList();
+
         if (episodes.All(string.IsNullOrWhiteSpace))
         {
-            episodes = FindCachedLocalEpisodes(item.Title);
+            var savedEpisodes = record?.LocalEpisodes?.ToList() ?? [item.Id];
+            var preferredSavedEpisodes = new List<string>();
+            if (record is { Index: >= 0 } && record.Index < savedEpisodes.Count)
+            {
+                preferredSavedEpisodes.Add(savedEpisodes[record.Index]);
+            }
+
+            preferredSavedEpisodes.AddRange(savedEpisodes);
+            var cacheGroups = LocalCachePlaybackCatalog.Build(
+                _host.Services.VodCache.GetEntries(_host.Services.Settings.VodCacheDirectory));
+            var cacheSelection = LocalCachePlaybackCatalog.FindByEpisodePath(
+                cacheGroups,
+                preferredSavedEpisodes);
+            if (cacheSelection is null
+                && LocalCachePlaybackCatalog.FindByTitle(cacheGroups, item.Title) is { } titleMatch)
+            {
+                var targetIndex = resume.FindEpisodeIndex(
+                    titleMatch.EpisodeLabels,
+                    titleMatch.Episodes.Count);
+                if (record?.TotalEpisodes <= 1
+                    && LocalMediaNaming.Parse(item.Title).EpisodeNumber is { } titleEpisodeNumber)
+                {
+                    targetIndex = titleMatch.EpisodeLabels.ToList().FindIndex(label =>
+                        EpisodeLabelFormatter.TryGetNumber(label, out var number)
+                        && number == titleEpisodeNumber);
+                }
+
+                cacheSelection = new LocalCachePlaybackSelection(
+                    titleMatch,
+                    Math.Max(0, targetIndex));
+            }
+
+            if (cacheSelection is not null)
+            {
+                var group = cacheSelection.Group;
+                playbackId = group.Id;
+                title = group.Title;
+                poster = !string.IsNullOrWhiteSpace(item.Poster)
+                    ? item.Poster
+                    : !string.IsNullOrWhiteSpace(group.Poster) ? group.Poster : record?.Cover ?? "";
+                episodes = group.Episodes.ToList();
+                episodeLabels = group.EpisodeLabels;
+                var targetIndex = Math.Clamp(cacheSelection.EpisodeIndex, 0, episodes.Count - 1);
+                var targetLabel = EpisodeLabelFormatter.DisplayAt(episodeLabels, targetIndex);
+                var targetNumber = EpisodeLabelFormatter.TryGetNumber(targetLabel, out var number)
+                    ? number
+                    : (int?)null;
+                resume = resume with
+                {
+                    EpisodeIndex = targetIndex,
+                    EpisodeLabel = targetLabel,
+                    EpisodeNumber = targetNumber,
+                };
+            }
+            else
+            {
+                episodes = savedEpisodes
+                    .Select(LocalCachePlaybackCatalog.NormalizePlayableUri)
+                    .ToList();
+                episodeLabels = null;
+            }
         }
 
         if (episodes.All(string.IsNullOrWhiteSpace))
@@ -533,27 +604,32 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
             return;
         }
 
-        var index = resume.FindEpisodeIndex(null, episodes.Count);
+        var index = resume.FindEpisodeIndex(episodeLabels, episodes.Count);
         if (index < 0 || string.IsNullOrWhiteSpace(episodes[index]))
         {
             index = episodes.FindIndex(path => !string.IsNullOrWhiteSpace(path));
         }
 
-        var poster = !string.IsNullOrWhiteSpace(item.Poster)
-            ? item.Poster
-            : libraryItem?.Poster ?? record?.Cover ?? "";
-        var title = string.IsNullOrWhiteSpace(item.Title) ? libraryItem?.Title ?? "本地视频" : item.Title;
-        var localSource = new SearchResult(item.Id, title, poster, episodes, "local", "本地", "");
+        var localSource = new SearchResult(
+            playbackId,
+            title,
+            poster,
+            episodes,
+            "local",
+            "本地",
+            "",
+            EpisodeLabels: episodeLabels);
         _host.Navigate(AppPage.Player, new PlayParameter(
             title,
             "local",
             "本地",
-            item.Id,
+            playbackId,
             episodes,
             Math.Max(0, index),
             resume.StartPositionMs,
             [localSource],
             poster,
+            EpisodeLabels: episodeLabels,
             Resume: resume));
     }
 
@@ -575,44 +651,6 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
             episodeNumber,
             item.Source,
             item.Id);
-    }
-
-    private List<string> FindCachedLocalEpisodes(string title)
-    {
-        var normalizedTitle = LocalMediaNaming.NormalizeTitle(title);
-        return _host.Services.VodCache
-            .GetEntries(_host.Services.Settings.VodCacheDirectory)
-            .Select(entry => new { Entry = entry, Name = LocalMediaNaming.Parse(entry.Title) })
-            .Where(item => LocalMediaNaming.NormalizeTitle(item.Name.Title) == normalizedTitle)
-            .GroupBy(item => item.Name.EpisodeNumber?.ToString() ?? item.Entry.Directory, StringComparer.OrdinalIgnoreCase)
-            .Select(items => items.OrderByDescending(item => item.Entry.CreatedAt).First())
-            .OrderBy(item => item.Name.EpisodeNumber ?? int.MaxValue)
-            .Select(item => NormalizeLocalEpisode(item.Entry.PlaylistPath))
-            .Where(path => !string.IsNullOrWhiteSpace(path))
-            .ToList();
-    }
-
-    private static string NormalizeLocalEpisode(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return "";
-        }
-
-        try
-        {
-            if (Uri.TryCreate(path, UriKind.Absolute, out var uri) && uri.IsFile)
-            {
-                return File.Exists(uri.LocalPath) ? uri.AbsoluteUri : "";
-            }
-
-            var fullPath = Path.GetFullPath(path);
-            return File.Exists(fullPath) ? new Uri(fullPath).AbsoluteUri : "";
-        }
-        catch
-        {
-            return "";
-        }
     }
 
     private void LiveLink_Click(object sender, RoutedEventArgs e) => _host.Navigate(AppPage.Live);

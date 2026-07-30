@@ -1,7 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.Security.Cryptography;
-using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
@@ -14,10 +12,13 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
 {
     private readonly IAppHost _host;
     private List<LocalCacheItem> _items = [];
+    private List<LocalCachePlaybackGroup> _cachePlaybackGroups = [];
     private List<LocalMediaCardItem> _mediaItems = [];
     private List<ActiveJobItem> _activeJobs = [];
+    private readonly HashSet<string> _decryptingDirectories = new(StringComparer.OrdinalIgnoreCase);
     private bool _listening;
     private bool _disposed;
+    private bool _batchDecryptRunning;
     private DispatcherTimer? _refreshTimer;
 
     public LocalVideoView(IAppHost host)
@@ -146,12 +147,17 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
     {
         var entries = _host.Services.VodCache.GetEntries(_host.Services.Settings.VodCacheDirectory);
         _items = entries
-            .Select(entry => new LocalCacheItem(entry))
+            .Select(entry => new LocalCacheItem(
+                entry,
+                !_batchDecryptRunning
+                && !_decryptingDirectories.Contains(CacheDirectoryKey(entry.Directory))))
             .ToList();
         CacheList.ItemsSource = _items;
         EmptyText.Visibility = _items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        RefreshDecryptMergeAllButtonState();
 
-        _mediaItems = BuildMediaItems(_host.Services.LocalMedia.GetItems(), entries);
+        _cachePlaybackGroups = LocalCachePlaybackCatalog.Build(entries).ToList();
+        _mediaItems = BuildMediaItems(_host.Services.LocalMedia.GetItems(), _cachePlaybackGroups);
         MediaGrid.ItemsSource = _mediaItems;
         MediaEmptyText.Visibility = _mediaItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
@@ -163,108 +169,103 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
                 : $"共 {_mediaItems.Count} 部本地影视 · {_items.Count} 个应用缓存";
     }
 
+    private void RefreshDecryptMergeAllButtonState()
+    {
+        var count = _items.Count(item => item.CanDecrypt);
+        if (_batchDecryptRunning)
+        {
+            DecryptMergeAllButton.IsEnabled = false;
+            return;
+        }
+
+        DecryptMergeAllButton.Content = count > 0 ? $"解密合并全部 ({count})" : "解密合并全部";
+        DecryptMergeAllButton.IsEnabled = count > 0 && _decryptingDirectories.Count == 0;
+        DecryptMergeAllButton.ToolTip = count > 0
+            ? $"将列表中 {count} 个已下载完成的 AES-128 缓存解密并合并为单文件"
+            : "当前没有需要解密合并的已下载缓存";
+    }
+
+    private static string CacheDirectoryKey(string directory)
+    {
+        try
+        {
+            return Path.GetFullPath(directory);
+        }
+        catch
+        {
+            return directory;
+        }
+    }
+
     private static List<LocalMediaCardItem> BuildMediaItems(
         IReadOnlyList<LocalMediaItem> importedItems,
-        IReadOnlyList<VodCacheEntry> cacheEntries)
+        IReadOnlyList<LocalCachePlaybackGroup> cacheGroups)
     {
         var cards = importedItems
             .Select(item =>
             {
                 var episodes = item.Episodes
-                    .Select(episode => ToPlayableUri(episode.Path))
-                    .Where(path => !string.IsNullOrWhiteSpace(path))
+                    .Select(episode => new
+                    {
+                        Uri = ToPlayableUri(episode.Path),
+                        Label = episode.Number is { } number ? $"第{number}集" : "",
+                    })
+                    .Where(episode => !string.IsNullOrWhiteSpace(episode.Uri))
                     .ToList();
                 return episodes.Count == 0
                     ? null
-                    : LocalMediaCardItem.FromImported(item, episodes);
+                    : LocalMediaCardItem.FromImported(
+                        item,
+                        episodes.Select(episode => episode.Uri).ToList(),
+                        episodes.Select(episode => episode.Label).ToList());
             })
             .Where(item => item is not null)
             .Cast<LocalMediaCardItem>()
             .ToList();
 
-        var parsedEntries = cacheEntries.Select(entry => new
-        {
-            Entry = entry,
-            Name = LocalMediaNaming.Parse(entry.Title),
-        });
-        var cacheGroups = parsedEntries.GroupBy(item =>
-            item.Name.EpisodeNumber is not null
-                ? $"series:{LocalMediaNaming.NormalizeTitle(item.Name.Title)}"
-                : $"cache:{item.Entry.Directory}",
-            StringComparer.OrdinalIgnoreCase);
-        foreach (var group in cacheGroups)
-        {
-            var selected = group
-                .GroupBy(item => item.Name.EpisodeNumber?.ToString() ?? item.Entry.Directory, StringComparer.OrdinalIgnoreCase)
-                .Select(items => items.OrderByDescending(item => item.Entry.CreatedAt).First())
-                .OrderBy(item => item.Name.EpisodeNumber ?? int.MaxValue)
-                .ThenBy(item => item.Entry.CreatedAt)
-                .ToList();
-            var episodes = selected
-                .Select(item => ToPlayableUri(item.Entry.PlaylistPath))
-                .Where(path => !string.IsNullOrWhiteSpace(path))
-                .ToList();
-            if (episodes.Count == 0)
-            {
-                continue;
-            }
-
-            var title = selected[0].Name.Title;
-            var poster = selected.Select(item => item.Entry.Poster)
-                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "";
-            cards.Add(LocalMediaCardItem.FromCache(
-                StableCacheId(group.Key),
-                title,
-                poster,
-                episodes,
-                selected.Max(item => item.Entry.CreatedAt)));
-        }
+        cards.AddRange(cacheGroups.Select(group => LocalMediaCardItem.FromCache(
+            group.Id,
+            group.Title,
+            group.Poster,
+            group.Episodes,
+            group.EpisodeLabels,
+            group.SortTime)));
 
         return cards.OrderByDescending(item => item.SortTime).ToList();
     }
 
-    private static string StableCacheId(string value)
-    {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
-        return "cache-" + Convert.ToHexString(hash)[..16].ToLowerInvariant();
-    }
-
-    private static string ToPlayableUri(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return "";
-        }
-
-        try
-        {
-            if (Uri.TryCreate(path, UriKind.Absolute, out var uri) && uri.IsFile)
-            {
-                return File.Exists(uri.LocalPath) ? uri.AbsoluteUri : "";
-            }
-
-            var fullPath = Path.GetFullPath(path);
-            return File.Exists(fullPath) ? new Uri(fullPath).AbsoluteUri : "";
-        }
-        catch
-        {
-            return "";
-        }
-    }
+    private static string ToPlayableUri(string path) =>
+        LocalCachePlaybackCatalog.NormalizePlayableUri(path);
 
     private void PlayCacheButton_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is Button { DataContext: LocalCacheItem item })
+        if (sender is not Button { DataContext: LocalCacheItem item })
+        {
+            return;
+        }
+
+        var selection = LocalCachePlaybackCatalog.FindByDirectory(
+            _cachePlaybackGroups,
+            item.Directory);
+        if (selection is null)
         {
             PlayLocalFile(item.PlaylistPath, item.Title, item.Poster);
+            return;
         }
+
+        _host.Navigate(AppPage.Player, selection.ToPlayParameter());
     }
 
     private void PlayMediaCard_Click(object sender, RoutedEventArgs e)
     {
         if (sender is FrameworkElement { DataContext: LocalMediaCardItem item })
         {
-            PlayLocalMedia(item.Id, item.Card.Title, item.Card.Poster, item.Episodes);
+            PlayLocalMedia(
+                item.Id,
+                item.Card.Title,
+                item.Card.Poster,
+                item.Episodes,
+                episodeLabels: item.EpisodeLabels);
         }
     }
 
@@ -313,29 +314,115 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
 
     private async void DecryptMergeButton_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { DataContext: LocalCacheItem item } button)
+        if (_batchDecryptRunning
+            || sender is not Button { DataContext: LocalCacheItem item } button)
+        {
+            return;
+        }
+
+        var directoryKey = CacheDirectoryKey(item.Directory);
+        if (!_decryptingDirectories.Add(directoryKey))
         {
             return;
         }
 
         button.IsEnabled = false;
+        RefreshDecryptMergeAllButtonState();
+        string finalMessage;
         try
         {
             StatusText.Text = $"正在解密合并《{item.Title}》…";
             var progress = new Progress<double>(ratio =>
             {
+                if (_disposed)
+                {
+                    return;
+                }
+
                 StatusText.Text = $"正在解密合并《{item.Title}》… {Math.Clamp((int)Math.Round(ratio * 100), 0, 100)}%";
             });
             var path = await _host.Services.VodCache
                 .DecryptAndMergeAsync(item.Directory, progress)
                 .ConfigureAwait(true);
-            StatusText.Text = $"《{item.Title}》已解密合并为单文件（{new FileInfo(path).Length / 1024d / 1024d:0.0} MB）";
-            RefreshAll();
+            finalMessage = $"《{item.Title}》已解密合并为单文件（{new FileInfo(path).Length / 1024d / 1024d:0.0} MB）";
         }
         catch (Exception error)
         {
-            StatusText.Text = $"解密合并失败：{ShortError(error)}";
-            button.IsEnabled = true;
+            finalMessage = $"解密合并失败：{ShortError(error)}";
+        }
+        finally
+        {
+            _decryptingDirectories.Remove(directoryKey);
+            if (!_disposed)
+            {
+                RefreshAll();
+            }
+        }
+
+        if (!_disposed)
+        {
+            StatusText.Text = finalMessage;
+        }
+    }
+
+    private async void DecryptMergeAllButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_batchDecryptRunning || _decryptingDirectories.Count > 0)
+        {
+            return;
+        }
+
+        var entries = _items
+            .Where(item => item.CanDecrypt)
+            .GroupBy(item => CacheDirectoryKey(item.Directory), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First().Entry)
+            .ToList();
+        if (entries.Count == 0)
+        {
+            StatusText.Text = "当前没有需要解密合并的已下载缓存";
+            RefreshDecryptMergeAllButtonState();
+            return;
+        }
+
+        _batchDecryptRunning = true;
+        RefreshEntries();
+        string finalMessage;
+        try
+        {
+            StatusText.Text = $"正在解密合并 1/{entries.Count} 项…";
+            var progress = new Progress<VodCacheBatchDecryptProgress>(update =>
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                var ordinal = Math.Clamp(update.EntryIndex + 1, 1, update.TotalEntries);
+                var percent = Math.Clamp((int)Math.Round(update.CurrentEntryProgress * 100), 0, 100);
+                StatusText.Text = $"正在解密合并《{update.CurrentEntry.Title}》（{ordinal}/{update.TotalEntries}）… {percent}%";
+                DecryptMergeAllButton.Content = $"解密中 {ordinal}/{update.TotalEntries}";
+            });
+            var result = await _host.Services.VodCache
+                .DecryptAndMergeManyAsync(entries, progress)
+                .ConfigureAwait(true);
+            finalMessage = BatchDecryptResultMessage(result, entries.Count);
+        }
+        catch (Exception error)
+        {
+            finalMessage = $"批量解密合并失败：{ShortError(error)}";
+        }
+        finally
+        {
+            _batchDecryptRunning = false;
+            if (!_disposed)
+            {
+                RefreshAll();
+            }
+        }
+
+        if (!_disposed)
+        {
+            StatusText.Text = finalMessage;
         }
     }
 
@@ -396,32 +483,86 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
         PlayLocalMedia(path, title, poster, [uri]);
     }
 
-    private void PlayLocalMedia(string id, string title, string poster, IReadOnlyList<string> episodes)
+    private void PlayLocalMedia(
+        string id,
+        string title,
+        string poster,
+        IReadOnlyList<string> episodes,
+        int episodeIndex = 0,
+        IReadOnlyList<string>? episodeLabels = null)
     {
-        var playableEpisodes = episodes.Where(path => !string.IsNullOrWhiteSpace(path)).ToList();
-        if (playableEpisodes.Count == 0)
+        var playable = episodes
+            .Select((path, index) => new
+            {
+                Path = path,
+                OriginalIndex = index,
+                Label = episodeLabels is not null && index < episodeLabels.Count
+                    ? episodeLabels[index]
+                    : "",
+            })
+            .Where(item => !string.IsNullOrWhiteSpace(item.Path))
+            .ToList();
+        if (playable.Count == 0)
         {
             StatusText.Text = "没有找到可播放的本地文件";
             return;
         }
 
-        var result = new SearchResult(id, title, poster, playableEpisodes, "local", "本地", "");
+        var selectedIndex = playable.FindIndex(item => item.OriginalIndex == episodeIndex);
+        if (selectedIndex < 0)
+        {
+            selectedIndex = 0;
+        }
+
+        var playableEpisodes = playable.Select(item => item.Path).ToList();
+        IReadOnlyList<string>? playableLabels = episodeLabels is null
+            ? null
+            : playable.Select(item => item.Label).ToList();
+        var result = new SearchResult(
+            id,
+            title,
+            poster,
+            playableEpisodes,
+            "local",
+            "本地",
+            "",
+            EpisodeLabels: playableLabels);
         _host.Navigate(AppPage.Player, new PlayParameter(
             title,
             "local",
             "本地",
             id,
             playableEpisodes,
-            0,
+            selectedIndex,
             0,
             [result],
-            poster));
+            poster,
+            EpisodeLabels: playableLabels));
     }
 
     private static string ShortError(Exception error)
     {
         var message = error.Message?.Trim() ?? "未知错误";
         return message.Length <= 80 ? message : message[..80] + "…";
+    }
+
+    private static string BatchDecryptResultMessage(VodCacheBatchDecryptResult result, int total)
+    {
+        if (result.Failures.Count == 0)
+        {
+            return $"已解密合并全部 {result.SucceededEntries.Count} 项";
+        }
+
+        var failedTitles = string.Join("、", result.Failures
+            .Select(failure => failure.Entry.Title)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(3));
+        if (result.Failures.Count > 3)
+        {
+            failedTitles += " 等";
+        }
+
+        return $"批量解密合并完成：成功 {result.SucceededEntries.Count}/{total} 项，失败 {result.Failures.Count} 项（{failedTitles}）";
     }
 
     public void Dispose()
@@ -482,8 +623,9 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
 
     private sealed class LocalCacheItem
     {
-        internal LocalCacheItem(VodCacheEntry entry)
+        internal LocalCacheItem(VodCacheEntry entry, bool decryptEnabled)
         {
+            Entry = entry;
             Directory = entry.Directory;
             PlaylistPath = entry.PlaylistPath;
             Title = entry.Title;
@@ -491,6 +633,7 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
             SourceUrl = entry.SourceUrl;
             CanResume = entry.CanResumeDownload;
             CanDecrypt = entry.CanDecryptMerge;
+            DecryptEnabled = CanDecrypt && decryptEnabled;
 
             var state = entry.IsComplete
                 ? "整集已完成"
@@ -505,6 +648,7 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
             Summary = $"{state}{merged} · {entry.SizeBytes / 1024d / 1024d:0.0} MB · {entry.CreatedAt:yyyy-MM-dd HH:mm}";
         }
 
+        internal VodCacheEntry Entry { get; }
         public string Directory { get; }
         public string PlaylistPath { get; }
         public string Title { get; }
@@ -513,6 +657,7 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
         public string SourceUrl { get; }
         public bool CanResume { get; }
         public bool CanDecrypt { get; }
+        public bool DecryptEnabled { get; }
         public Visibility ResumeVisibility => CanResume ? Visibility.Visible : Visibility.Collapsed;
         public Visibility DecryptVisibility => CanDecrypt ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -525,11 +670,13 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
             string title,
             string poster,
             IReadOnlyList<string> episodes,
+            IReadOnlyList<string> episodeLabels,
             DateTimeOffset sortTime)
         {
             Id = id;
             LibraryId = libraryId;
             Episodes = episodes;
+            EpisodeLabels = episodeLabels;
             SortTime = sortTime;
             Card = new CatalogItem(
                 id,
@@ -544,16 +691,21 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
         public string? LibraryId { get; }
         public CatalogItem Card { get; }
         public IReadOnlyList<string> Episodes { get; }
+        public IReadOnlyList<string> EpisodeLabels { get; }
         public DateTimeOffset SortTime { get; }
         public Visibility RemoveVisibility => LibraryId is null ? Visibility.Collapsed : Visibility.Visible;
 
-        internal static LocalMediaCardItem FromImported(LocalMediaItem item, IReadOnlyList<string> episodes) =>
+        internal static LocalMediaCardItem FromImported(
+            LocalMediaItem item,
+            IReadOnlyList<string> episodes,
+            IReadOnlyList<string> episodeLabels) =>
             new(
                 item.Id,
                 item.Id,
                 item.Title,
                 item.Poster,
                 episodes,
+                episodeLabels,
                 DateTimeOffset.FromUnixTimeMilliseconds(Math.Max(0, item.SaveTime)));
 
         internal static LocalMediaCardItem FromCache(
@@ -561,8 +713,9 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
             string title,
             string poster,
             IReadOnlyList<string> episodes,
+            IReadOnlyList<string> episodeLabels,
             DateTimeOffset sortTime) =>
-            new(id, null, title, poster, episodes, sortTime);
+            new(id, null, title, poster, episodes, episodeLabels, sortTime);
     }
 
     private static string FormatSize(long bytes)

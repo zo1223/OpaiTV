@@ -17,7 +17,7 @@ public sealed class WpfNavigationCollection
 public sealed class PlayerNavigationSurfaceTests
 {
     [Fact]
-    public void Sidebar_navigation_hides_and_restores_the_libvlc_foreground_window_repeatedly()
+    public void Sidebar_navigation_restores_each_section_and_the_player_repeatedly()
     {
         RunOnStaThread(() =>
         {
@@ -27,6 +27,42 @@ public sealed class PlayerNavigationSurfaceTests
             try
             {
                 RemoveLoadedHandler(window, "MainWindow_Loaded");
+
+                window.Navigate(AppPage.Live);
+                var live = Assert.IsType<LiveView>(GetCurrentView(window));
+                var liveController = new PlaybackController(window.Services.LibVlc, Dispatcher.CurrentDispatcher);
+                typeof(LiveView)
+                    .GetField("_controller", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .SetValue(live, liveController);
+                var generationField = typeof(PlaybackController)
+                    .GetField("_generation", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                var generationBeforeLeaving = (int)generationField.GetValue(liveController)!;
+
+                window.Navigate(AppPage.Home);
+                Assert.Equal(generationBeforeLeaving + 1, generationField.GetValue(liveController));
+                window.Navigate(AppPage.Live);
+                Assert.Same(live, GetCurrentView(window));
+
+                window.Navigate(AppPage.Home);
+                var home = Assert.IsType<HomeView>(GetCurrentView(window));
+                window.Navigate(AppPage.Detail);
+                var homeDetail = Assert.IsType<DetailView>(GetCurrentView(window));
+
+                window.Navigate(AppPage.Search);
+                var search = Assert.IsType<SearchView>(GetCurrentView(window));
+                window.Navigate(AppPage.Detail);
+                var searchDetail = Assert.IsType<DetailView>(GetCurrentView(window));
+
+                window.Navigate(AppPage.Home);
+                Assert.Same(homeDetail, GetCurrentView(window));
+                window.GoBack();
+                Assert.Same(home, GetCurrentView(window));
+
+                window.Navigate(AppPage.Search);
+                Assert.Same(searchDetail, GetCurrentView(window));
+                window.GoBack();
+                Assert.Same(search, GetCurrentView(window));
+
                 window.Navigate(AppPage.Player);
 
                 var player = (PlayerView)typeof(MainWindow)
@@ -52,6 +88,9 @@ public sealed class PlayerNavigationSurfaceTests
                     PumpDispatcher();
                     Assert.True(foreground.IsVisible);
                 }
+
+                window.GoBack();
+                Assert.Same(home, GetCurrentView(window));
             }
             finally
             {
@@ -61,6 +100,11 @@ public sealed class PlayerNavigationSurfaceTests
             }
         });
     }
+
+    private static UIElement? GetCurrentView(MainWindow window) =>
+        (UIElement?)typeof(MainWindow)
+            .GetField("_current", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(window);
 
     private static void RemoveLoadedHandler(FrameworkElement element, string methodName)
     {
@@ -103,7 +147,7 @@ public sealed class PlayerNavigationSurfaceTests
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(15)), "WPF navigation test timed out.");
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "WPF navigation test timed out.");
 
         if (failure is not null)
         {
