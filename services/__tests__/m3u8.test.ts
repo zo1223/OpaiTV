@@ -1,4 +1,4 @@
-import { getAdRangesFromM3U8, parseAdRangesFromM3U8 } from "@/services/m3u8";
+import { getAdRangesFromM3U8, getResolutionFromM3U8, parseAdRangesFromM3U8 } from "@/services/m3u8";
 
 describe("m3u8 ad range parsing", () => {
   beforeEach(() => {
@@ -63,6 +63,39 @@ describe("m3u8 ad range parsing", () => {
 
   it("does not fetch non-m3u8 urls for ad ranges", async () => {
     await expect(getAdRangesFromM3U8("https://video.example/movie.mp4")).resolves.toEqual([]);
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("m3u8 resolution detection", () => {
+  const masterPlaylist = [
+    "#EXTM3U",
+    "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720",
+    "720p.m3u8",
+    "#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1920x1080",
+    "1080p.m3u8",
+  ].join("\n");
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: jest.fn().mockResolvedValue(masterPlaylist),
+    }) as any;
+  });
+
+  it("detects the highest resolution for m3u8 urls with a query string", async () => {
+    await expect(
+      getResolutionFromM3U8("https://video.example/signed/index.m3u8?token=abc")
+    ).resolves.toBe("1080p");
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fetch non-m3u8 urls for resolution", async () => {
+    await expect(getResolutionFromM3U8("https://video.example/movie.mp4")).resolves.toBeNull();
 
     expect(global.fetch).not.toHaveBeenCalled();
   });

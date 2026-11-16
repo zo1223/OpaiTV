@@ -219,7 +219,7 @@ const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
             {isContinueWatching && (
               <View style={styles.infoRow}>
                 <ThemedText style={styles.continueLabel} numberOfLines={1}>
-                  第{episodeIndex! + 1}集 已观看 {Math.round((progress || 0) * 100)}%
+                  第{episodeIndex}集 已观看 {Math.round((progress || 0) * 100)}%
                 </ThemedText>
               </View>
             )}

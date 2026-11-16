@@ -87,7 +87,8 @@ export const getResolutionFromM3U8 = async (
     return cachedEntry.resolution;
   }
 
-  if (!url.toLowerCase().endsWith(".m3u8")) {
+  // 与广告区间检测同口径:带 ?token= / #hash 的签名地址同样是 m3u8
+  if (!isM3U8Url(url)) {
     logger.info(`[PERF] M3U8 resolution detection SKIPPED - not M3U8 file`);
     return null;
   }

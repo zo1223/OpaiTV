@@ -13,7 +13,8 @@ const CONTROLS_TIMEOUT = 5000;
  * @returns onScreenPress - 一个函数，用于处理屏幕点击事件，以显示控件并重置定时器。
  */
 export const useTVRemoteHandler = () => {
-  const { showControls, setShowControls, showEpisodeModal, togglePlayPause, seek } = usePlayerStore();
+  const { showControls, setShowControls, showEpisodeModal, showSourceModal, showSpeedModal, togglePlayPause, seek } =
+    usePlayerStore();
 
   const controlsTimer = useRef<NodeJS.Timeout | null>(null);
   const fastForwardIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -76,9 +77,11 @@ export const useTVRemoteHandler = () => {
 
       resetTimer();
 
-      if (showControls) {
+      if (showControls || showSourceModal || showSpeedModal) {
         // 如果控制条已显示，则不处理后台的快进/快退等操作
-        // 避免与控制条上的按钮焦点冲突
+        // 避免与控制条上的按钮焦点冲突。
+        // 换源/倍速弹窗同理:Modal 打开时遥控器按键仍会到达这里,而控制条 5 秒后会自动隐藏,
+        // 此后弹窗内的方向键/确认键不能被当作快进快退或暂停
         return;
       }
 
@@ -113,7 +116,16 @@ export const useTVRemoteHandler = () => {
           break;
       }
     },
-    [showControls, showEpisodeModal, setShowControls, resetTimer, togglePlayPause, seek]
+    [
+      showControls,
+      showEpisodeModal,
+      showSourceModal,
+      showSpeedModal,
+      setShowControls,
+      resetTimer,
+      togglePlayPause,
+      seek,
+    ]
   );
 
   useSafeTVEventHandler(handleTVEvent);

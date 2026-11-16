@@ -185,6 +185,19 @@ export class PlayRecordManager {
     return storageConfig.getStorageType();
   }
 
+  // Raw local records, without player settings merged in. Write paths must use this
+  // instead of getAll(): persisting the merged view bakes introEndTime/outroStartTime
+  // into the stored record, which brings them back after the user clears them.
+  private static async getLocalRecords(): Promise<Record<string, PlayRecord>> {
+    try {
+      const data = await AsyncStorage.getItem(STORAGE_KEYS.PLAY_RECORDS);
+      return data ? JSON.parse(data) : {};
+    } catch (error) {
+      logger.info("Failed to get all local play records:", error);
+      return {};
+    }
+  }
+
   static async getAll(): Promise<Record<string, PlayRecord>> {
     const perfStart = performance.now();
     const storageType = this.getStorageType();
@@ -192,13 +205,7 @@ export class PlayRecordManager {
     
     let apiRecords: Record<string, PlayRecord> = {};
     if (storageType === "localstorage") {
-      try {
-        const data = await AsyncStorage.getItem(STORAGE_KEYS.PLAY_RECORDS);
-        apiRecords = data ? JSON.parse(data) : {};
-      } catch (error) {
-        logger.info("Failed to get all local play records:", error);
-        return {};
-      }
+      apiRecords = await this.getLocalRecords();
     } else {
       const apiStart = performance.now();
       logger.info(`[PERF] API getPlayRecords START`);
@@ -232,9 +239,13 @@ export class PlayRecordManager {
     await PlayerSettingsManager.save(source, id, { introEndTime, outroStartTime });
 
     if (this.getStorageType() === "localstorage") {
-      const allRecords = await this.getAll();
-      const fullRecord = { ...apiRecord, save_time: Date.now() };
-      allRecords[key] = { ...allRecords[key], ...fullRecord };
+      const allRecords = await this.getLocalRecords();
+      // Intro/outro times live in player settings only; drop copies left in the
+      // record by earlier versions so they cannot override a cleared setting.
+      const existingRecord: Partial<PlayRecord> = { ...allRecords[key] };
+      delete existingRecord.introEndTime;
+      delete existingRecord.outroStartTime;
+      allRecords[key] = { ...existingRecord, ...apiRecord, save_time: Date.now() };
       await AsyncStorage.setItem(STORAGE_KEYS.PLAY_RECORDS, JSON.stringify(allRecords));
     } else {
       await api.savePlayRecord(key, apiRecord);
@@ -261,7 +272,7 @@ export class PlayRecordManager {
     await PlayerSettingsManager.remove(source, id); // Always remove local settings
 
     if (this.getStorageType() === "localstorage") {
-      const allRecords = await this.getAll();
+      const allRecords = await this.getLocalRecords();
       delete allRecords[key];
       await AsyncStorage.setItem(STORAGE_KEYS.PLAY_RECORDS, JSON.stringify(allRecords));
     } else {

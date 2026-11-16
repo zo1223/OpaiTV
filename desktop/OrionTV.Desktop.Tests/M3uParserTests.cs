@@ -31,6 +31,31 @@ public class M3uParserTests
     }
 
     [Fact]
+    public void Parse_keeps_commas_that_are_part_of_the_channel_name()
+    {
+        const string m3u = "#EXTINF:-1 tvg-logo=\"http://logo/a.png\" group-title=\"News\",CCTV-13, News HD\nhttp://example.com/a.m3u8\n";
+
+        var channels = M3uParser.Parse(m3u);
+
+        Assert.Single(channels);
+        Assert.Equal("CCTV-13, News HD", channels[0].Name);
+        Assert.Equal("News", channels[0].Group);
+        Assert.Equal("http://logo/a.png", channels[0].Logo);
+    }
+
+    [Fact]
+    public void Parse_ignores_commas_inside_quoted_attribute_values()
+    {
+        const string m3u = "#EXTINF:-1 group-title=\"Movies, Drama\",HBO\nhttp://example.com/b.m3u8\n";
+
+        var channels = M3uParser.Parse(m3u);
+
+        Assert.Single(channels);
+        Assert.Equal("HBO", channels[0].Name);
+        Assert.Equal("Movies, Drama", channels[0].Group);
+    }
+
+    [Fact]
     public void Parse_skips_lines_without_url()
     {
         const string m3u = "#EXTM3U\n#EXTINF:-1,Only Info\n";

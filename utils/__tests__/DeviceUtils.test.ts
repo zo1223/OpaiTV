@@ -1,17 +1,22 @@
-import { Dimensions } from "react-native";
+import { Dimensions, Platform } from "react-native";
 import { DeviceUtils } from "../DeviceUtils";
 
 jest.mock("react-native", () => ({
   Dimensions: {
     get: jest.fn(),
   },
+  Platform: {
+    isTV: false,
+  },
 }));
 
 const mockedDimensionsGet = Dimensions.get as jest.Mock;
+const mockedPlatform = Platform as { isTV: boolean };
 
 describe("DeviceUtils", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedPlatform.isTV = false;
   });
 
   describe("getDeviceType", () => {
@@ -28,6 +33,15 @@ describe("DeviceUtils", () => {
     it("应该在宽度 < 768 时返回 mobile", () => {
       mockedDimensionsGet.mockReturnValue({ width: 375, height: 812 });
       expect(DeviceUtils.getDeviceType()).toBe("mobile");
+    });
+
+    // A 1080p Android TV reports a 960x540dp window, below the 1024 width breakpoint
+    it("应该在 TV 平台上返回 tv,即使窗口宽度小于 1024", () => {
+      mockedPlatform.isTV = true;
+      mockedDimensionsGet.mockReturnValue({ width: 960, height: 540 });
+      expect(DeviceUtils.getDeviceType()).toBe("tv");
+      expect(DeviceUtils.getMinTouchTargetSize()).toBe(60);
+      expect(DeviceUtils.getOptimalFontSize(16)).toBe(20);
     });
   });
 

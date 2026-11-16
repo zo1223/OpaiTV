@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, Modal, FlatList } from "react-native";
 import { StyledButton } from "./StyledButton";
 import usePlayerStore from "@/stores/playerStore";
@@ -10,6 +10,13 @@ export const EpisodeSelectionModal: React.FC<EpisodeSelectionModalProps> = () =>
 
   const [episodeGroupSize] = useState(30);
   const [selectedEpisodeGroup, setSelectedEpisodeGroup] = useState(Math.floor(currentEpisodeIndex / episodeGroupSize));
+
+  // The modal is mounted before the episode is known, so re-sync the group each time it opens.
+  useEffect(() => {
+    if (showEpisodeModal) {
+      setSelectedEpisodeGroup(Math.floor(currentEpisodeIndex / episodeGroupSize));
+    }
+  }, [showEpisodeModal, currentEpisodeIndex, episodeGroupSize]);
 
   const onSelectEpisode = (index: number) => {
     playEpisode(index);

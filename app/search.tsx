@@ -28,6 +28,9 @@ export default function SearchScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const textInputRef = useRef<TextInput>(null);
+  // 搜索代次:加载中输入框仍可再次提交(遥控输入也会触发),
+  // 较早发出但较晚返回的搜索不得覆盖较新搜索的结果或提前关掉加载态
+  const searchSeqRef = useRef(0);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const { showModal: showRemoteModal, lastMessage, targetPage, clearMessage } = useRemoteControlStore();
   const { remoteInputEnabled } = useSettingsStore();
@@ -64,20 +67,25 @@ export default function SearchScreen() {
       return;
     }
     Keyboard.dismiss();
+    const seq = ++searchSeqRef.current;
     setLoading(true);
     setError(null);
     try {
       const response = await api.searchVideos(term);
+      if (searchSeqRef.current !== seq) return;
       if (response.results.length > 0) {
         setResults(response.results);
       } else {
         setError("没有找到相关内容");
       }
     } catch (err) {
-      setError("搜索失败，请稍后重试。");
       logger.info("Search failed:", err);
+      if (searchSeqRef.current !== seq) return;
+      setError("搜索失败，请稍后重试。");
     } finally {
-      setLoading(false);
+      if (searchSeqRef.current === seq) {
+        setLoading(false);
+      }
     }
   };
 

@@ -147,6 +147,41 @@ describe("playerStore", () => {
     expect(usePlayerStore.getState().adRanges).toEqual([{ startMillis: 10000, endMillis: 30000 }]);
   });
 
+  it("discards a load that finishes after the player was reset", async () => {
+    const movie = {
+      id: 7,
+      title: "Movie",
+      poster: "",
+      episodes: ["https://video.example/movie.m3u8"],
+      source: "demo",
+      source_name: "Demo",
+      year: "2026",
+    };
+    useDetailStore.setState({ detail: movie, searchResults: [movie] });
+    let resolvePlayRecord: (value: null) => void = () => {};
+    (PlayRecordManager.get as jest.Mock).mockReturnValue(
+      new Promise((resolve) => {
+        resolvePlayRecord = resolve;
+      })
+    );
+    (PlayerSettingsManager.get as jest.Mock).mockResolvedValue(null);
+    (getAdRangesFromM3U8 as jest.Mock).mockResolvedValue([]);
+
+    const loadPromise = usePlayerStore.getState().loadVideo({
+      source: "demo",
+      id: "7",
+      episodeIndex: 0,
+      title: "Movie",
+    });
+    // The user leaves the player screen while the load is still in flight
+    usePlayerStore.getState().reset();
+    resolvePlayRecord(null);
+    await loadPromise;
+
+    expect(usePlayerStore.getState().episodes).toEqual([]);
+    expect(usePlayerStore.getState().isLoading).toBe(true);
+  });
+
   it("seeks to the end of the current ad range during playback", () => {
     const setPositionAsync = jest.fn().mockResolvedValue(undefined);
     useDetailStore.setState({

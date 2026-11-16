@@ -62,6 +62,7 @@ interface PlayerState {
   _recordSaveTimeout?: NodeJS.Timeout;
   _isRecordSaveThrottled: boolean;
   _playSeq: number;
+  _loadSeq: number;
   _episodeSwitching: boolean;
   // Internal helper
   _savePlayRecord: (updates?: Partial<PlayRecord>, options?: { immediate?: boolean }) => void;
@@ -92,6 +93,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   _recordSaveTimeout: undefined,
   _isRecordSaveThrottled: false,
   _playSeq: 0,
+  _loadSeq: 0,
   _episodeSwitching: false,
 
   setVideoRef: (ref) => set({ videoRef: ref }),
@@ -112,10 +114,17 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       episodes = episodesSelectorBySource(source)(useDetailStore.getState());
     }
 
+    // 加载代次:reset()(离开播放页)或更新的 loadVideo 会推进它。
+    // 过期的加载不得再写入 store,否则旧视频的剧集会在播放页卸载后被写回,
+    // 下次进入播放页时先播放旧视频并把它的进度记到新视频名下
+    const loadSeq = get()._loadSeq + 1;
+    const isStale = () => get()._loadSeq !== loadSeq;
+
     set({
       isLoading: true,
       // 作废仍在途的 playEpisode,并抑制换源/加载期间旧视频残留的片尾自动切集
       _playSeq: get()._playSeq + 1,
+      _loadSeq: loadSeq,
       _episodeSwitching: true,
     });
 
@@ -138,7 +147,9 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       
       const detailInitEnd = performance.now();
       logger.info(`[PERF] DetailStore.init END - took ${(detailInitEnd - detailInitStart).toFixed(2)}ms`);
-      
+
+      if (isStale()) return;
+
       detail = useDetailStore.getState().detail;
       
       if (!detail) {
@@ -245,6 +256,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         ? await getAdRangesFromM3U8(episodes[episodeIndex] || "")
         : [];
       
+      if (isStale()) return;
+
       const episodesMappingStart = performance.now();
       const mappedEpisodes = episodes.map((ep, index) => ({
         url: ep,
@@ -273,6 +286,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       const adRanges = useSettingsStore.getState().autoSkipAdsEnabled
         ? await getAdRangesFromM3U8(episodes[episodeIndex] || "")
         : [];
+      if (isStale()) return;
       const mappedEpisodes = episodes.map((ep, index) => ({
         url: ep,
         title: `Episode ${index + 1}`,
@@ -598,6 +612,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       _recordSaveTimeout: undefined,
       _isRecordSaveThrottled: false,
       _playSeq: get()._playSeq + 1,
+      _loadSeq: get()._loadSeq + 1,
       _episodeSwitching: false,
     });
   },

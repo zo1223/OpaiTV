@@ -1,4 +1,4 @@
-import { Dimensions } from "react-native";
+import { Dimensions, Platform } from "react-native";
 import { DeviceType } from "@/hooks/useResponsiveLayout";
 
 export const DeviceUtils = {
@@ -6,7 +6,9 @@ export const DeviceUtils = {
    * 检测当前设备类型
    */
   getDeviceType(): DeviceType {
-    // if (Platform.isTV) return "tv";
+    // 与 useResponsiveLayout 保持一致:Android TV 的窗口宽度通常只有 960dp,
+    // 只按宽度判断会把真实电视识别成 tablet
+    if (Platform.isTV) return "tv";
 
     const { width } = Dimensions.get("window");
 

@@ -179,6 +179,20 @@ describe("VideoCard navigation", () => {
     });
   });
 
+  // Play records store a 1-based episode number (the player is opened with episodeIndex - 1)
+  it.each([
+    ["mobile", VideoCardMobile],
+    ["tablet", VideoCardTablet],
+    ["tv", VideoCardTV],
+  ])("%s continue-watching label shows the episode that will be resumed", (_name, Component) => {
+    let tree: renderer.ReactTestRenderer;
+    act(() => {
+      tree = renderer.create(<Component {...baseProps} progress={0.5} episodeIndex={2} playTime={12} />);
+    });
+
+    expect(getRenderedText(tree!).join("")).toContain("第2集");
+  });
+
   it.each([
     ["mobile", VideoCardMobile],
     ["tablet", VideoCardTablet],

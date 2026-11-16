@@ -10,6 +10,22 @@ export interface Channel {
   group: string;
 }
 
+// EXTINF 的属性区与频道名以「第一个不在引号内的逗号」分隔。
+// 用 lastIndexOf 会把带逗号的频道名(如 "News, Sports HD")截断成最后一段。
+const findExtinfNameSeparator = (line: string): number => {
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      return i;
+    }
+  }
+  // 引号不成对时退回旧行为,避免整行被当作属性
+  return inQuotes ? line.lastIndexOf(',') : -1;
+};
+
 export const parseM3U = (m3uText: string): Channel[] => {
   const parsedChannels: Channel[] = [];
   const lines = m3uText.split('\n');
@@ -19,7 +35,7 @@ export const parseM3U = (m3uText: string): Channel[] => {
     const trimmedLine = line.trim();
     if (trimmedLine.startsWith('#EXTINF:')) {
       currentChannelInfo = {}; // Start a new channel
-      const commaIndex = trimmedLine.lastIndexOf(',');
+      const commaIndex = findExtinfNameSeparator(trimmedLine);
       if (commaIndex !== -1) {
         currentChannelInfo.name = trimmedLine.substring(commaIndex + 1).trim();
         const attributesPart = trimmedLine.substring(8, commaIndex);

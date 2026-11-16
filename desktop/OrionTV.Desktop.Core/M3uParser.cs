@@ -21,7 +21,7 @@ public sealed class M3uParser(HttpClient httpClient)
                 logo = null;
                 group = null;
 
-                var commaIndex = line.LastIndexOf(',');
+                var commaIndex = FindNameSeparator(line);
                 if (commaIndex != -1)
                 {
                     name = line[(commaIndex + 1)..].Trim();
@@ -66,6 +66,30 @@ public sealed class M3uParser(HttpClient httpClient)
         {
             return [];
         }
+    }
+
+    /// <summary>
+    /// EXTINF 的属性区与频道名以「第一个不在引号内的逗号」分隔(与 services/m3u.ts 一致)。
+    /// 用 LastIndexOf 会把带逗号的频道名(如 "CCTV-13, News HD")截断成最后一段。
+    /// </summary>
+    private static int FindNameSeparator(string line)
+    {
+        var inQuotes = false;
+        for (var index = 0; index < line.Length; index++)
+        {
+            var character = line[index];
+            if (character == '"')
+            {
+                inQuotes = !inQuotes;
+            }
+            else if (character == ',' && !inQuotes)
+            {
+                return index;
+            }
+        }
+
+        // 引号不成对时退回旧行为,避免整行被当作属性。
+        return inQuotes ? line.LastIndexOf(',') : -1;
     }
 
     private static string? MatchAttribute(string attributes, string key)
