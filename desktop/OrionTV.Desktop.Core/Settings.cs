@@ -193,6 +193,11 @@ public static class SettingsStore
     public static void Save(DesktopSettings settings)
     {
         DesktopPaths.EnsureDirectory();
-        File.WriteAllText(DesktopPaths.SettingsFile, JsonSerializer.Serialize(settings, Options));
+        // 先写临时文件再原子替换(与 LocalStore / ExtraVideoSourcesStore 一致)。直接覆写时若进程在
+        // 写入中途退出(离开播放页/关闭应用时会保存音量),留下的半截 settings.json 会被 Load 当成
+        // 默认设置,下一次保存就把订阅地址、直播源等配置永久清空。
+        var tempPath = DesktopPaths.SettingsFile + ".tmp";
+        File.WriteAllText(tempPath, JsonSerializer.Serialize(settings, Options));
+        File.Move(tempPath, DesktopPaths.SettingsFile, overwrite: true);
     }
 }

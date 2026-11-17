@@ -623,8 +623,12 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     
     const detailStoreState = useDetailStore.getState();
     const { detail } = detailStoreState;
-    const { currentEpisodeIndex } = get();
-    
+    const { currentEpisodeIndex, status } = get();
+    // 播放中途出错时记下出错前的进度(此刻 status 仍是出错地址最后一次已加载的状态),
+    // 换源后从这里续播;否则 onLoad 会跳回进入播放页时的 initialPosition(通常是开头)
+    const resumePosition =
+      status?.isLoaded && status.uri === failedUrl && status.positionMillis > 0 ? status.positionMillis : undefined;
+
     if (!detail) {
       logger.error(`[VIDEO_ERROR] Cannot fallback - no detail available`);
       set({ isLoading: false });
@@ -651,11 +655,18 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     }
     
     logger.info(`[VIDEO_ERROR] Switching to fallback source: ${fallbackSource.source} (${fallbackSource.source_name})`);
-    
+
+    // setDetail 期间若 reset()(离开播放页)或新的 loadVideo 推进了加载代次,
+    // 本次换源已过期,不得再把旧视频的剧集写回 store
+    const loadSeq = get()._loadSeq;
+    const isStale = () => get()._loadSeq !== loadSeq;
+
     try {
       // 更新DetailStore的当前detail为fallback source
       await useDetailStore.getState().setDetail(fallbackSource);
-      
+
+      if (isStale()) return;
+
       // 重新加载当前集数的episodes
       const newEpisodes = fallbackSource.episodes || [];
       if (newEpisodes.length > currentEpisodeIndex) {
@@ -667,6 +678,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         set({
           episodes: mappedEpisodes,
           isLoading: false, // 让Video组件重新渲染
+          ...(resumePosition !== undefined ? { initialPosition: resumePosition } : {}),
         });
         
         const perfEnd = performance.now();
@@ -684,6 +696,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       }
     } catch (error) {
       logger.error(`[VIDEO_ERROR] Failed to switch to fallback source:`, error);
+      if (isStale()) return;
       set({ isLoading: false });
     }
   },

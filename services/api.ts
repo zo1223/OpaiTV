@@ -158,6 +158,20 @@ const mixSourceResults = <T>(sourceResults: T[][], limit: number, getDedupeKey?:
   return mixed;
 };
 
+// 订阅源聚合请求(搜索/首页)的单源时限。RN 的 OkHttp 连接与读取超时都是 0(不限时),
+// 一个连得上却不回包的源会让 Promise.allSettled 一直等下去,整个搜索/首页永远转圈。
+const SOURCE_REQUEST_TIMEOUT_MS = 15_000;
+
+const withSourceTimeout = async <T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SOURCE_REQUEST_TIMEOUT_MS);
+  try {
+    return await run(controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 const DOUBAN_MOBILE_API_URL = "https://m.douban.com/rexxar/api/v2";
 const DOUBAN_IMAGE_HEADERS = {
   Referer: "https://movie.douban.com/",
@@ -475,7 +489,9 @@ export class API {
       }
 
       const settledResults = await Promise.allSettled(
-        this.subscribedVideoSources.map((source) => fetchAppleCmsHomePage(source, type, tag, pageStart, pageSize))
+        this.subscribedVideoSources.map((source) =>
+          withSourceTimeout((signal) => fetchAppleCmsHomePage(source, type, tag, pageStart, pageSize, signal))
+        )
       );
       const sourceResults = settledResults.map((result) => (result.status === "fulfilled" ? result.value : []));
       const list = mixSourceResults(sourceResults, pageSize, getVideoDedupeKey);
@@ -490,7 +506,9 @@ export class API {
   async searchVideos(query: string): Promise<{ results: SearchResult[] }> {
     if (this.hasSubscribedVideoSources()) {
       const settledResults = await Promise.allSettled(
-        this.subscribedVideoSources.map((source) => searchAppleCmsSource(source, query))
+        this.subscribedVideoSources.map((source) =>
+          withSourceTimeout((signal) => searchAppleCmsSource(source, query, signal))
+        )
       );
       const results = settledResults.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
       return { results };

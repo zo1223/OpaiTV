@@ -38,17 +38,22 @@ export const useApiConfig = () => {
       return;
     }
 
+    // 配置变更(或卸载)后,仍在途的旧校验结果不得覆盖新配置的校验状态
+    let cancelled = false;
+
     const validateConfig = async () => {
       setValidationState(prev => ({ ...prev, isValidating: true, error: null }));
 
       try {
         await api.getServerConfig();
+        if (cancelled) return;
         setValidationState({
           isValidating: false,
           isValid: true,
           error: null,
         });
       } catch (error) {
+        if (cancelled) return;
         let errorMessage = '服务器连接失败';
 
         if (error instanceof Error) {
@@ -85,6 +90,10 @@ export const useApiConfig = () => {
     if (!isLoadingServerConfig) {
       validateConfig();
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [apiBaseUrl, hasBackendApi, hasSubscription, isLoadingServerConfig]);
 
   // Reset validation when server config loading state changes

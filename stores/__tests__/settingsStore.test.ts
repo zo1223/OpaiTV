@@ -89,4 +89,19 @@ describe("settingsStore", () => {
       })
     );
   });
+
+  it("drops the old server config and storage type when the API address is cleared", async () => {
+    const { storageConfig } = jest.requireActual("@/services/storageConfig");
+    (SettingsManager.get as jest.Mock).mockResolvedValue({ ...baseSettings, apiBaseUrl: "http://old.example" });
+    storageConfig.setStorageType("redis");
+    useSettingsStore.setState({
+      apiBaseUrl: "",
+      serverConfig: { SiteName: "old", StorageType: "redis" },
+    } as any);
+
+    await useSettingsStore.getState().saveSettings();
+
+    expect(useSettingsStore.getState().serverConfig).toBeNull();
+    expect(storageConfig.getStorageType()).toBe("localstorage");
+  });
 });

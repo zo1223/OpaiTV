@@ -22,9 +22,96 @@ describe("API subscription routing", () => {
 
     const response = await api.searchVideos("Movie");
 
-    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&wd=Movie", { signal: undefined });
+    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&wd=Movie", { signal: expect.any(AbortSignal) });
     expect(response.results).toHaveLength(1);
     expect(response.results[0].source).toBe("demo");
+  });
+
+  describe("when one subscribed source never answers", () => {
+    // Mimics a server that accepts the connection and then goes silent:
+    // the request only ever ends when its signal is aborted (like fetch, it fails
+    // straight away when the signal is already aborted).
+    const stallUntilAborted = (init?: RequestInit) =>
+      new Promise<Response>((_, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(new Error("Aborted"));
+          return;
+        }
+        signal?.addEventListener("abort", () => reject(new Error("Aborted")));
+      });
+
+    const sources = [
+      { key: "dead", name: "Dead", api: "https://dead.example/vod" },
+      { key: "demo", name: "Demo", api: "https://source.example/vod" },
+    ];
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it("still returns the search results of the other sources", async () => {
+      const api = new API();
+      api.setSubscribedVideoSources(sources);
+
+      jest.spyOn(global, "fetch").mockImplementation((input, init) => {
+        if (String(input).startsWith("https://dead.example/")) {
+          return stallUntilAborted(init);
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            list: [{ vod_id: 1, vod_name: "Movie", vod_pic: "", vod_play_url: "HD$https://video.example/movie.m3u8" }],
+          }),
+        } as Response);
+      });
+
+      let settled = false;
+      const search = api.searchVideos("Movie").then((response) => {
+        settled = true;
+        return response;
+      });
+
+      await jest.advanceTimersByTimeAsync(14_000);
+      expect(settled).toBe(false);
+
+      await jest.advanceTimersByTimeAsync(1_000);
+      const response = await search;
+      expect(response.results.map((item) => item.source)).toEqual(["demo"]);
+    });
+
+    it("still returns the home data of the other sources", async () => {
+      const api = new API();
+      api.setSubscribedVideoSources(sources);
+
+      jest.spyOn(global, "fetch").mockImplementation((input, init) => {
+        const url = String(input);
+        if (url.startsWith("https://dead.example/")) {
+          return stallUntilAborted(init);
+        }
+        if (url.includes("douban.com")) {
+          return Promise.resolve({ ok: false, status: 403 } as Response);
+        }
+        if (url.endsWith("?ac=list")) {
+          return Promise.resolve({ ok: true, json: async () => ({ class: [] }) } as Response);
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            list: [{ vod_id: 1, vod_name: "Show", vod_pic: "", vod_play_url: "HD$https://video.example/show.m3u8" }],
+          }),
+        } as Response);
+      });
+
+      const home = api.getDoubanData("tv", "热门", 20, 0);
+      await jest.advanceTimersByTimeAsync(15_000);
+
+      expect((await home).list.map((item) => item.source)).toEqual(["demo"]);
+    });
   });
 
   it("falls back to the backend API when no subscribed source is configured", async () => {
@@ -202,7 +289,7 @@ describe("API subscription routing", () => {
       "https://m.douban.com/rexxar/api/v2/subject_collection/tv_hot/items?start=0&count=20&items_only=1&for_mobile=1",
       expect.any(Object)
     );
-    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&pg=1", { signal: undefined });
+    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&pg=1", { signal: expect.any(AbortSignal) });
     expect(response).toEqual({
       code: 0,
       message: "",
@@ -254,8 +341,8 @@ describe("API subscription routing", () => {
 
     const response = await api.getDoubanData("tv", "国产剧", 20, 0);
 
-    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=list", { signal: undefined });
-    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=13&pg=1", { signal: undefined });
+    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=list", { signal: expect.any(AbortSignal) });
+    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=13&pg=1", { signal: expect.any(AbortSignal) });
     expect(response.list).toEqual([
       expect.objectContaining({
         id: 7,
@@ -294,8 +381,8 @@ describe("API subscription routing", () => {
     await api.getDoubanData("tv", "国产剧", 20, 0);
     await api.getDoubanData("movie", "动作", 20, 0);
 
-    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=13&pg=1", { signal: undefined });
-    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=6&pg=1", { signal: undefined });
+    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=13&pg=1", { signal: expect.any(AbortSignal) });
+    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=6&pg=1", { signal: expect.any(AbortSignal) });
   });
 
   it("filters broad movie category results so TV shows do not appear under movies", async () => {
@@ -340,7 +427,7 @@ describe("API subscription routing", () => {
 
     const response = await api.getDoubanData("movie", "热门", 20, 0);
 
-    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=1&pg=1", { signal: undefined });
+    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=1&pg=1", { signal: expect.any(AbortSignal) });
     expect(response.list.map((item) => item.title)).toEqual(["Movie Item"]);
   });
 
@@ -456,8 +543,8 @@ describe("API subscription routing", () => {
 
     const response = await api.getDoubanData("movie", "韩国", 20, 0);
 
-    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=1&pg=1", { signal: undefined });
-    expect(fetch).not.toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=2&pg=1", { signal: undefined });
+    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=1&pg=1", { signal: expect.any(AbortSignal) });
+    expect(fetch).not.toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=2&pg=1", { signal: expect.any(AbortSignal) });
     expect(response.list.map((item) => item.title)).toEqual(["Korean Movie"]);
   });
 
@@ -495,8 +582,8 @@ describe("API subscription routing", () => {
 
     const response = await api.getDoubanData("movie", "韩国", 20, 0);
 
-    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=list", { signal: undefined });
-    expect(fetch).not.toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=2&pg=1", { signal: undefined });
+    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=list", { signal: expect.any(AbortSignal) });
+    expect(fetch).not.toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=2&pg=1", { signal: expect.any(AbortSignal) });
     expect(response.list).toEqual([]);
   });
 
@@ -617,7 +704,7 @@ describe("API subscription routing", () => {
 
     const response = await api.getDoubanData("tv", "纪录片", 20, 0);
 
-    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=4&pg=1", { signal: undefined });
+    expect(fetch).toHaveBeenCalledWith("https://source.example/vod?ac=detail&t=4&pg=1", { signal: expect.any(AbortSignal) });
     expect(response.list.map((item) => item.title)).toEqual(["Documentary"]);
   });
 
@@ -635,7 +722,7 @@ describe("API subscription routing", () => {
     await api.getDoubanData("tv", "热门", 20, 0);
 
     expect(fetch).toHaveBeenCalledWith("https://proxy.example/?url=https://source.example/vod?ac=detail&pg=1", {
-      signal: undefined,
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -680,7 +767,7 @@ describe("API subscription routing", () => {
     const response = await api.getDoubanData("tv", "国产剧", 20, 0);
 
     expect(response.list).toEqual([]);
-    expect(fetch).not.toHaveBeenCalledWith("https://source.example/vod?ac=detail&pg=1", { signal: undefined });
+    expect(fetch).not.toHaveBeenCalledWith("https://source.example/vod?ac=detail&pg=1", { signal: expect.any(AbortSignal) });
   });
 
   it("mixes subscription-only home data across sources instead of letting one source fill the page", async () => {

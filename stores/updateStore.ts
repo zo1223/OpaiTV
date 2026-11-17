@@ -58,7 +58,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       // 获取跳过的版本
       const skipVersion = await AsyncStorage.getItem(STORAGE_KEYS.SKIP_VERSION);
       
-      const versionInfo = await updateService.checkVersion();
+      const versionInfo = await updateService.checkVersion(silent);
       const isUpdateAvailable = updateService.isUpdateAvailable(versionInfo.version);
       
       // 如果有更新且不是要跳过的版本

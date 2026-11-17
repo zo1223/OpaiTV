@@ -134,6 +134,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     api.setSubscribedVideoSources(subscribedVideoSources);
     if (processedApiBaseUrl) {
       await get().fetchServerConfig();
+    } else {
+      // No backend any more: drop the old server's config, otherwise favorites and
+      // play records keep using its storage type and fail with API_URL_NOT_SET.
+      storageConfig.setStorageType(undefined);
+      set({ serverConfig: null });
     }
   },
   showModal: () => set({ isModalVisible: true }),

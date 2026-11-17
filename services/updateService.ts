@@ -32,7 +32,7 @@ class UpdateService {
   /** --------------------------------------------------------------
    *  1️⃣ 远程版本检查（保持不变，只是把 fetch 包装成 async/await）
    * --------------------------------------------------------------- */
-  async checkVersion(): Promise<VersionInfo> {
+  async checkVersion(silent = false): Promise<VersionInfo> {
     const maxRetries = 3;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -54,11 +54,14 @@ class UpdateService {
       } catch (e) {
         logger.warn(`checkVersion attempt ${attempt}/${maxRetries}`, e);
         if (attempt === maxRetries) {
-          Toast.show({
-            type: 'error',
-            text1: '检查更新失败',
-            text2: '无法获取版本信息，请检查网络',
-          });
+          // 静默检查（启动时自动触发）失败时不打扰用户
+          if (!silent) {
+            Toast.show({
+              type: 'error',
+              text1: '检查更新失败',
+              text2: '无法获取版本信息，请检查网络',
+            });
+          }
           throw e;
         }
         // 指数退避

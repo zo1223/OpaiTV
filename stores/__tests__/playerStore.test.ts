@@ -182,6 +182,112 @@ describe("playerStore", () => {
     expect(usePlayerStore.getState().isLoading).toBe(true);
   });
 
+  it("discards a source fallback that finishes after the player was reset", async () => {
+    const failed = {
+      id: 7,
+      title: "Movie",
+      poster: "",
+      episodes: ["https://video.example/broken.m3u8"],
+      source: "demo",
+      source_name: "Demo",
+      year: "2026",
+    };
+    const fallback = { ...failed, id: 8, source: "backup", source_name: "Backup", episodes: ["https://video.example/ok.m3u8"] };
+    let resolveSetDetail: () => void = () => {};
+    const setDetail = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSetDetail = resolve;
+        })
+    );
+    useDetailStore.setState({ detail: failed, searchResults: [failed, fallback], setDetail });
+
+    const errorPromise = usePlayerStore.getState().handleVideoError("network", failed.episodes[0]);
+    expect(setDetail).toHaveBeenCalledWith(fallback);
+    // The user leaves the player screen while the fallback source is still loading
+    usePlayerStore.getState().reset();
+    resolveSetDetail();
+    await errorPromise;
+
+    expect(usePlayerStore.getState().episodes).toEqual([]);
+    expect(usePlayerStore.getState().isLoading).toBe(true);
+    expect(Toast.show).not.toHaveBeenCalledWith(expect.objectContaining({ type: "success" }));
+  });
+
+  it("switches to the fallback source when the player is still active", async () => {
+    const failed = {
+      id: 7,
+      title: "Movie",
+      poster: "",
+      episodes: ["https://video.example/broken.m3u8"],
+      source: "demo",
+      source_name: "Demo",
+      year: "2026",
+    };
+    const fallback = { ...failed, id: 8, source: "backup", source_name: "Backup", episodes: ["https://video.example/ok.m3u8"] };
+    const setDetail = jest.fn().mockResolvedValue(undefined);
+    useDetailStore.setState({ detail: failed, searchResults: [failed, fallback], setDetail });
+
+    await usePlayerStore.getState().handleVideoError("network", failed.episodes[0]);
+
+    expect(usePlayerStore.getState().episodes).toEqual([{ url: "https://video.example/ok.m3u8", title: "第 1 集" }]);
+    expect(usePlayerStore.getState().isLoading).toBe(false);
+  });
+
+  describe("resume position after a source fallback", () => {
+    const failed = {
+      id: 7,
+      title: "Movie",
+      poster: "",
+      episodes: ["https://video.example/broken.m3u8"],
+      source: "demo",
+      source_name: "Demo",
+      year: "2026",
+    };
+    const fallback = { ...failed, id: 8, source: "backup", source_name: "Backup", episodes: ["https://video.example/ok.m3u8"] };
+
+    const failWithStatus = async (status: object | null) => {
+      const setDetail = jest.fn().mockResolvedValue(undefined);
+      useDetailStore.setState({ detail: failed, searchResults: [failed, fallback], setDetail });
+      usePlayerStore.setState({
+        currentEpisodeIndex: 0,
+        episodes: [{ url: failed.episodes[0], title: "第 1 集" }],
+        initialPosition: 60000,
+        status,
+      } as any);
+
+      const errorPromise = usePlayerStore.getState().handleVideoError("network", failed.episodes[0]);
+      // expo-av reports the unloaded status right after onError, while the fallback is still loading
+      usePlayerStore.getState().handlePlaybackStatusUpdate({ isLoaded: false, error: "boom" } as any);
+      await errorPromise;
+
+      expect(usePlayerStore.getState().episodes).toEqual([{ url: "https://video.example/ok.m3u8", title: "第 1 集" }]);
+    };
+
+    it("continues from where playback failed", async () => {
+      await failWithStatus({
+        isLoaded: true,
+        uri: failed.episodes[0],
+        positionMillis: 1500000,
+        durationMillis: 2400000,
+      });
+
+      expect(usePlayerStore.getState().initialPosition).toBe(1500000);
+    });
+
+    it("keeps the initial position when the failed url never started playing", async () => {
+      // The last loaded status still belongs to the previous episode
+      await failWithStatus({
+        isLoaded: true,
+        uri: "https://video.example/previous-episode.m3u8",
+        positionMillis: 2390000,
+        durationMillis: 2400000,
+      });
+
+      expect(usePlayerStore.getState().initialPosition).toBe(60000);
+    });
+  });
+
   it("seeks to the end of the current ad range during playback", () => {
     const setPositionAsync = jest.fn().mockResolvedValue(undefined);
     useDetailStore.setState({

@@ -122,10 +122,16 @@ export default function LiveScreen() {
   const selectedChannelUrl = selectedChannel ? getPlayableUrl(selectedChannel.url) : null;
 
   useEffect(() => {
+    // 设置页每次按键都会更新 m3uUrl;旧地址的请求晚返回时不能覆盖新地址的频道列表
+    let cancelled = false;
     const loadChannels = async () => {
-      if (!m3uUrl) return;
+      if (!m3uUrl) {
+        setIsLoading(false);
+        return;
+      }
       setIsLoading(true);
       const parsedChannels = await fetchAndParseM3u(m3uUrl);
+      if (cancelled) return;
       setChannels(parsedChannels);
       setCurrentChannelIndex(0);
 
@@ -149,6 +155,9 @@ export default function LiveScreen() {
       setIsLoading(false);
     };
     loadChannels();
+    return () => {
+      cancelled = true;
+    };
   }, [m3uUrl]);
 
   const showChannelTitle = (title: string) => {
