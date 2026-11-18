@@ -171,11 +171,11 @@ public sealed class MacCmsXmlClient(HttpClient httpClient) : IVodSourceClient
             var year = TextOf(video, "year");
             var des = TextOf(video, "des", "content", "blurb");
             var typeName = TextOf(video, "type", "type_name");
-            var playFrom = string.Join("$$$", video.Descendants("dd")
-                .Select(dd => (string?)dd.Attribute("flag") ?? "")
-                .Where(flag => !string.IsNullOrWhiteSpace(flag)));
+            // 线路名与播放组必须取自同一批 dd：分开过滤空值时，一个缺 flag 或缺地址的 dd 会让后面的线路名整体错位。
+            var playDds = video.Descendants("dd").Where(dd => !string.IsNullOrWhiteSpace(dd.Value)).ToList();
+            var playFrom = string.Join("$$$", playDds.Select(dd => ((string?)dd.Attribute("flag") ?? "").Trim()));
             // 无 flag 时仍解析 dd 文本为播放组
-            var playGroups = video.Descendants("dd").Select(dd => dd.Value.Trim()).Where(v => !string.IsNullOrWhiteSpace(v)).ToList();
+            var playGroups = playDds.Select(dd => dd.Value.Trim()).ToList();
             if (playGroups.Count == 0)
             {
                 var single = TextOf(video, "dl", "playurl", "vod_play_url");

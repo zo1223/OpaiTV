@@ -122,4 +122,24 @@ describe("detailStore", () => {
       "主线路 · qq",
     ]);
   });
+
+  it("keeps the latest selected source when an older setDetail request answers last", async () => {
+    const make = (source: string) =>
+      ({ id: 1, title: "片", poster: "", episodes: [`https://${source}.example/1.m3u8`], source, source_name: source, year: "" });
+    let resolveSlow!: (value: any) => void;
+    jest.spyOn(api, "getVideoDetail").mockImplementation((source: string) =>
+      source === "slow"
+        ? new Promise((resolve) => (resolveSlow = resolve))
+        : Promise.resolve({ id: "1", title: "片", poster: "", source, source_name: source })
+    );
+    (FavoriteManager.isFavorited as jest.Mock).mockImplementation(async (source: string) => source === "slow");
+
+    const first = useDetailStore.getState().setDetail(make("slow"));
+    await useDetailStore.getState().setDetail(make("fast"));
+    resolveSlow({ id: "1", title: "片", poster: "", source: "slow", source_name: "slow" });
+    await first;
+
+    expect(useDetailStore.getState().detail?.source).toBe("fast");
+    expect(useDetailStore.getState().isFavorited).toBe(false);
+  });
 });

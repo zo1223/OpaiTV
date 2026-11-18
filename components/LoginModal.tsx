@@ -10,6 +10,9 @@ import { LoginCredentialsManager } from "@/services/storage";
 import { ThemedView } from "./ThemedView";
 import { ThemedText } from "./ThemedText";
 import { StyledButton } from "./StyledButton";
+import Logger from "@/utils/Logger";
+
+const logger = Logger.withTag("LoginModal");
 
 const LoginModal = () => {
   const { isLoginModalVisible, hideLoginModal, checkLoginStatus } = useAuthStore();
@@ -88,7 +91,10 @@ const LoginModal = () => {
     try {
       await api.login(isLocalStorage ? undefined : username, password);
       await checkLoginStatus(apiBaseUrl);
-      await refreshPlayRecords();
+      // 登录已成功：播放记录刷新失败（如网络抖动）不应被当成登录失败
+      await refreshPlayRecords().catch((error) => {
+        logger.warn("Failed to refresh play records after login:", error);
+      });
 
       // Save credentials on successful login
       await LoginCredentialsManager.save({ username, password });

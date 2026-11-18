@@ -277,15 +277,15 @@ const useHomeStore = create<HomeState>((set, get) => ({
 
           // 增量加载时更新缓存
           const existingCache = dataCache.get(cacheKey);
-          if (existingCache) {
-            // 只有当缓存数据少于最大限制时才更新缓存
-            if (existingCache.data.length < MAX_ITEMS_PER_CACHE) {
-              const updatedData = [...existingCache.data, ...dedupedItems];
-              const limitedCacheData = updatedData.slice(0, MAX_ITEMS_PER_CACHE);
-
+          // 只有这一页紧接在缓存内容之后(pageStart 对得上)且整页都放得下时才更新缓存:
+          // 否则缓存的 pageStart 会越过没进缓存的条目(被截掉的,或之前放不下而没缓存的页),
+          // 从缓存恢复再翻页时这些条目就再也加载不出来
+          if (existingCache && existingCache.pageStart === pageStart) {
+            const updatedData = [...existingCache.data, ...dedupedItems];
+            if (updatedData.length <= MAX_ITEMS_PER_CACHE) {
               dataCache.set(cacheKey, {
                 ...existingCache,
-                data: limitedCacheData,
+                data: updatedData,
                 hasMore: true, // 始终为 true，因为我们允许继续加载
                 pageStart: nextPageStart,
               });

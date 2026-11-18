@@ -117,6 +117,39 @@ public class VodProtocolTests
     }
 
     [Fact]
+    public async Task MacCmsXml_KeepsLineNamesAlignedWhenADdIsEmptyOrUnflagged()
+    {
+        var xml = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <rss>
+          <list page="1" pagecount="1" pagesize="20" recordcount="1">
+            <video>
+              <id>9</id>
+              <name>测试片</name>
+              <dl>
+                <dd flag="空线路"></dd>
+                <dd>第1集$https://video.example/n1.m3u8</dd>
+                <dd flag="线路B">第1集$https://video.example/b1.m3u8</dd>
+              </dl>
+            </video>
+          </list>
+        </rss>
+        """;
+
+        using var http = new HttpClient(new StubHandler(_ => xml));
+        var client = new MacCmsXmlClient(http);
+        var source = new VideoSource("xml", "XML站", "https://xml.example/api.php/provide/vod/", Protocol: VideoSourceProtocols.MacCmsXml);
+
+        var item = Assert.Single(await client.SearchAsync(source, "测试"));
+        Assert.NotNull(item.PlaybackSources);
+        Assert.Equal(2, item.PlaybackSources!.Count);
+        Assert.Equal("线路 1", item.PlaybackSources[0].Name);
+        Assert.Equal(["https://video.example/n1.m3u8"], item.PlaybackSources[0].Episodes);
+        Assert.Equal("线路B", item.PlaybackSources[1].Name);
+        Assert.Equal(["https://video.example/b1.m3u8"], item.PlaybackSources[1].Episodes);
+    }
+
+    [Fact]
     public void ParseRelativeEpisode_ResolvesAgainstSourceOrigin()
     {
         var episodes = AppleCmsEpisodeParser.Parse(

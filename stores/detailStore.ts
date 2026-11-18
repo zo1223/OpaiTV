@@ -40,6 +40,9 @@ interface DetailState {
   getNextAvailableSource: (currentSource: string, episodeIndex: number) => SearchResultWithResolution | null;
 }
 
+// setDetail 的代次：每次 setDetail / init 递增，过期的详情请求返回后不得覆盖更新的选择
+let setDetailSeq = 0;
+
 const useDetailStore = create<DetailState>((set, get) => ({
   q: null,
   searchResults: [],
@@ -62,6 +65,7 @@ const useDetailStore = create<DetailState>((set, get) => ({
     }
     const newController = new AbortController();
     const signal = newController.signal;
+    setDetailSeq += 1; // 作废上一个视频仍在途的 setDetail
 
     set({
       q,
@@ -378,23 +382,26 @@ const useDetailStore = create<DetailState>((set, get) => ({
 
   setDetail: async (detail) => {
     const { source, id } = detail;
+    const seq = ++setDetailSeq;
+    let nextDetail = detail;
     try {
       const videoDetail = await api.getVideoDetail(source, id.toString());
-      set({
-        detail: {
-          ...detail,
-          ...videoDetail,
-          id: Number(videoDetail.id),
-          episodes: detail.episodes,
-          source_name: detail.source_name,
-          playback_source: detail.playback_source,
-          playback_sources: detail.playback_sources,
-        },
-      });
+      nextDetail = {
+        ...detail,
+        ...videoDetail,
+        id: Number(videoDetail.id),
+        episodes: detail.episodes,
+        source_name: detail.source_name,
+        playback_source: detail.playback_source,
+        playback_sources: detail.playback_sources,
+      };
     } catch {
-      set({ detail });
+      // 详情接口失败时退回搜索结果本身
     }
+    if (seq !== setDetailSeq) return;
+    set({ detail: nextDetail });
     const isFavorited = await FavoriteManager.isFavorited(source, id.toString());
+    if (seq !== setDetailSeq) return;
     set({ isFavorited });
   },
 

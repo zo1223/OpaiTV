@@ -182,4 +182,57 @@ describe("homeStore categories", () => {
     });
     expect(api.searchVideos).toHaveBeenCalledTimes(1);
   });
+
+  it("does not skip items when a category is restored from cache after a truncated page", async () => {
+    const category = { title: "Cache", type: "movie" as const, tag: "cache-truncation" };
+    const page = (first: number) =>
+      Array.from({ length: 20 }, (_, i) => ({ id: `c-${first + i}`, title: "", poster: "", year: "" }));
+    // 第二页与第一页重复 5 条,去重后缓存停在 35 条,第三页放不进 40 条上限
+    const pages: Record<number, ReturnType<typeof page>> = { 0: page(0), 20: page(15), 40: page(35) };
+    const getDoubanData = jest
+      .spyOn(api, "getDoubanData")
+      .mockImplementation(async (_type, _tag, _size, start = 0) => ({ code: 0, message: "", list: pages[start] ?? [] }));
+
+    useHomeStore.setState({ selectedCategory: category, contentData: [], pageStart: 0, hasMore: true });
+    await useHomeStore.getState().loadMoreData();
+    await useHomeStore.getState().loadMoreData();
+    await useHomeStore.getState().loadMoreData();
+    expect(useHomeStore.getState().contentData).toHaveLength(55);
+
+    // 离开再回到该分类:从缓存恢复后继续翻页
+    await useHomeStore.getState().fetchInitialData();
+    const restored = useHomeStore.getState().contentData.length;
+    await useHomeStore.getState().loadMoreData();
+    await useHomeStore.getState().loadMoreData();
+
+    expect(restored).toBeLessThanOrEqual(40);
+    expect(getDoubanData.mock.calls.length).toBeGreaterThan(3);
+    expect(useHomeStore.getState().contentData.map((item) => item.id)).toEqual(
+      Array.from({ length: 55 }, (_, i) => `c-${i}`)
+    );
+  });
+
+  it("does not skip uncached pages when a category is restored from cache after its end was reached", async () => {
+    const category = { title: "Cache", type: "movie" as const, tag: "cache-end-reached" };
+    const page = (first: number) =>
+      Array.from({ length: 20 }, (_, i) => ({ id: `e-${first + i}`, title: "", poster: "", year: "" }));
+    // 前两页装满 40 条缓存,第三页不进缓存;第四页为空(已到末尾),它不得把缓存的 pageStart 推过第三页
+    const pages: Record<number, ReturnType<typeof page>> = { 0: page(0), 20: page(20), 40: page(40) };
+    jest
+      .spyOn(api, "getDoubanData")
+      .mockImplementation(async (_type, _tag, _size, start = 0) => ({ code: 0, message: "", list: pages[start] ?? [] }));
+
+    useHomeStore.setState({ selectedCategory: category, contentData: [], pageStart: 0, hasMore: true });
+    for (let i = 0; i < 4; i += 1) await useHomeStore.getState().loadMoreData();
+    expect(useHomeStore.getState().contentData).toHaveLength(60);
+    expect(useHomeStore.getState().hasMore).toBe(false);
+
+    // 离开再回到该分类:从缓存恢复后继续翻页
+    await useHomeStore.getState().fetchInitialData();
+    for (let i = 0; i < 3; i += 1) await useHomeStore.getState().loadMoreData();
+
+    expect(useHomeStore.getState().contentData.map((item) => item.id)).toEqual(
+      Array.from({ length: 60 }, (_, i) => `e-${i}`)
+    );
+  });
 });

@@ -29,6 +29,8 @@ export default function LiveScreen() {
   const [selectedGroup, setSelectedGroup] = useState<string>("");
 
   const [currentChannelIndex, setCurrentChannelIndex] = useState(0);
+  // 每次选台都递增:重选同一频道时 streamUrl 不变,靠它让播放器从"加载失败"中重试
+  const [reloadToken, setReloadToken] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [isChannelListVisible, setIsChannelListVisible] = useState(false);
   const [channelTitle, setChannelTitle] = useState<string | null>(null);
@@ -170,6 +172,7 @@ export default function LiveScreen() {
     const globalIndex = channels.findIndex((c) => c.id === channel.id);
     if (globalIndex !== -1) {
       setCurrentChannelIndex(globalIndex);
+      setReloadToken((t) => t + 1);
       showChannelTitle(channel.name);
       setIsChannelListVisible(false);
     }
@@ -183,6 +186,7 @@ export default function LiveScreen() {
           ? (currentChannelIndex + 1) % channels.length
           : (currentChannelIndex - 1 + channels.length) % channels.length;
       setCurrentChannelIndex(newIndex);
+      setReloadToken((t) => t + 1);
       showChannelTitle(channels[newIndex].name);
     },
     [channels, currentChannelIndex]
@@ -227,6 +231,7 @@ export default function LiveScreen() {
         <LivePlayer
           streamUrl={selectedChannelUrl}
           channelTitle={channelTitle}
+          reloadToken={reloadToken}
           onPlaybackStatusUpdate={handlePlaybackStatus}
         />
 

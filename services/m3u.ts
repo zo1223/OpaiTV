@@ -72,9 +72,15 @@ export const parseM3U = (m3uText: string): Channel[] => {
   return parsedChannels;
 };
 
+// RN 的 OkHttp 客户端没有连接/读取超时:直播源地址连得上却一直不回数据时,
+// fetch 永远不结束,直播页会一直停在加载中。超时后按请求失败处理(返回空列表)。
+const M3U_REQUEST_TIMEOUT_MS = 30_000;
+
 export const fetchAndParseM3u = async (m3uUrl: string): Promise<Channel[]> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), M3U_REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(m3uUrl);
+    const response = await fetch(m3uUrl, { signal: controller.signal });
     if (!response.ok) {
       throw new Error(`Failed to fetch M3U: ${response.statusText}`);
     }
@@ -83,6 +89,8 @@ export const fetchAndParseM3u = async (m3uUrl: string): Promise<Channel[]> => {
   } catch (error) {
     logger.info("Error fetching or parsing M3U:", error);
     return []; // Return empty array on error
+  } finally {
+    clearTimeout(timer);
   }
 };
 

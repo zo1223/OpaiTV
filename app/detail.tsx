@@ -109,7 +109,9 @@ export default function DetailScreen() {
       pathname: "/play",
       params: {
         // Pass necessary identifiers, the rest will be in the store
-        q: detail.title,
+        // 标题必须以 title 传入(播放页不读 q):缺少时播放页退回读 store 里的 detail.title,
+        // 播放中换到标题仅空格/大小写不同的源会触发整页重载,并被路由里的旧 source 换回原来的源
+        title: detail.title,
         source: detail.source,
         id: detail.id.toString(),
         episodeIndex: episodeIndex.toString(),

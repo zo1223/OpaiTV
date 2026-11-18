@@ -25,6 +25,19 @@ public sealed class LocalMediaLibraryTests
         Assert.Null(parsed.EpisodeNumber);
     }
 
+    [Theory]
+    [InlineData("Movie.720p.mkv", "Movie 720p")]
+    [InlineData("Movie.2024.720p.BluRay.mkv", "Movie 2024 720p BluRay")]
+    [InlineData("Movie 480p_x264.mp4", "Movie 480p x264")]
+    [InlineData("Movie.4K.mkv", "Movie 4K")]
+    public void Parse_does_not_treat_a_resolution_tag_as_an_episode(string fileName, string title)
+    {
+        var parsed = LocalMediaNaming.Parse(fileName);
+
+        Assert.Equal(title, parsed.Title);
+        Assert.Null(parsed.EpisodeNumber);
+    }
+
     [Fact]
     public void Parse_keeps_dots_in_a_cache_title_that_has_no_media_extension()
     {

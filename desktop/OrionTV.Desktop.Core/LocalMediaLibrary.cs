@@ -170,7 +170,8 @@ public static partial class LocalMediaNaming
     [GeneratedRegex(@"^(?<title>.+?)[\s._\-]*第\s*(?<episode>\d{1,3})\s*[集话](?:.*)?$", RegexOptions.CultureInvariant)]
     private static partial Regex ChineseEpisodeRegex();
 
-    [GeneratedRegex(@"^(?<title>.+?)[\s._\-]+(?<episode>\d{1,3})(?:\s*[集话])?(?:\D.*)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    // 数字后紧跟 p/i/k（720p、480i、4K）是分辨率标记，不是集数。
+    [GeneratedRegex(@"^(?<title>.+?)[\s._\-]+(?<episode>\d{1,3})(?![pik](?![a-z]))(?:\s*[集话])?(?:\D.*)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex TrailingEpisodeRegex();
 
     [GeneratedRegex(@"\s+")]

@@ -6,12 +6,14 @@ import { useKeepAwake } from "expo-keep-awake";
 interface LivePlayerProps {
   streamUrl: string | null;
   channelTitle?: string | null;
+  /** Bump to retry the current stream, e.g. when the same channel is selected again after a failure. */
+  reloadToken?: number;
   onPlaybackStatusUpdate: (status: AVPlaybackStatus) => void;
 }
 
 const PLAYBACK_TIMEOUT = 15000; // 15 seconds
 
-export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUpdate }: LivePlayerProps) {
+export default function LivePlayer({ streamUrl, channelTitle, reloadToken, onPlaybackStatusUpdate }: LivePlayerProps) {
   const video = useRef<Video>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isTimeout, setIsTimeout] = useState(false);
@@ -40,7 +42,7 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
         clearTimeout(timeoutRef.current);
       }
     };
-  }, [streamUrl]);
+  }, [streamUrl, reloadToken]);
 
   const handlePlaybackStatusUpdate = (status: AVPlaybackStatus) => {
     if (status.isLoaded) {

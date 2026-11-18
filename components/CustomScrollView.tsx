@@ -209,7 +209,8 @@ const CustomScrollView: React.FC<CustomScrollViewProps> = ({
           </View>
         )}
       </ScrollView>
-      {deviceType!=='tv' && (
+      {/* 仅在可见时渲染：透明的按钮仍会拦截其下方卡片的点击 */}
+      {deviceType !== 'tv' && showScrollToTop && (
         <TouchableOpacity
           style={dynamicStyles.scrollToTopButton}
           onPress={scrollToTop}
