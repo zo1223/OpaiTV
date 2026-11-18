@@ -1,0 +1,116 @@
+// Lives outside app/ on purpose: expo-router treats every file under app/ as a route.
+import React from "react";
+import renderer, { act } from "react-test-renderer";
+import { Animated } from "react-native";
+
+import HomeScreen from "../../app/index";
+
+type MockHomeState = { loading: boolean; contentData: unknown[] };
+let mockHomeState: MockHomeState;
+
+jest.mock("@/stores/homeStore", () => ({
+  __esModule: true,
+  default: () => ({
+    categories: [{ title: "热门剧集", type: "tv", tag: "热门" }],
+    selectedCategory: { title: "热门剧集", type: "tv", tag: "热门" },
+    loadingMore: false,
+    error: null,
+    fetchInitialData: jest.fn(),
+    loadMoreData: jest.fn(),
+    selectCategory: jest.fn(),
+    refreshPlayRecords: jest.fn(),
+    clearError: jest.fn(),
+    ...mockHomeState,
+  }),
+}));
+
+jest.mock("@/stores/authStore", () => ({
+  __esModule: true,
+  default: () => ({ isLoggedIn: false, logout: jest.fn() }),
+}));
+
+jest.mock("@/hooks/useApiConfig", () => ({
+  useApiConfig: () => ({ isConfigured: true, needsConfiguration: false, isValidating: false, isValid: true, error: null }),
+  getApiConfigErrorMessage: () => "",
+}));
+
+jest.mock("@/hooks/useResponsiveLayout", () => ({
+  useResponsiveLayout: () => ({ deviceType: "tv", spacing: 8 }),
+}));
+
+jest.mock("@/utils/ResponsiveStyles", () => ({
+  getCommonResponsiveStyles: () => ({ container: {}, center: {} }),
+}));
+
+jest.mock("expo-router", () => ({
+  useRouter: () => ({ push: jest.fn() }),
+  useFocusEffect: jest.fn(),
+}));
+
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
+
+jest.mock("@/services/api", () => ({ api: {} }));
+jest.mock("@/components/VideoCard", () => ({ __esModule: true, default: () => null }));
+jest.mock("@/components/StyledButton", () => ({ StyledButton: () => null }));
+jest.mock("@/components/navigation/ResponsiveNavigation", () => ({ __esModule: true, default: () => null }));
+
+jest.mock("@/components/CustomScrollView", () => {
+  const { Text: MockText } = jest.requireActual("react-native");
+  return {
+    __esModule: true,
+    default: ({ data, emptyMessage }: { data: unknown[]; emptyMessage: string }) => (
+      <MockText>{data.length === 0 ? emptyMessage : "CONTENT"}</MockText>
+    ),
+  };
+});
+
+describe("HomeScreen content fade-in", () => {
+  let tree: renderer.ReactTestRenderer;
+  let timing: jest.SpyInstance;
+
+  const show = (state: MockHomeState) => {
+    mockHomeState = state;
+    act(() => {
+      if (tree) {
+        tree.update(<HomeScreen />);
+      } else {
+        tree = renderer.create(<HomeScreen />);
+      }
+    });
+  };
+
+  const fadeInCalls = () => timing.mock.calls.filter(([, config]) => config.toValue === 1);
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    timing = jest.spyOn(Animated, "timing");
+  });
+
+  afterEach(() => {
+    act(() => tree.unmount());
+    tree = undefined as unknown as renderer.ReactTestRenderer;
+    timing.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it("fades the content area in when a category finishes loading with no items", () => {
+    show({ loading: true, contentData: [] });
+    expect(fadeInCalls()).toHaveLength(0);
+
+    show({ loading: false, contentData: [] });
+
+    // The empty message is rendered inside the faded container, so it is only visible once that fades in.
+    expect(JSON.stringify(tree.toJSON())).toContain("该分类下暂无内容");
+    expect(fadeInCalls()).toHaveLength(1);
+  });
+
+  it("fades the content area in when a category finishes loading with items", () => {
+    show({ loading: true, contentData: [] });
+    show({ loading: false, contentData: [{ id: "1", source: "douban", title: "A" }] });
+
+    expect(JSON.stringify(tree.toJSON())).toContain("CONTENT");
+    expect(fadeInCalls()).toHaveLength(1);
+  });
+});

@@ -357,7 +357,8 @@ public sealed class AppleCmsClient(HttpClient httpClient) : IVodSourceClient
 
     public async Task<VideoDetail> GetDetailAsync(VideoSource source, string id, CancellationToken cancellationToken = default)
     {
-        var url = AppleCmsUrlBuilder.Build(source.Detail ?? source.Api, new Dictionary<string, string>
+        // 与 GetByIdAsync 一样始终走 source.Api：订阅里的 detail 多为站点地址，不响应 ac=detail&ids。
+        var url = AppleCmsUrlBuilder.Build(source.Api, new Dictionary<string, string>
         {
             ["ac"] = "detail",
             ["ids"] = id

@@ -406,7 +406,12 @@ const useDetailStore = create<DetailState>((set, get) => ({
   },
 
   abort: () => {
-    get().controller?.abort();
+    const { controller } = get();
+    if (!controller || controller.signal.aborted) return;
+    controller.abort();
+    // 被取消的 init 不会再走到收尾逻辑:在这里结束"仍在加载播放源"的状态,
+    // 否则详情页点了播放再返回时,"播放源"旁的加载指示会一直转
+    set({ allSourcesLoaded: true });
   },
 
   toggleFavorite: async () => {

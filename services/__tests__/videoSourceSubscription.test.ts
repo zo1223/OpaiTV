@@ -204,6 +204,36 @@ describe("video source subscriptions", () => {
     });
   });
 
+  it("loads Apple CMS detail from the API endpoint when the subscription's detail field is a site address", async () => {
+    // In api_site subscriptions `detail` is the source's website, which answers
+    // `?ac=detail&ids=` with its HTML home page instead of JSON.
+    const fetchMock = jest.spyOn(global, "fetch").mockImplementation(async (url) => {
+      if (String(url).startsWith("https://example.com/api.php/provide/vod?")) {
+        return {
+          ok: true,
+          json: async () => ({ list: [{ vod_id: 456, vod_name: "Detail Show", vod_content: "long desc" }] }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => {
+          throw new SyntaxError("Unexpected token < in JSON at position 0");
+        },
+      } as unknown as Response;
+    });
+
+    const detail = await getAppleCmsDetail(
+      { key: "demo", name: "Demo", api: "https://example.com/api.php/provide/vod", detail: "https://example.com" },
+      "456"
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("https://example.com/api.php/provide/vod?ac=detail&ids=456", {
+      signal: undefined,
+    });
+    expect(detail).toMatchObject({ id: "456", title: "Detail Show", desc: "long desc" });
+  });
+
   it("loads Apple CMS categories", async () => {
     jest.spyOn(global, "fetch").mockResolvedValue({
       ok: true,

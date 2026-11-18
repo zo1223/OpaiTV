@@ -658,7 +658,9 @@ export const getAppleCmsDetail = async (
   id: string,
   signal?: AbortSignal
 ): Promise<VideoDetail> => {
-  const response = await fetch(buildAppleCmsUrl(source.detail || source.api, { ac: "detail", ids: id }), { signal });
+  // Always query `source.api` (like getAppleCmsSourceResult): a subscription's `detail`
+  // field is usually the source's website address, which does not answer `ac=detail&ids=`.
+  const response = await fetch(buildAppleCmsUrl(source.api, { ac: "detail", ids: id }), { signal });
   if (!response.ok) {
     throw new Error(`APPLE_CMS_DETAIL_FAILED:${response.status}`);
   }

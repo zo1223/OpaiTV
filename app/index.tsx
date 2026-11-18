@@ -126,16 +126,17 @@ export default function HomeScreen() {
   }, [apiConfigStatus.needsConfiguration, error, clearError]);
 
   useEffect(() => {
-    if (!loading && contentData.length > 0) {
+    // 空列表也要淡入:否则容器停在透明,"暂无内容"提示渲染了却看不见
+    if (!loading) {
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 300,
         useNativeDriver: true,
       }).start();
-    } else if (loading) {
+    } else {
       fadeAnim.setValue(0);
     }
-  }, [loading, contentData.length, fadeAnim]);
+  }, [loading, fadeAnim]);
 
   const handleCategorySelect = (category: Category) => {
     setSelectedTag(null);

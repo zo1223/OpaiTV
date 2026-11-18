@@ -36,7 +36,6 @@ function AutoSkipAdsSection({
 }) {
   const { autoSkipAdsEnabled, setAutoSkipAdsEnabled } = useSettingsStore();
   const [isFocused, setIsFocused] = useState(false);
-  const deviceType = useResponsiveLayout().deviceType;
 
   const handleToggle = React.useCallback(() => {
     setAutoSkipAdsEnabled(!autoSkipAdsEnabled);
@@ -69,7 +68,8 @@ function AutoSkipAdsSection({
       focusable
       onFocus={handleSectionFocus}
       onBlur={handleSectionBlur}
-      onPress={Platform.isTV || deviceType === "tv" ? undefined : handleToggle}
+      // 只按 Platform.isTV 判断:宽度 >= 1024dp 的触屏设备(横屏平板)deviceType 也是 "tv",但只能靠点击切换
+      onPress={Platform.isTV ? undefined : handleToggle}
     >
       <View style={autoSkipAdsStyles.item}>
         <View style={autoSkipAdsStyles.info}>
@@ -80,7 +80,7 @@ function AutoSkipAdsSection({
           onValueChange={handleToggle}
           trackColor={{ false: "#767577", true: Colors.dark.primary }}
           thumbColor={autoSkipAdsEnabled ? "#ffffff" : "#f4f3f4"}
-          pointerEvents={deviceType === "tv" ? "none" : "auto"}
+          pointerEvents={Platform.isTV ? "none" : "auto"}
         />
       </View>
     </SettingsSection>

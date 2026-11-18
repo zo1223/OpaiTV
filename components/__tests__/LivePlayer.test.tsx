@@ -10,7 +10,6 @@ jest.mock("expo-av", () => {
   const { View } = jest.requireActual("react-native");
   const { forwardRef } = jest.requireActual("react");
   return {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     Video: forwardRef((props: object, _ref: unknown) => <View testID="video" {...props} />),
     ResizeMode: { CONTAIN: "contain" },
   };

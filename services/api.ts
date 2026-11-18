@@ -123,6 +123,14 @@ const getVideoDedupeKey = (item: DoubanItem) => {
   return poster ? `poster:${poster}` : "";
 };
 
+// 单源搜索的标题匹配,与首页海报徽标(homeStore.titlesMatch)、详情页播放源列表
+// (detailStore.titlesMatchQuery)同口径:忽略空白与大小写。这里若用严格相等,
+// 徽标数进去的源会在详情页之前被滤掉(海报显示"可播",点进去却"未找到播放源")
+const titleMatchesQuery = (title: unknown, query: string) => {
+  const normalizedQuery = normalizeDedupeValue(query);
+  return normalizedQuery !== "" && normalizeDedupeValue(title) === normalizedQuery;
+};
+
 const mixSourceResults = <T>(sourceResults: T[][], limit: number, getDedupeKey?: (item: T) => string) => {
   const mixed: T[] = [];
   const seenKeys = new Set<string>();
@@ -530,13 +538,13 @@ export class API {
         return { results };
       }
       const results = await searchAppleCmsSource(source, query, signal);
-      return { results: results.filter((item) => item.title === query) };
+      return { results: results.filter((item) => titleMatchesQuery(item.title, query)) };
     }
 
     const url = `/api/search/one?q=${encodeURIComponent(query)}&resourceId=${encodeURIComponent(resourceId)}`;
     const response = await this._fetch(url, { signal });
     const { results } = await response.json();
-    return { results: results.filter((item: any) => item.title === query )};
+    return { results: results.filter((item: any) => titleMatchesQuery(item.title, query)) };
   }
 
   async getResources(signal?: AbortSignal): Promise<ApiSite[]> {

@@ -142,4 +142,55 @@ describe("detailStore", () => {
     expect(useDetailStore.getState().detail?.source).toBe("fast");
     expect(useDetailStore.getState().isFavorited).toBe(false);
   });
+
+  it("stops reporting sources as still loading once the search is aborted", async () => {
+    // The detail screen calls abort() when the user presses play while slower sources are
+    // still being searched, and stays mounted under the player.
+    const make = (source: string) =>
+      ({ id: 1, title: "Movie", poster: "", episodes: [`https://${source}.example/1.m3u8`], source, source_name: source, year: "" });
+    jest.spyOn(api, "getResources").mockResolvedValue([
+      { key: "fast", name: "Fast", api: "https://fast.example/vod" },
+      { key: "slow", name: "Slow", api: "https://slow.example/vod" },
+    ]);
+    let resolveSlow!: (value: { results: ReturnType<typeof make>[] }) => void;
+    jest.spyOn(api, "searchVideo").mockImplementation((_q: string, resourceKey: string) =>
+      resourceKey === "slow"
+        ? new Promise((resolve) => (resolveSlow = resolve))
+        : Promise.resolve({ results: [make("fast")] })
+    );
+    (getResolutionFromM3U8 as jest.Mock).mockResolvedValue("1080p");
+
+    const initPromise = useDetailStore.getState().init("Movie");
+    await flushPromises();
+    expect(useDetailStore.getState().loading).toBe(false);
+    expect(useDetailStore.getState().allSourcesLoaded).toBe(false);
+
+    useDetailStore.getState().abort();
+    resolveSlow({ results: [make("slow")] });
+    await initPromise;
+
+    expect(useDetailStore.getState().allSourcesLoaded).toBe(true);
+    expect(useDetailStore.getState().searchResults.map((result) => result.source)).toEqual(["fast"]);
+  });
+
+  it("lists a source whose title differs from the poster title only in case or spacing", async () => {
+    // The home poster badge counts such a source as playable, so opening that poster has to find it too.
+    api.setSubscribedVideoSources([{ key: "demo", name: "Demo", api: "https://source.example/vod" }]);
+    jest.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        list: [{ vod_id: 7, vod_name: "the show2", vod_pic: "", vod_play_url: "HD$https://video.example/show.m3u8" }],
+      }),
+    } as Response);
+    (getResolutionFromM3U8 as jest.Mock).mockResolvedValue(null);
+
+    try {
+      await useDetailStore.getState().init("The Show 2");
+    } finally {
+      api.setSubscribedVideoSources([]);
+    }
+
+    expect(useDetailStore.getState().error).toBeNull();
+    expect(useDetailStore.getState().searchResults.map((result) => result.source)).toEqual(["demo"]);
+  });
 });

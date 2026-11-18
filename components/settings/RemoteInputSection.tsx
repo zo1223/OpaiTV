@@ -6,7 +6,6 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { useButtonAnimation } from "@/hooks/useAnimation";
 import { Colors } from "@/constants/Colors";
-import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { useSafeTVEventHandler } from "@/hooks/useSafeTVEventHandler";
 
 interface RemoteInputSectionProps {
@@ -21,7 +20,6 @@ export const RemoteInputSection: React.FC<RemoteInputSectionProps> = ({ onChange
   const { isServerRunning, serverUrl, error } = useRemoteControlStore();
   const [isFocused, setIsFocused] = React.useState(false);
   const animationStyle = useButtonAnimation(isFocused, 1.2);
-  const deviceType = useResponsiveLayout().deviceType;
 
   const handleToggle = useCallback(
     (enabled: boolean) => {
@@ -45,6 +43,9 @@ export const RemoteInputSection: React.FC<RemoteInputSectionProps> = ({ onChange
     handleToggle(!remoteInputEnabled);
   }
 
+  // 触屏设备（平板等）没有遥控器 select 事件，只能靠点击切换；TV 上由 handleTVEvent 处理，避免重复切换
+  const touchPress = Platform.isTV ? undefined : handlePress;
+
   // TV遥控器事件处理
   const handleTVEvent = React.useCallback(
     (event: any) => {
@@ -58,10 +59,13 @@ export const RemoteInputSection: React.FC<RemoteInputSectionProps> = ({ onChange
   useSafeTVEventHandler(handleTVEvent);
 
   return (
-    <SettingsSection focusable onFocus={handleSectionFocus} onBlur={handleSectionBlur}
-      {...Platform.isTV || deviceType !== 'tv' ? undefined : { onPress: handlePress }}
-    >
-      <Pressable style={styles.settingItem} onFocus={handleSectionFocus} onBlur={handleSectionBlur}>
+    <SettingsSection focusable onFocus={handleSectionFocus} onBlur={handleSectionBlur} onPress={touchPress}>
+      <Pressable
+        style={styles.settingItem}
+        onFocus={handleSectionFocus}
+        onBlur={handleSectionBlur}
+        onPress={touchPress}
+      >
         <View style={styles.settingInfo}>
           <ThemedText style={styles.settingName}>启用远程输入</ThemedText>
         </View>

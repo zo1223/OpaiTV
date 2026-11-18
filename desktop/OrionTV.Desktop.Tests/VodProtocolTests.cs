@@ -71,6 +71,30 @@ public class VodProtocolTests
         Assert.Equal("Film", Assert.Single(results).Title);
     }
 
+    [Theory]
+    [InlineData(VideoSourceProtocols.AppleCms)]
+    [InlineData(VideoSourceProtocols.MacCmsJson)]
+    public async Task GetDetail_QueriesApiEndpointWhenDetailFieldIsASiteAddress(string protocol)
+    {
+        string? seen = null;
+        using var http = new HttpClient(new StubHandler(request =>
+        {
+            seen = request.RequestUri!.ToString();
+            return request.RequestUri.Host == "api.example"
+                ? """{ "list": [ { "vod_id": 7, "vod_name": "Film", "vod_year": "2024", "vod_content": "Long plot" } ] }"""
+                : "<html><body>site home</body></html>";
+        }));
+
+        var source = new VideoSource("s", "S", "https://api.example/api.php/provide/vod", Detail: "https://www.example", Protocol: protocol);
+        var detail = await new VodSourceClientFactory(http).For(source).GetDetailAsync(source, "7");
+
+        Assert.StartsWith("https://api.example/api.php/provide/vod?", seen);
+        Assert.Contains("ac=detail", seen);
+        Assert.Contains("ids=7", seen);
+        Assert.Equal("2024", detail.Year);
+        Assert.Equal("Long plot", detail.Description);
+    }
+
     [Fact]
     public async Task MacCmsXml_ParsesClassAndVideoPlayDd()
     {

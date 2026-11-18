@@ -942,4 +942,51 @@ describe("API subscription routing", () => {
       }),
     ]);
   });
+
+  describe("single-source title matching", () => {
+    // The home poster badge (homeStore) and the detail page (detailStore) both compare titles
+    // ignoring case and whitespace; a stricter filter here hides sources the badge has counted.
+    it("keeps a subscribed source's titles that differ from the query only in case or whitespace", async () => {
+      const api = new API();
+      api.setSubscribedVideoSources([{ key: "demo", name: "Demo", api: "https://source.example/vod" }]);
+
+      jest.spyOn(global, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          list: [
+            { vod_id: 1, vod_name: "The Show 2", vod_play_url: "HD$https://video.example/1.m3u8" },
+            { vod_id: 2, vod_name: "the show2 ", vod_play_url: "HD$https://video.example/2.m3u8" },
+            { vod_id: 3, vod_name: "The Show 2: Extras", vod_play_url: "HD$https://video.example/3.m3u8" },
+          ],
+        }),
+      } as Response);
+
+      const response = await api.searchVideo("The Show 2", "demo");
+
+      expect(response.results.map((item) => item.id)).toEqual([1, 2]);
+    });
+
+    it("keeps a backend source's titles that differ from the query only in case or whitespace", async () => {
+      const api = new API("https://backend.example");
+
+      jest.spyOn(global, "fetch").mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          results: [
+            { id: 1, title: "The Show 2" },
+            { id: 2, title: "the show2 " },
+            { id: 3, title: "The Show 2: Extras" },
+          ],
+        }),
+      } as Response);
+
+      const response = await api.searchVideo("The Show 2", "demo");
+
+      expect(fetch).toHaveBeenCalledWith("https://backend.example/api/search/one?q=The%20Show%202&resourceId=demo", {
+        signal: undefined,
+      });
+      expect(response.results.map((item) => item.id)).toEqual([1, 2]);
+    });
+  });
 });
