@@ -282,7 +282,22 @@ public sealed class RollingSubtitleBuffer(int maxCharacters = 96)
             }
         }
 
-        var removal = boundary >= 0 ? boundary + 1 : minimumRemoval;
+        // 只有边界后面还有正文时才从边界裁掉旧句子；否则是一句超长的话刚好结束，
+        // 从边界裁会把整段字幕清空，这时只保留末尾的 _maxCharacters 个字符。
+        var removal = boundary >= 0 && HasTextAfter(boundary) ? boundary + 1 : minimumRemoval;
         _text.Remove(0, removal);
+    }
+
+    private bool HasTextAfter(int boundary)
+    {
+        for (var index = boundary + 1; index < _text.Length; index++)
+        {
+            if (char.IsLetterOrDigit(_text[index]))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

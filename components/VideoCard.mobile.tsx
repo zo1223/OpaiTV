@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, forwardRef } from "react";
+import React, { useState, useEffect, forwardRef } from "react";
 import { View, Text, Image, StyleSheet, TouchableOpacity, Alert, Animated } from "react-native";
 import { useRouter } from "expo-router";
 import { Star, Play } from "lucide-react-native";
@@ -57,14 +57,7 @@ const VideoCardMobile = forwardRef<View, VideoCardMobileProps>(
     const { cardWidth, cardHeight, spacing } = useResponsiveLayout();
     const [fadeAnim] = useState(new Animated.Value(0));
 
-    const longPressTriggered = useRef(false);
-
     const handlePress = () => {
-      if (longPressTriggered.current) {
-        longPressTriggered.current = false;
-        return;
-      }
-      
       if (progress !== undefined && episodeIndex !== undefined) {
         router.push({
           pathname: "/play",
@@ -90,7 +83,7 @@ const VideoCardMobile = forwardRef<View, VideoCardMobileProps>(
     const handleLongPress = () => {
       if (progress === undefined) return;
 
-      longPressTriggered.current = true;
+      // 触摸长按松手后不会再触发 onPress,这里不能留"已长按"标记,否则对话框关闭后的第一次点击会被吞掉
 
       Alert.alert("删除观看记录", `确定要删除"${title}"的观看记录吗？`, [
         {

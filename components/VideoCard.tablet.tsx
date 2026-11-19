@@ -58,15 +58,9 @@ const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
     const [fadeAnim] = useState(new Animated.Value(0));
     const [isPressed, setIsPressed] = useState(false);
 
-    const longPressTriggered = useRef(false);
     const scale = useRef(new Animated.Value(1)).current;
 
     const handlePress = () => {
-      if (longPressTriggered.current) {
-        longPressTriggered.current = false;
-        return;
-      }
-      
       if (progress !== undefined && episodeIndex !== undefined) {
         router.push({
           pathname: "/play",
@@ -112,7 +106,7 @@ const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
     const handleLongPress = () => {
       if (progress === undefined) return;
 
-      longPressTriggered.current = true;
+      // 触摸长按松手后不会再触发 onPress,这里不能留"已长按"标记,否则对话框关闭后的第一次点击会被吞掉
 
       Alert.alert("删除观看记录", `确定要删除"${title}"的观看记录吗？`, [
         {

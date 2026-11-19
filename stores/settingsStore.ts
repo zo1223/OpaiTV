@@ -38,6 +38,8 @@ interface SettingsState {
   hideModal: () => void;
 }
 
+let serverConfigSeq = 0;
+
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   apiBaseUrl: "",
   videoSourceSubscriptionUrl: "",
@@ -55,7 +57,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
   loadSettings: async () => {
     const settings = await SettingsManager.get();
+    // set() re-renders subscribers and runs their effects synchronously, so the API client
+    // must already point at the saved address and the config must already count as loading:
+    // otherwise the startup login check sees no server and gives up (or is skipped).
+    api.setSubscribedVideoSources(settings.subscribedVideoSources || []);
+    if (settings.apiBaseUrl) {
+      api.setBaseUrl(settings.apiBaseUrl);
+    }
     set({
+      ...(settings.apiBaseUrl ? { isLoadingServerConfig: true } : {}),
       apiBaseUrl: settings.apiBaseUrl,
       videoSourceSubscriptionUrl: settings.videoSourceSubscriptionUrl,
       subscribedVideoSources: settings.subscribedVideoSources || [],
@@ -67,25 +77,30 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         sources: {},
       },
     });
-    api.setSubscribedVideoSources(settings.subscribedVideoSources || []);
     if (settings.apiBaseUrl) {
-      api.setBaseUrl(settings.apiBaseUrl);
       await get().fetchServerConfig();
     }
   },
   fetchServerConfig: async () => {
+    // Only the latest request may write: a slow answer (or late failure) from a
+    // previous server address must not replace the current server's config.
+    const seq = ++serverConfigSeq;
     set({ isLoadingServerConfig: true });
     try {
       const config = await api.getServerConfig();
+      if (seq !== serverConfigSeq) return;
       if (config) {
         storageConfig.setStorageType(config.StorageType);
         set({ serverConfig: config });
       }
     } catch (error) {
+      if (seq !== serverConfigSeq) return;
       set({ serverConfig: null });
       logger.error("Failed to fetch server config:", error);
     } finally {
-      set({ isLoadingServerConfig: false });
+      if (seq === serverConfigSeq) {
+        set({ isLoadingServerConfig: false });
+      }
     }
   },
   setApiBaseUrl: (url) => set({ apiBaseUrl: url }),
@@ -123,22 +138,25 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       await AsyncStorage.setItem('authCookies', '');
     }
     api.setBaseUrl(processedApiBaseUrl);
+    api.setSubscribedVideoSources(subscribedVideoSources);
     // Also update the URL in the state so the input field shows the processed URL
     set({
+      // Same reason as in loadSettings: effects run inside this set().
+      ...(processedApiBaseUrl ? { isLoadingServerConfig: true } : {}),
       isModalVisible: false,
       apiBaseUrl: processedApiBaseUrl,
       videoSourceSubscriptionUrl: processedVideoSourceSubscriptionUrl,
       subscribedVideoSources,
       autoSkipAdsEnabled,
     });
-    api.setSubscribedVideoSources(subscribedVideoSources);
     if (processedApiBaseUrl) {
       await get().fetchServerConfig();
     } else {
       // No backend any more: drop the old server's config, otherwise favorites and
       // play records keep using its storage type and fail with API_URL_NOT_SET.
+      serverConfigSeq++;
       storageConfig.setStorageType(undefined);
-      set({ serverConfig: null });
+      set({ serverConfig: null, isLoadingServerConfig: false });
     }
   },
   showModal: () => set({ isModalVisible: true }),

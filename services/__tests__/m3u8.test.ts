@@ -61,6 +61,48 @@ describe("m3u8 ad range parsing", () => {
     ]);
   });
 
+  it("gives up with no ad ranges when the playlist host never answers", async () => {
+    jest.useFakeTimers();
+    try {
+      // Like a real fetch: stays pending until the signal aborts it
+      (global.fetch as jest.Mock).mockImplementation(
+        (_url: string, init?: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("Aborted")));
+          })
+      );
+
+      const settled = jest.fn();
+      const pending = getAdRangesFromM3U8("https://silent.example/movie.m3u8").then((ranges) => {
+        settled(ranges);
+        return ranges;
+      });
+
+      await jest.advanceTimersByTimeAsync(7_000);
+      expect(settled).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(1_000);
+      await expect(pending).resolves.toEqual([]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("still stops when the caller's signal aborts", async () => {
+    (global.fetch as jest.Mock).mockImplementation(
+      (_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("Aborted")));
+        })
+    );
+    const caller = new AbortController();
+
+    const pending = getAdRangesFromM3U8("https://silent.example/movie.m3u8", caller.signal);
+    caller.abort();
+
+    await expect(pending).resolves.toEqual([]);
+  });
+
   it("does not fetch non-m3u8 urls for ad ranges", async () => {
     await expect(getAdRangesFromM3U8("https://video.example/movie.mp4")).resolves.toEqual([]);
 

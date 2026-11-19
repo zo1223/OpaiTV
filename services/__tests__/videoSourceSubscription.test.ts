@@ -6,6 +6,7 @@ import {
   fetchAppleCmsCategories,
   fetchAppleCmsCategoryVideos,
   expandSearchResultPlaybackSources,
+  fetchVideoSourceSubscription,
 } from "../videoSourceSubscription";
 
 const encodeBase58 = (value: string) => {
@@ -299,6 +300,50 @@ describe("video source subscriptions", () => {
       total: 45,
       page: 2,
       pageCount: 3,
+    });
+  });
+
+  describe("fetchVideoSourceSubscription", () => {
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it("loads and normalizes the subscription returned by the server", async () => {
+      const fetchMock = jest.spyOn(global, "fetch").mockResolvedValue({
+        ok: true,
+        text: async () => JSON.stringify({ api_site: { demo: { name: "Demo", api: "https://example.com/vod/" } } }),
+      } as Response);
+
+      const config = await fetchVideoSourceSubscription("https://example.com/sub.json");
+
+      expect(config.sources).toEqual([
+        { key: "demo", name: "Demo", api: "https://example.com/vod", detail: undefined },
+      ]);
+      expect(fetchMock).toHaveBeenCalledWith("https://example.com/sub.json", { signal: expect.any(AbortSignal) });
+    });
+
+    it("gives up with an error when the subscription server never answers", async () => {
+      jest.useFakeTimers();
+      // Like a real fetch: stays pending until the signal aborts it
+      jest.spyOn(global, "fetch").mockImplementation(
+        (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("Aborted")));
+          })
+      );
+
+      const settled = jest.fn();
+      const pending = fetchVideoSourceSubscription("https://silent-host.example/sub.json").then(
+        () => settled("resolved"),
+        () => settled("rejected")
+      );
+
+      await jest.advanceTimersByTimeAsync(29_000);
+      expect(settled).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(1_000);
+      await pending;
+      expect(settled).toHaveBeenCalledWith("rejected");
     });
   });
 });

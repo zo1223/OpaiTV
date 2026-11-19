@@ -16,6 +16,9 @@ import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import { useApiConfig, getApiConfigErrorMessage } from "@/hooks/useApiConfig";
 import { Colors } from "@/constants/Colors";
+import Logger from "@/utils/Logger";
+
+const logger = Logger.withTag("HomeScreen");
 
 const LOAD_MORE_THRESHOLD = 200;
 
@@ -49,7 +52,10 @@ export default function HomeScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      refreshPlayRecords();
+      // 已登录但播放记录拉取失败时会 reject;保留现有分类,避免未处理的 Promise rejection
+      refreshPlayRecords().catch((error) => {
+        logger.warn("Failed to refresh play records:", error);
+      });
     }, [refreshPlayRecords])
   );
 

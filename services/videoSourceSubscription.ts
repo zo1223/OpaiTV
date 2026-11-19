@@ -151,13 +151,23 @@ export const normalizeVideoSourceConfig = (rawConfig: any): VideoSourceSubscript
   return { sources };
 };
 
+// RN 的 OkHttp 客户端没有连接/读取超时:订阅地址连得上却一直不回数据时,
+// fetch 永远不结束,设置页的保存按钮会一直停在"保存中..."。超时后按请求失败处理(抛出错误)。
+const SUBSCRIPTION_REQUEST_TIMEOUT_MS = 30_000;
+
 export const fetchVideoSourceSubscription = async (subscriptionUrl: string): Promise<VideoSourceSubscriptionConfig> => {
-  const response = await fetch(subscriptionUrl);
-  if (!response.ok) {
-    throw new Error(`VIDEO_SOURCE_SUBSCRIPTION_FETCH_FAILED:${response.status}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SUBSCRIPTION_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(subscriptionUrl, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`VIDEO_SOURCE_SUBSCRIPTION_FETCH_FAILED:${response.status}`);
+    }
+    const payload = await response.text();
+    return normalizeVideoSourceConfig(decodeSubscriptionPayload(payload));
+  } finally {
+    clearTimeout(timer);
   }
-  const payload = await response.text();
-  return normalizeVideoSourceConfig(decodeSubscriptionPayload(payload));
 };
 
 const parseAppleCmsEpisodeGroup = (group: string): string[] => {

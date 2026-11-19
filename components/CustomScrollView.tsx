@@ -1,5 +1,6 @@
-import React, { useCallback, useRef, useState, useEffect } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { View, StyleSheet, ScrollView, ActivityIndicator, TouchableOpacity, BackHandler } from "react-native";
+import { useFocusEffect } from "expo-router";
 import { ThemedText } from "@/components/ThemedText";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
@@ -37,19 +38,23 @@ const CustomScrollView: React.FC<CustomScrollViewProps> = ({
   const { deviceType } = responsiveConfig;
 
   // 添加返回键处理逻辑
-  useEffect(() => {
-    if (deviceType === 'tv') {
-      const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
-        if (showScrollToTop) {
-          scrollToTop();
-          return true; // 阻止默认的返回行为
-        }
-        return false; // 允许默认的返回行为
-      });
+  // 只在所在页面处于焦点时拦截:页面被详情页等盖住后仍保持挂载,
+  // 否则上层页面的第一次返回键会被这里吃掉,只把看不见的列表滚回顶部
+  useFocusEffect(
+    useCallback(() => {
+      if (deviceType === 'tv') {
+        const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+          if (showScrollToTop) {
+            scrollToTop();
+            return true; // 阻止默认的返回行为
+          }
+          return false; // 允许默认的返回行为
+        });
 
-      return () => backHandler.remove();
-    }
-  }, [showScrollToTop,deviceType]);
+        return () => backHandler.remove();
+      }
+    }, [showScrollToTop, deviceType])
+  );
 
   // 使用响应式列数，如果没有明确指定的话
   const effectiveColumns = numColumns || responsiveConfig.columns;

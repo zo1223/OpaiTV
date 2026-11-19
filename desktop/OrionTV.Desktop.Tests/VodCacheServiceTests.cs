@@ -115,6 +115,40 @@ public sealed class VodCacheServiceTests
     }
 
     [Fact]
+    public async Task RetriesSegmentWhoseBodyStallsInsteadOfHangingTheDownload()
+    {
+        // 第二个分片第一次请求时：响应头和一半数据到了，之后连接既不关闭也不再来数据。
+        await using var upstream = new FakeHlsServer(stallSecondSegmentBodyOnce: true);
+        using var service = new VodCacheService { BodyStallTimeout = TimeSpan.FromMilliseconds(500) };
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-stall-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var session = await service.StartAsync(
+                upstream.PlaylistUrl,
+                "Stalled Episode",
+                root,
+                15);
+
+            Assert.NotNull(session);
+            await session!.DownloadTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(session.Progress.IsComplete);
+            Assert.Null(session.Progress.Error);
+            Assert.True(upstream.SegmentRequestCount(2) >= 2);
+            // 断流那次只收到的半个分片不能混进成品。
+            var merged = await File.ReadAllBytesAsync(session.MergedFilePath);
+            Assert.Equal(3 * 1024, merged.Length);
+            Assert.All(merged[1024..2048], value => Assert.Equal((byte)2, value));
+
+            await service.CloseAsync(session, deleteFiles: true, continueDownload: false);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public async Task ResolvesRelativeSegmentsAgainstRedirectedPlaylistUrl()
     {
         // 模拟普通远程源：/source/xxx/play.m3u8 302 到 CDN 媒体清单，分片是相对路径。
@@ -890,6 +924,7 @@ public sealed class VodCacheServiceTests
         private readonly bool _delayThirdSegment;
         private readonly bool _redirectPlaylist;
         private readonly bool _delayAllSegments;
+        private readonly bool _stallSecondSegmentBodyOnce;
         private readonly ConcurrentDictionary<string, int> _requestCounts = new(StringComparer.Ordinal);
         private int _playlistFailuresRemaining;
         private int _activeSegmentRequests;
@@ -898,11 +933,13 @@ public sealed class VodCacheServiceTests
         internal FakeHlsServer(
             bool delayThirdSegment = false,
             bool redirectPlaylist = false,
-            bool delayAllSegments = false)
+            bool delayAllSegments = false,
+            bool stallSecondSegmentBodyOnce = false)
         {
             _delayThirdSegment = delayThirdSegment;
             _redirectPlaylist = redirectPlaylist;
             _delayAllSegments = delayAllSegments;
+            _stallSecondSegmentBodyOnce = stallSecondSegmentBodyOnce;
             _listener.Start();
             var port = ((IPEndPoint)_listener.LocalEndpoint).Port;
             PlaylistUrl = $"http://127.0.0.1:{port}/playlist.m3u8";
@@ -954,7 +991,7 @@ public sealed class VodCacheServiceTests
                 var count = await stream.ReadAsync(buffer);
                 var request = Encoding.ASCII.GetString(buffer, 0, count);
                 var path = request.Split(' ')[1];
-                _requestCounts.AddOrUpdate(path, 1, static (_, current) => current + 1);
+                var requestNumber = _requestCounts.AddOrUpdate(path, 1, static (_, current) => current + 1);
                 byte[] body;
                 string type;
                 var status = "200 OK";
@@ -1016,6 +1053,22 @@ public sealed class VodCacheServiceTests
                 var header = Encoding.ASCII.GetBytes(
                     $"HTTP/1.1 {status}\r\nContent-Type: {type}\r\nContent-Length: {body.Length}\r\n{locationHeader}Connection: close\r\n\r\n");
                 await stream.WriteAsync(header);
+                if (_stallSecondSegmentBodyOnce && requestNumber == 1 && path.Contains("seg2", StringComparison.Ordinal))
+                {
+                    // 路由器重拨、CDN 卡死时的样子：连接还在，但后半段数据永远不来。
+                    await stream.WriteAsync(body.AsMemory(0, body.Length / 2));
+                    await stream.FlushAsync();
+                    try
+                    {
+                        await Task.Delay(Timeout.Infinite, _cancellation.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+
+                    return;
+                }
+
                 await stream.WriteAsync(body);
             }
         }

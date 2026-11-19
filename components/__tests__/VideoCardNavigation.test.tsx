@@ -1,6 +1,6 @@
 import React from "react";
 import renderer, { act } from "react-test-renderer";
-import { Image, Pressable, Text, TouchableOpacity } from "react-native";
+import { Alert, Image, Pressable, Text, TouchableOpacity } from "react-native";
 
 import VideoCardMobile from "../VideoCard.mobile";
 import VideoCardTablet from "../VideoCard.tablet";
@@ -95,6 +95,30 @@ describe("VideoCard navigation", () => {
       jest.runOnlyPendingTimers();
     });
     jest.clearAllTimers();
+  });
+
+  it.each([
+    ["mobile", VideoCardMobile],
+    ["tablet", VideoCardTablet],
+  ])("%s continue-watching card still opens on the first tap after a long press", (_name, Component) => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    let tree: renderer.ReactTestRenderer;
+    act(() => {
+      tree = renderer.create(<Component {...baseProps} progress={0.5} episodeIndex={2} playTime={60} />);
+    });
+    const card = tree!.root.findByType(TouchableOpacity);
+
+    // A touch long press ends without onPress (Pressability cancels it), then the dialog is dismissed.
+    act(() => {
+      card.props.onLongPress();
+    });
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      card.props.onPress();
+    });
+    expect(mockPush).toHaveBeenCalledWith(expect.objectContaining({ pathname: "/play" }));
+    alertSpy.mockRestore();
   });
 
   it.each([

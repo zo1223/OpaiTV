@@ -7,6 +7,7 @@ import { Platform, View, StyleSheet } from "react-native";
 import Toast from "react-native-toast-message";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { api } from "@/services/api";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import LoginModal from "@/components/LoginModal";
@@ -42,7 +43,10 @@ export default function RootLayout() {
   }, [loadSettings]);
 
   useEffect(() => {
-    if (apiBaseUrl) {
+    // 设置页的 API 地址输入框每输入一个字符,都会把还没保存的内容写进 store 的 apiBaseUrl。
+    // 只有它就是已生效的地址(启动时加载或保存后)才检查登录:否则每个字符都会对着旧服务器
+    // 检查一次,首次配置时还会反复弹出"请检查网络或者服务器地址是否可用"。
+    if (apiBaseUrl && apiBaseUrl === api.baseURL) {
       checkLoginStatus(apiBaseUrl);
     }
   }, [apiBaseUrl, checkLoginStatus]);

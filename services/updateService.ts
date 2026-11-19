@@ -142,6 +142,11 @@ class UpdateService {
         );
 
         const result = await downloadResumable.downloadAsync();
+        // downloadAsync 对 404 这类 HTTP 错误也会正常返回：错误页已经被写进了目标文件。
+        // 不检查状态码的话，这个文件会被当成 APK 交给系统安装器，用户只会看到“解析软件包时出现问题”。
+        if (result && (result.status < 200 || result.status >= 300)) {
+          throw new Error(`Download failed: HTTP ${result.status}`);
+        }
         if (result && result.uri) {
           logger.debug(`APK downloaded to ${result.uri}`);
           return result.uri;

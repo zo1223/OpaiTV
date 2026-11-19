@@ -50,6 +50,11 @@ export const parseAdRangesFromM3U8 = (playlist: string): M3U8AdRange[] => {
   return ranges;
 };
 
+// playerStore 在把剧集地址交给播放器之前会等广告区间检测结束,而 RN 的 OkHttp 客户端
+// 没有连接/读取超时:播放列表地址连得上却一直不回数据时,播放页会永远停在加载中,
+// 播放器拿不到地址也就不会报错换源。超时后按"没有广告区间"处理,照常开始播放。
+const AD_RANGE_REQUEST_TIMEOUT_MS = 8_000;
+
 export const getAdRangesFromM3U8 = async (
   url: string,
   signal?: AbortSignal
@@ -58,8 +63,17 @@ export const getAdRangesFromM3U8 = async (
     return [];
   }
 
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const timer = setTimeout(abort, AD_RANGE_REQUEST_TIMEOUT_MS);
+  if (signal?.aborted) {
+    abort();
+  } else {
+    signal?.addEventListener("abort", abort);
+  }
+
   try {
-    const response = await fetch(url, { signal });
+    const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) {
       return [];
     }
@@ -69,6 +83,9 @@ export const getAdRangesFromM3U8 = async (
   } catch (error) {
     logger.info(`M3U8 ad range detection failed: ${error}`);
     return [];
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
   }
 };
 

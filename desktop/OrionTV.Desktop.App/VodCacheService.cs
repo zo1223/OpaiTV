@@ -172,6 +172,12 @@ public sealed class VodCacheService : IDisposable
     private readonly int _port;
     private bool _disposed;
 
+    /// <summary>
+    /// 下载分片/密钥时，正文连续这么久收不到数据就按断流处理并重试。响应头返回后 SendWithTimeoutAsync 的超时不再生效，
+    /// 没有这一条时，连接中途静默断开（路由器重拨、休眠唤醒、CDN 卡死）会让下载永远挂住并一直占着并发名额。
+    /// </summary>
+    internal TimeSpan BodyStallTimeout { get; set; } = RequestTimeout;
+
     public VodCacheService()
     {
         var handler = new HttpClientHandler
@@ -1823,7 +1829,7 @@ public sealed class VodCacheService : IDisposable
                                  64 * 1024,
                                  FileOptions.Asynchronous | FileOptions.SequentialScan))
                 {
-                    await input.CopyToAsync(output, 64 * 1024, cancellationToken).ConfigureAwait(false);
+                    await CopyWithStallTimeoutAsync(input, output, BodyStallTimeout, cancellationToken).ConfigureAwait(false);
                 }
 
                 File.Move(tempPath, file.FullPath, true);
@@ -1870,6 +1876,39 @@ public sealed class VodCacheService : IDisposable
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutCts.IsCancellationRequested)
         {
             throw new TimeoutException($"HTTP_TIMEOUT {timeout.TotalSeconds:0}s {request.RequestUri}");
+        }
+    }
+
+    /// <summary>
+    /// 边读边写，并按"多久没收到数据"计时：每次读之前重新计时，所以只限制断流，不限制大分片的总下载时长。
+    /// </summary>
+    private static async Task CopyWithStallTimeoutAsync(
+        Stream input,
+        Stream output,
+        TimeSpan stallTimeout,
+        CancellationToken cancellationToken)
+    {
+        using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var buffer = new byte[64 * 1024];
+        while (true)
+        {
+            stallCts.CancelAfter(stallTimeout);
+            int read;
+            try
+            {
+                read = await input.ReadAsync(buffer, stallCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && stallCts.IsCancellationRequested)
+            {
+                throw new TimeoutException($"HTTP_BODY_STALLED {stallTimeout.TotalSeconds:0}s");
+            }
+
+            if (read <= 0)
+            {
+                return;
+            }
+
+            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
         }
     }
 

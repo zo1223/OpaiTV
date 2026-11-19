@@ -97,6 +97,30 @@ public class RealtimeTranslationProtocolTests
         Assert.DoesNotContain("第一句", subtitles.Text);
     }
 
+    [Fact]
+    public void RollingSubtitleBuffer_keeps_the_end_of_an_overlong_sentence_when_it_finishes()
+    {
+        var subtitles = new RollingSubtitleBuffer(24);
+
+        subtitles.Append("这一句话没有任何句号，一直说一直说，说了很久很久，");
+        var text = subtitles.Append("最后才结束。");
+
+        Assert.EndsWith("最后才结束。", text);
+        Assert.Equal(24, text.Length);
+    }
+
+    [Fact]
+    public void RollingSubtitleBuffer_shows_an_overlong_segment_that_arrives_as_one_delta()
+    {
+        var subtitles = new RollingSubtitleBuffer(24);
+
+        // 分段翻译的客户端一次送来整段译文，并以句号加空格结尾。
+        var text = subtitles.Append("这一整段译文是一次性送来的，中间没有句号，而且比上限还要长。 ");
+
+        Assert.EndsWith("而且比上限还要长。", text);
+        Assert.Equal("下一段", subtitles.Append("下一段"));
+    }
+
     [Theory]
     [InlineData(null, true)]
     [InlineData("", true)]

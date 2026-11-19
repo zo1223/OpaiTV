@@ -7,6 +7,7 @@ import HomeScreen from "../../app/index";
 
 type MockHomeState = { loading: boolean; contentData: unknown[] };
 let mockHomeState: MockHomeState;
+const mockRefreshPlayRecords = jest.fn();
 
 jest.mock("@/stores/homeStore", () => ({
   __esModule: true,
@@ -18,7 +19,7 @@ jest.mock("@/stores/homeStore", () => ({
     fetchInitialData: jest.fn(),
     loadMoreData: jest.fn(),
     selectCategory: jest.fn(),
-    refreshPlayRecords: jest.fn(),
+    refreshPlayRecords: mockRefreshPlayRecords,
     clearError: jest.fn(),
     ...mockHomeState,
   }),
@@ -112,5 +113,33 @@ describe("HomeScreen content fade-in", () => {
 
     expect(JSON.stringify(tree.toJSON())).toContain("CONTENT");
     expect(fadeInCalls()).toHaveLength(1);
+  });
+});
+
+describe("HomeScreen play-record refresh on focus", () => {
+  it("does not leave a rejected refresh unhandled", async () => {
+    const { useFocusEffect } = jest.requireMock("expo-router") as { useFocusEffect: jest.Mock };
+    useFocusEffect.mockClear();
+    const failure = mockRefreshPlayRecords.mockReturnValue(Promise.reject(new Error("play records unavailable")));
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    mockHomeState = { loading: false, contentData: [] };
+
+    let screen: renderer.ReactTestRenderer;
+    act(() => {
+      screen = renderer.create(<HomeScreen />);
+    });
+    // The first focus effect registered by the screen is the play-record refresh.
+    const onFocus = useFocusEffect.mock.calls[0][0] as () => void;
+    onFocus();
+
+    const settled = failure.mock.results[0].value as Promise<void>;
+    await expect(settled).rejects.toThrow("play records unavailable");
+    await Promise.resolve();
+    expect(failure).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    act(() => screen.unmount());
+    warn.mockRestore();
+    mockRefreshPlayRecords.mockReset();
   });
 });
