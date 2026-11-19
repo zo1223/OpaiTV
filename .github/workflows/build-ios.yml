@@ -1,0 +1,411 @@
+name: Build iOS IPA (unsigned)
+
+# Builds the iPhone/iPad app without code signing and packages it as an .ipa
+# for sideloading (AltStore, Sideloadly, ...), which re-sign it with the user's
+# own Apple ID. No Apple Developer account, certificate or provisioning profile
+# is used anywhere in this workflow.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # Explicit "bash" makes GitHub run every script with `set -eo pipefail`.
+    shell: bash
+
+jobs:
+  build_ios:
+    name: Build unsigned iOS IPA
+    # Pinned on purpose: the "Select Xcode" step wants Xcode 16.0-16.2, which
+    # the macOS 26 image behind "macos-latest" does not ship. macos-15 ships
+    # those Xcode versions but not their iOS platform; the "Ensure the iOS
+    # platform is installed" step downloads it.
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      # Needed to attach the IPA to the release of the pushed tag.
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "yarn"
+
+      - name: Audit public tree
+        run: node scripts/audit-public-tree.mjs
+
+      - name: Resolve artifact name and output paths
+        id: meta
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          app_version="$(node -p "require('./package.json').version")"
+          if [ "$REF_TYPE" = "tag" ]; then
+            label="${REF_NAME#v}"
+            if [ "$label" != "$app_version" ]; then
+              echo "::warning::Tag $REF_NAME does not match package.json version $app_version. The IPA is named after the tag, but the app inside reports version $app_version."
+            fi
+          else
+            label="${app_version}-$(git rev-parse --short=8 HEAD)"
+          fi
+          # Keep the file name safe whatever the tag looks like.
+          label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '-')"
+          if [ -z "$label" ]; then
+            echo "::error::Could not derive a version label from ref '$REF_NAME'."
+            exit 1
+          fi
+          echo "ipa_name=OpaiTV-${label}-ios-unsigned.ipa" >> "$GITHUB_OUTPUT"
+
+          # Build outputs live outside the checkout so Metro never sees them.
+          {
+            echo "ARCHIVE_PATH=$RUNNER_TEMP/ios-build/OpaiTV.xcarchive"
+            echo "XCODEBUILD_LOG=$RUNNER_TEMP/ios-build/xcodebuild-archive.log"
+            echo "DIST_DIR=$RUNNER_TEMP/ios-dist"
+          } >> "$GITHUB_ENV"
+          echo "IPA name: OpaiTV-${label}-ios-unsigned.ipa (app version ${app_version})"
+
+      - name: Select Xcode
+        run: |
+          # React Native 0.74 bundles fmt 9.1, which does not compile with the
+          # libc++ of Xcode 16.3 and later (std::char_traits<unsigned char> was
+          # removed; React Native only fixed this in 0.76.9 by moving to fmt 11).
+          # So use the newest Xcode before 16.3 instead of the image default.
+          selected=""
+          for version in 16.2 16.1 16.0; do
+            if [ -d "/Applications/Xcode_${version}.app" ]; then
+              selected="/Applications/Xcode_${version}.app"
+              break
+            fi
+          done
+          if [ -n "$selected" ]; then
+            sudo xcode-select --switch "$selected/Contents/Developer"
+          else
+            echo "::warning::No preferred Xcode (16.0-16.2) on this runner image; using its default Xcode. If the build fails below, update the Xcode list or the runner image in build-ios.yml."
+          fi
+          xcodebuild -version
+          echo "node $(node --version), yarn $(yarn --version), CocoaPods $(pod --version)"
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Prebuild iOS project
+        run: |
+          # Not "yarn prebuild": that script sets EXPO_TV=1 (Apple TV / Android TV)
+          # and copies Android-only files. Without EXPO_TV this generates the
+          # iPhone/iPad project. CocoaPods runs as its own step below.
+          ./node_modules/.bin/expo prebuild --platform ios --clean --no-install
+
+          if ! grep -Eq "^platform :ios" ios/Podfile; then
+            echo "::error::expo prebuild did not generate an iPhone/iPad project: ios/Podfile is missing or targets another platform (is EXPO_TV set?)."
+            exit 1
+          fi
+
+      - name: Install CocoaPods dependencies
+        working-directory: ios
+        run: pod install
+
+      - name: Locate Xcode workspace
+        run: |
+          shopt -s nullglob
+          workspaces=(ios/*.xcworkspace)
+          if [ "${#workspaces[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one ios/*.xcworkspace after pod install, found ${#workspaces[@]}: ${workspaces[*]:-none}"
+            exit 1
+          fi
+          workspace="${workspaces[0]}"
+          scheme="$(basename "$workspace" .xcworkspace)"
+          if [ ! -f "ios/${scheme}.xcodeproj/xcshareddata/xcschemes/${scheme}.xcscheme" ]; then
+            echo "::error::Shared Xcode scheme '${scheme}' was not generated by expo prebuild."
+            exit 1
+          fi
+          echo "IOS_WORKSPACE=${workspace}" >> "$GITHUB_ENV"
+          echo "IOS_SCHEME=${scheme}" >> "$GITHUB_ENV"
+          echo "Workspace: ${workspace}, scheme: ${scheme}"
+
+      - name: Ensure the iOS platform is installed for the selected Xcode
+        run: |
+          # The macos-15 image keeps the iOS platform only for its newest Xcode
+          # versions (actions/runner-images#12541, #13392). With an older Xcode
+          # selected, xcodebuild refuses the "Any iOS Device" destination with
+          # "iOS 18.x is not installed" until that platform is downloaded.
+          # The download comes from Apple's public CDN and needs no Apple ID.
+          report="$RUNNER_TEMP/ios-destinations.txt"
+
+          # Prints "ready", "missing" or "unknown" for the generic iOS device
+          # destination, as xcodebuild itself sees it.
+          ios_platform_state() {
+            local device_lines
+            xcodebuild -showdestinations -workspace "$IOS_WORKSPACE" -scheme "$IOS_SCHEME" > "$report" 2>&1 || true
+            device_lines="$(grep -E 'platform:iOS,.*name:Any iOS Device' "$report" || true)"
+            if [ -n "$device_lines" ] && grep -qv 'error:' <<< "$device_lines"; then
+              echo ready
+            elif grep -q 'is not installed' <<< "$device_lines"; then
+              echo missing
+            else
+              echo unknown
+            fi
+          }
+
+          show_report() {
+            echo "::group::xcodebuild -showdestinations"
+            cat "$report"
+            echo "::endgroup::"
+          }
+
+          state="$(ios_platform_state)"
+          echo "Generic iOS device destination: $state"
+
+          if [ "$state" = "ready" ]; then
+            exit 0
+          fi
+          if [ "$state" = "unknown" ]; then
+            show_report
+            echo "::warning::Could not tell from 'xcodebuild -showdestinations' whether the iOS platform is installed; continuing. If the archive step fails with 'iOS ... is not installed', see the 'Ensure the iOS platform is installed' step in build-ios.yml."
+            exit 0
+          fi
+
+          xcode_version="$(xcodebuild -version | sed -n '1s/^Xcode //p')"
+          sdk_version="$(xcodebuild -version -sdk iphoneos SDKVersion)"
+          if [ -z "$sdk_version" ]; then
+            echo "::error::Xcode $xcode_version reports no iphoneos SDK version, so the iOS platform to download is unknown."
+            exit 1
+          fi
+          echo "Xcode $xcode_version has no iOS $sdk_version platform on this runner image; downloading it (several GB, this takes a few minutes)."
+          df -h /
+
+          downloaded=no
+          for attempt in 1 2 3; do
+            # Waking CoreSimulator first avoids the intermittent "Unable to
+            # connect to simulator" failure (actions/runner-images#13459).
+            xcrun simctl list > /dev/null 2>&1 || true
+
+            # -buildVersion pins the platform that matches the selected SDK. It
+            # needs Xcode 16.1+; Xcode 16.0 picks its own platform by default.
+            # The last attempt also falls back to that default.
+            args=(-downloadPlatform iOS)
+            case "$xcode_version" in
+              16.0*) ;;
+              *)
+                if [ "$attempt" -lt 3 ]; then
+                  args+=(-buildVersion "$sdk_version")
+                fi
+                ;;
+            esac
+
+            echo "Attempt $attempt of 3: xcodebuild ${args[*]}"
+            if xcodebuild "${args[@]}"; then
+              downloaded=yes
+              break
+            fi
+            echo "::warning::Downloading the iOS platform failed (attempt $attempt of 3)."
+            if [ "$attempt" -lt 3 ]; then
+              sudo pkill -9 -f CoreSimulator || true
+              sleep 20
+            fi
+          done
+          df -h /
+
+          if [ "$downloaded" != "yes" ]; then
+            echo "::error::Could not download the iOS $sdk_version platform for Xcode $xcode_version after 3 attempts. Without it xcodebuild cannot build for iOS devices. Re-run the job; if it keeps failing, see the 'Select Xcode' step in build-ios.yml."
+            exit 1
+          fi
+
+          state="$(ios_platform_state)"
+          echo "Generic iOS device destination after the download: $state"
+          if [ "$state" = "missing" ]; then
+            show_report
+            echo "::error::The iOS platform was downloaded, but Xcode $xcode_version still reports the generic iOS device destination as not installed."
+            exit 1
+          fi
+          if [ "$state" = "unknown" ]; then
+            show_report
+            echo "::warning::Could not confirm from 'xcodebuild -showdestinations' that the iOS platform is usable after the download; continuing."
+          fi
+
+      - name: Build unsigned archive
+        env:
+          NODE_ENV: production
+        run: |
+          mkdir -p "$(dirname "$XCODEBUILD_LOG")"
+          rm -rf "$ARCHIVE_PATH"
+
+          # The raw xcodebuild output is huge: keep all of it in a log file
+          # (uploaded below) and only echo progress and error lines here.
+          progress='(^|[^[:alnum:]_])(error|fatal error): |^\*\* |^(ld|clang): |^Undefined symbols|^PhaseScriptExecution |^Libtool |^Ld |^Command [[:alnum:]]+ failed|^note: '
+
+          set +e
+          xcodebuild archive \
+            -workspace "$IOS_WORKSPACE" \
+            -scheme "$IOS_SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -archivePath "$ARCHIVE_PATH" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            2>&1 | tee "$XCODEBUILD_LOG" | grep --line-buffered -E "$progress"
+          status="${PIPESTATUS[0]}"
+          set -e
+
+          if [ "$status" -ne 0 ]; then
+            echo "::group::Error lines from the xcodebuild log"
+            grep -nE '(^|[^[:alnum:]_])(error|fatal error): ' "$XCODEBUILD_LOG" | head -n 200 || true
+            echo "::endgroup::"
+            echo "::group::Last 200 lines of the xcodebuild log"
+            tail -n 200 "$XCODEBUILD_LOG"
+            echo "::endgroup::"
+            echo "::error::xcodebuild archive failed with exit code ${status}. The full log is in the 'ios-xcodebuild-log' artifact."
+            exit "$status"
+          fi
+
+          if [ ! -d "$ARCHIVE_PATH/Products/Applications" ]; then
+            echo "::error::xcodebuild reported success but $ARCHIVE_PATH contains no Products/Applications directory."
+            exit 1
+          fi
+
+      - name: Package and verify IPA
+        id: package
+        env:
+          IPA_NAME: ${{ steps.meta.outputs.ipa_name }}
+        run: |
+          fail() {
+            echo "::error::$*"
+            exit 1
+          }
+
+          shopt -s nullglob
+          apps=("$ARCHIVE_PATH"/Products/Applications/*.app)
+          if [ "${#apps[@]}" -ne 1 ]; then
+            fail "Expected exactly one .app in the archive, found ${#apps[@]}."
+          fi
+          app="${apps[0]}"
+          app_name="$(basename "$app")"
+          info="$app/Info.plist"
+          [ -f "$info" ] || fail "$app_name has no Info.plist."
+
+          plist() {
+            /usr/libexec/PlistBuddy -c "Print :$1" "$info"
+          }
+          bundle_id="$(plist CFBundleIdentifier)"
+          executable="$(plist CFBundleExecutable)"
+          bundle_version="$(plist CFBundleShortVersionString)"
+          min_os="$(plist MinimumOSVersion)"
+          platform="$(plist CFBundleSupportedPlatforms:0)"
+
+          # A simulator or tvOS build would package fine but never install on a device.
+          [ "$platform" = "iPhoneOS" ] || fail "The app was built for '$platform', expected an iPhoneOS device build."
+          [ -n "$bundle_id" ] || fail "CFBundleIdentifier is empty."
+          [ -f "$app/$executable" ] || fail "Main executable '$executable' is missing from $app_name."
+          archs="$(lipo -archs "$app/$executable")"
+          case " $archs " in
+            *" arm64 "*) ;;
+            *) fail "Main executable has architectures '$archs', expected arm64." ;;
+          esac
+          # Release builds load the embedded bundle; without it the app crashes at launch.
+          [ -s "$app/main.jsbundle" ] || fail "main.jsbundle is missing or empty in $app_name."
+
+          stage="$RUNNER_TEMP/ipa-stage"
+          rm -rf "$stage"
+          mkdir -p "$stage/Payload" "$DIST_DIR"
+          cp -R "$app" "$stage/Payload/"
+          ipa="$DIST_DIR/$IPA_NAME"
+          rm -f "$ipa" "$ipa.sha256"
+          (cd "$stage" && zip -qry "$ipa" Payload -x "*.DS_Store")
+
+          # Re-read the finished IPA instead of trusting the steps above.
+          unzip -tq "$ipa" > /dev/null || fail "The IPA failed its zip integrity test."
+          entries="$(unzip -Z1 "$ipa")"
+          grep -Fxq "Payload/$app_name/Info.plist" <<< "$entries" || fail "The IPA has no Payload/$app_name/Info.plist."
+          grep -Fxq "Payload/$app_name/$executable" <<< "$entries" || fail "The IPA has no Payload/$app_name/$executable."
+          grep -Fxq "Payload/$app_name/main.jsbundle" <<< "$entries" || fail "The IPA has no Payload/$app_name/main.jsbundle."
+          if grep -vq "^Payload/" <<< "$entries"; then
+            fail "The IPA contains entries outside Payload/."
+          fi
+          bundles="$(awk -F/ 'NF >= 2 && $2 != "" { print $2 }' <<< "$entries" | sort -u)"
+          [ "$bundles" = "$app_name" ] || fail "Payload/ must contain only $app_name, found: $(tr '\n' ' ' <<< "$bundles")"
+
+          (cd "$DIST_DIR" && shasum -a 256 "$IPA_NAME" > "$IPA_NAME.sha256")
+          sha256="$(cut -d ' ' -f 1 "$ipa.sha256")"
+          size_bytes="$(wc -c < "$ipa" | tr -d ' ')"
+          [ "$size_bytes" -gt 1000000 ] || fail "The IPA is only $size_bytes bytes; the build output is incomplete."
+
+          {
+            echo "### Unsigned iOS IPA"
+            echo ""
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| File | \`$IPA_NAME\` |"
+            echo "| Size | $((size_bytes / 1024 / 1024)) MiB ($size_bytes bytes) |"
+            echo "| SHA-256 | \`$sha256\` |"
+            echo "| Bundle identifier | \`$bundle_id\` |"
+            echo "| App version | $bundle_version |"
+            echo "| Minimum iOS | $min_os |"
+            echo "| Architectures | $archs |"
+            echo "| Xcode | $(xcodebuild -version | tr '\n' ' ') |"
+            echo ""
+            echo "The IPA is not code signed. Install it with a sideloading tool such as AltStore or Sideloadly, which signs it with your own Apple ID."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Packaged $ipa ($size_bytes bytes, sha256 $sha256)"
+
+      - name: Upload xcodebuild log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-xcodebuild-log
+          path: ${{ env.XCODEBUILD_LOG }}
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload IPA workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.ipa_name }}
+          path: |
+            ${{ env.DIST_DIR }}/${{ steps.meta.outputs.ipa_name }}
+            ${{ env.DIST_DIR }}/${{ steps.meta.outputs.ipa_name }}.sha256
+          if-no-files-found: error
+
+      - name: Attach IPA to the GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          IPA_NAME: ${{ steps.meta.outputs.ipa_name }}
+        run: |
+          # The Windows workflow runs on the same tag and normally creates the
+          # release first; create it here only if it does not exist yet.
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG does not exist yet; creating it."
+            if ! gh release create "$TAG" --verify-tag --title "OpaiTV $TAG" --generate-notes; then
+              # Lost a race with another workflow creating the same release?
+              gh release view "$TAG" > /dev/null
+            fi
+          fi
+
+          gh release upload "$TAG" "$DIST_DIR/$IPA_NAME" "$DIST_DIR/$IPA_NAME.sha256" --clobber
+
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          for name in "$IPA_NAME" "$IPA_NAME.sha256"; do
+            if ! grep -Fxq -- "$name" <<< "$assets"; then
+              echo "::error::Release $TAG does not list $name after the upload."
+              exit 1
+            fi
+          done
+          echo "Attached $IPA_NAME to release $TAG."

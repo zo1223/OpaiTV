@@ -2,17 +2,30 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   direct_build:
     name: Build Android TV APK
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      # Needed to attach the APK to the release of the pushed tag.
+      contents: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -26,9 +39,30 @@ jobs:
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
-      - name: Get version from package.json
-        id: package-version
-        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+      - name: Resolve artifact name
+        id: meta
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          app_version="$(node -p "require('./package.json').version")"
+          if [ "$REF_TYPE" = "tag" ]; then
+            label="${REF_NAME#v}"
+            if [ "$label" != "$app_version" ]; then
+              echo "::warning::Tag $REF_NAME does not match package.json version $app_version. The APK is named after the tag, but the app reports $app_version and the in-app updater looks for OpaiTV.<package.json version>.apk."
+            fi
+          else
+            label="${app_version}-$(git rev-parse --short=8 HEAD)"
+          fi
+          # Keep the file name safe whatever the tag looks like.
+          label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '-')"
+          if [ -z "$label" ]; then
+            echo "::error::Could not derive a version label from ref '$REF_NAME'."
+            exit 1
+          fi
+          # "OpaiTV.<version>.apk" is the name constants/UpdateConfig.ts downloads.
+          echo "apk_name=OpaiTV.${label}.apk" >> "$GITHUB_OUTPUT"
+          echo "APK name: OpaiTV.${label}.apk (app version ${app_version})"
 
       - name: Setup JDK
         uses: actions/setup-java@v4
@@ -36,25 +70,59 @@ jobs:
           distribution: "zulu"
           java-version: "17"
 
-      - name: Prebuild TV App
-        run: yarn prebuild
-
       - name: Build TV APK
+        # "yarn build" runs "yarn prebuild" (expo prebuild --clean) itself.
         run: yarn build
 
-      - name: Rename APK file
-        run: |
-          mkdir -p artifacts
-          cp android/app/build/outputs/apk/release/app-release.apk artifacts/OpaiTV.${{ steps.package-version.outputs.version }}.apk
-
-      - name: Create Release and Upload APK
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.package-version.outputs.version }}
-          name: OpaiTV v${{ steps.package-version.outputs.version }}
-          body: OpaiTV release v${{ steps.package-version.outputs.version }}.
-          draft: false
-          prerelease: false
-          files: artifacts/OpaiTV.${{ steps.package-version.outputs.version }}.apk
+      - name: Collect APK and checksum
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APK_NAME: ${{ steps.meta.outputs.apk_name }}
+        run: |
+          src=android/app/build/outputs/apk/release/app-release.apk
+          if [ ! -s "$src" ]; then
+            echo "::error::Gradle finished but $src is missing or empty."
+            exit 1
+          fi
+          mkdir -p artifacts
+          cp "$src" "artifacts/$APK_NAME"
+          (cd artifacts && sha256sum "$APK_NAME" > "$APK_NAME.sha256")
+          cat "artifacts/$APK_NAME.sha256"
+
+      - name: Upload APK workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.apk_name }}
+          path: |
+            artifacts/${{ steps.meta.outputs.apk_name }}
+            artifacts/${{ steps.meta.outputs.apk_name }}.sha256
+          if-no-files-found: error
+
+      - name: Attach APK to the GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          APK_NAME: ${{ steps.meta.outputs.apk_name }}
+        run: |
+          # The Windows and iOS workflows run on the same tag and attach to the
+          # same release; create it here only if it does not exist yet, and
+          # never rewrite its title or notes.
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG does not exist yet; creating it."
+            if ! gh release create "$TAG" --verify-tag --title "OpaiTV $TAG" --generate-notes; then
+              # Lost a race with another workflow creating the same release?
+              gh release view "$TAG" > /dev/null
+            fi
+          fi
+
+          gh release upload "$TAG" "artifacts/$APK_NAME" "artifacts/$APK_NAME.sha256" --clobber
+
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          for name in "$APK_NAME" "$APK_NAME.sha256"; do
+            if ! grep -Fxq -- "$name" <<< "$assets"; then
+              echo "::error::Release $TAG does not list $name after the upload."
+              exit 1
+            fi
+          done
+          echo "Attached $APK_NAME to release $TAG."
