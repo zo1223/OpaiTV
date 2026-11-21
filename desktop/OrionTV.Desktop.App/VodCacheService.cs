@@ -159,6 +159,9 @@ public sealed class VodCacheService : IDisposable
     private const int MetadataReplaceAttempts = 8;
     private const int MaxConcurrentSegmentDownloadsPerSession = 4;
     private const int MaxConcurrentSegmentDownloadsTotal = 8;
+    private const int MpegTsProbeBytes = 64 * 1024;
+    private const int MpegTsProbePackets = 4;
+    private static readonly int[] MpegTsPacketSizes = [188, 192, 204];
 
     private readonly ConcurrentDictionary<string, VodCacheSession> _sessions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _decryptMergeGates = new(StringComparer.OrdinalIgnoreCase);
@@ -1320,11 +1323,15 @@ public sealed class VodCacheService : IDisposable
             var index = nextSegmentToSchedule++;
             pendingSegments[index] = EnsureSegmentDownloadedAsync(
                 session.Segments[index],
+                session.MergeSupported,
                 cancellationToken);
         }
     }
 
-    private async Task EnsureSegmentDownloadedAsync(CacheFile segment, CancellationToken cancellationToken)
+    private async Task EnsureSegmentDownloadedAsync(
+        CacheFile segment,
+        bool requireMpegTs,
+        CancellationToken cancellationToken)
     {
         if (TryUseExistingFile(segment))
         {
@@ -1336,7 +1343,7 @@ public sealed class VodCacheService : IDisposable
         {
             if (!TryUseExistingFile(segment))
             {
-                await DownloadFileAsync(segment, cancellationToken).ConfigureAwait(false);
+                await DownloadFileAsync(segment, cancellationToken, requireMpegTs).ConfigureAwait(false);
             }
         }
         finally
@@ -1789,7 +1796,10 @@ public sealed class VodCacheService : IDisposable
         }
     }
 
-    private async Task DownloadFileAsync(CacheFile file, CancellationToken cancellationToken)
+    private async Task DownloadFileAsync(
+        CacheFile file,
+        CancellationToken cancellationToken,
+        bool requireMpegTs = false)
     {
         Exception? lastError = null;
         for (var attempt = 1; attempt <= MaxDownloadAttempts; attempt++)
@@ -1832,6 +1842,7 @@ public sealed class VodCacheService : IDisposable
                     await CopyWithStallTimeoutAsync(input, output, BodyStallTimeout, cancellationToken).ConfigureAwait(false);
                 }
 
+                ValidateDownloadedFile(file, tempPath, requireMpegTs);
                 File.Move(tempPath, file.FullPath, true);
                 file.Length = new FileInfo(file.FullPath).Length;
                 file.Completed.TrySetResult(file.FullPath);
@@ -1859,6 +1870,63 @@ public sealed class VodCacheService : IDisposable
         var finalError = lastError ?? new IOException($"DOWNLOAD_FAILED {file.FileName}");
         file.Completed.TrySetException(finalError);
         throw finalError;
+    }
+
+    /// <summary>
+    /// 2xx 不代表正文就是媒体数据：防盗链、地区限制、代理出口异常时，CDN 常以 200 返回空正文或错误页。
+    /// 这种“分片”一旦落盘，就会被原样拼进 merged.ts 并把缓存标记为已完成，成品无法正常播放且无法续传修复。
+    /// 在落盘前拦下：按下载失败重试，仍不对则让本次下载失败，保留已合并的正确前缀供续传。
+    /// </summary>
+    private static void ValidateDownloadedFile(CacheFile file, string path, bool requireMpegTs)
+    {
+        var length = new FileInfo(path).Length;
+        if (length <= 0)
+        {
+            throw new InvalidDataException($"DOWNLOAD_EMPTY_BODY {file.FileName}");
+        }
+
+        if (!requireMpegTs)
+        {
+            return;
+        }
+
+        var head = new byte[(int)Math.Min(length, MpegTsProbeBytes)];
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            stream.ReadExactly(head);
+        }
+
+        if (!LooksLikeMpegTs(head))
+        {
+            throw new InvalidDataException($"SEGMENT_NOT_MPEGTS {file.FileName} bytes={length}");
+        }
+    }
+
+    /// <summary>
+    /// 只有 MPEG-TS 才能二进制拼接。允许分片头部带少量伪装数据（如假图片头），
+    /// 只要求探测窗口内能找到连续若干个按包长（188/192/204）对齐的同步字节 0x47。
+    /// </summary>
+    internal static bool LooksLikeMpegTs(ReadOnlySpan<byte> data)
+    {
+        foreach (var packetSize in MpegTsPacketSizes)
+        {
+            var lastStart = data.Length - ((MpegTsProbePackets - 1) * packetSize) - 1;
+            for (var start = 0; start <= lastStart; start++)
+            {
+                var packets = 0;
+                while (packets < MpegTsProbePackets && data[start + (packets * packetSize)] == 0x47)
+                {
+                    packets++;
+                }
+
+                if (packets == MpegTsProbePackets)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private async Task<HttpResponseMessage> SendWithTimeoutAsync(

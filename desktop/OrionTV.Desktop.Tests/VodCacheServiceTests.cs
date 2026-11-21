@@ -104,9 +104,9 @@ public sealed class VodCacheServiceTests
             Assert.Equal(3, session.Progress.CompletedSegments);
             Assert.Equal(3 * 1024, new FileInfo(session.MergedFilePath).Length);
             var merged = await File.ReadAllBytesAsync(session.MergedFilePath);
-            Assert.All(merged[..1024], value => Assert.Equal((byte)1, value));
-            Assert.All(merged[1024..2048], value => Assert.Equal((byte)2, value));
-            Assert.All(merged[2048..], value => Assert.Equal((byte)3, value));
+            Assert.Equal(FakeTsSegment(1), merged[..1024]);
+            Assert.Equal(FakeTsSegment(2), merged[1024..2048]);
+            Assert.Equal(FakeTsSegment(3), merged[2048..]);
         }
         finally
         {
@@ -138,7 +138,7 @@ public sealed class VodCacheServiceTests
             // 断流那次只收到的半个分片不能混进成品。
             var merged = await File.ReadAllBytesAsync(session.MergedFilePath);
             Assert.Equal(3 * 1024, merged.Length);
-            Assert.All(merged[1024..2048], value => Assert.Equal((byte)2, value));
+            Assert.Equal(FakeTsSegment(2), merged[1024..2048]);
 
             await service.CloseAsync(session, deleteFiles: true, continueDownload: false);
         }
@@ -146,6 +146,102 @@ public sealed class VodCacheServiceTests
         {
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
+    }
+
+    [Theory]
+    [InlineData("<html><body><h1>403 Forbidden</h1></body></html>")]
+    [InlineData("")]
+    public async Task RetriesSegmentWhoseOkResponseIsNotMediaInsteadOfMergingIt(string badBody)
+    {
+        // 防盗链/地区限制/代理出口异常：第二个分片第一次拿到的是 200 + 错误页（或空正文），不是视频数据。
+        await using var upstream = new FakeHlsServer(
+            secondSegmentBadResponses: 1,
+            badSegmentBody: badBody);
+        using var service = new VodCacheService();
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-badbody-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var session = await service.StartAsync(upstream.PlaylistUrl, "Bad Body Episode", root, 15);
+
+            Assert.NotNull(session);
+            await session!.DownloadTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(session.Progress.IsComplete);
+            Assert.Null(session.Progress.Error);
+            Assert.Equal(2, upstream.SegmentRequestCount(2));
+            // 错误页不能被当成分片拼进成品。
+            Assert.Equal(
+                FakeTsSegment(1).Concat(FakeTsSegment(2)).Concat(FakeTsSegment(3)).ToArray(),
+                await File.ReadAllBytesAsync(session.MergedFilePath));
+
+            await service.CloseAsync(session, deleteFiles: true, continueDownload: false);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task SegmentThatStaysNonMediaFailsDownloadAndResumeCompletesCleanMergedFile()
+    {
+        // 三次重试拿到的都是错误页：下载必须失败并保持“未完成/可续传”，而不是把错误页合并后标记为已完成。
+        await using var upstream = new FakeHlsServer(
+            secondSegmentBadResponses: 3,
+            badSegmentBody: "<html><body><h1>403 Forbidden</h1></body></html>");
+        using var service = new VodCacheService();
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-badbody-resume-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var session = await service.StartAsync(upstream.PlaylistUrl, "Bad Body Resume Episode", root, 15);
+
+            Assert.NotNull(session);
+            await session!.DownloadTask.WaitAsync(TimeSpan.FromSeconds(15));
+            await service.CloseAsync(session, deleteFiles: false, continueDownload: false);
+
+            Assert.False(session.Progress.IsComplete);
+            Assert.Contains("SEGMENT_NOT_MPEGTS", session.Progress.Error);
+            Assert.Equal(3, upstream.SegmentRequestCount(2));
+            Assert.Equal(FakeTsSegment(1), await File.ReadAllBytesAsync(session.MergedFilePath));
+            var partialEntry = Assert.Single(service.GetEntries(root));
+            Assert.False(partialEntry.IsComplete);
+            Assert.True(partialEntry.CanResumeDownload);
+
+            var resumed = await service.StartAsync(upstream.PlaylistUrl, "Bad Body Resume Episode", root, 15);
+            Assert.NotNull(resumed);
+            Assert.Equal(session.Directory, resumed!.Directory);
+            await resumed.DownloadTask.WaitAsync(TimeSpan.FromSeconds(10));
+            await service.CloseAsync(resumed, deleteFiles: false, continueDownload: false);
+
+            Assert.True(resumed.Progress.IsComplete);
+            Assert.Equal(
+                FakeTsSegment(1).Concat(FakeTsSegment(2)).Concat(FakeTsSegment(3)).ToArray(),
+                await File.ReadAllBytesAsync(resumed.MergedFilePath));
+            Assert.True(Assert.Single(service.GetEntries(root)).IsComplete);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void MpegTsProbeAcceptsTransportStreamsAndRejectsNonMediaBodies()
+    {
+        Assert.True(VodCacheService.LooksLikeMpegTs(FakeTsSegment(1)));
+        // 头部带伪装数据（假图片头）的 TS 仍可拼接，不能误拒。
+        var disguised = Enumerable.Repeat((byte)0x89, 300).Concat(FakeTsSegment(1)).ToArray();
+        Assert.True(VodCacheService.LooksLikeMpegTs(disguised));
+        // M2TS：每包 192 字节（4 字节时间码 + 188）。
+        var m2ts = new byte[192 * 6];
+        for (var offset = 4; offset < m2ts.Length; offset += 192) m2ts[offset] = 0x47;
+        Assert.True(VodCacheService.LooksLikeMpegTs(m2ts));
+
+        Assert.False(VodCacheService.LooksLikeMpegTs(Encoding.UTF8.GetBytes(
+            "<html><head><title>GGGG 403</title></head><body>Forbidden. GET /seg2.ts</body></html>")));
+        Assert.False(VodCacheService.LooksLikeMpegTs(Encoding.UTF8.GetBytes("{\"code\":403,\"msg\":\"denied\"}")));
+        Assert.False(VodCacheService.LooksLikeMpegTs(Enumerable.Repeat((byte)0x47, 3).ToArray()));
+        Assert.False(VodCacheService.LooksLikeMpegTs(new byte[4096]));
     }
 
     [Fact]
@@ -832,8 +928,7 @@ public sealed class VodCacheServiceTests
                 var firstSegmentUrl = resumedPlaylist.Split('\n')
                     .First(line => line.StartsWith("http://", StringComparison.Ordinal) && line.Contains("segment_00000.ts"));
                 var firstSegment = await http.GetByteArrayAsync(firstSegmentUrl);
-                Assert.Equal(1024, firstSegment.Length);
-                Assert.All(firstSegment, value => Assert.Equal((byte)1, value));
+                Assert.Equal(FakeTsSegment(1), firstSegment);
 
                 using var rangeRequest = new HttpRequestMessage(HttpMethod.Get, firstSegmentUrl);
                 rangeRequest.Headers.Range = new RangeHeaderValue(10, 19);
@@ -894,6 +989,18 @@ public sealed class VodCacheServiceTests
         public void Report(T value) => report(value);
     }
 
+    /// <summary>仿 MPEG-TS 分片：每 188 字节一个同步字节 0x47，其余填分片编号，便于核对合并顺序。</summary>
+    private static byte[] FakeTsSegment(int number, int length = 1024)
+    {
+        var body = Enumerable.Repeat((byte)number, length).ToArray();
+        for (var offset = 0; offset < length; offset += 188)
+        {
+            body[offset] = 0x47;
+        }
+
+        return body;
+    }
+
     private sealed class BlockingFirstProgress : IProgress<double>
     {
         private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -925,6 +1032,8 @@ public sealed class VodCacheServiceTests
         private readonly bool _redirectPlaylist;
         private readonly bool _delayAllSegments;
         private readonly bool _stallSecondSegmentBodyOnce;
+        private readonly int _secondSegmentBadResponses;
+        private readonly byte[] _badSegmentBody;
         private readonly ConcurrentDictionary<string, int> _requestCounts = new(StringComparer.Ordinal);
         private int _playlistFailuresRemaining;
         private int _activeSegmentRequests;
@@ -934,8 +1043,12 @@ public sealed class VodCacheServiceTests
             bool delayThirdSegment = false,
             bool redirectPlaylist = false,
             bool delayAllSegments = false,
-            bool stallSecondSegmentBodyOnce = false)
+            bool stallSecondSegmentBodyOnce = false,
+            int secondSegmentBadResponses = 0,
+            string badSegmentBody = "")
         {
+            _secondSegmentBadResponses = secondSegmentBadResponses;
+            _badSegmentBody = Encoding.UTF8.GetBytes(badSegmentBody);
             _delayThirdSegment = delayThirdSegment;
             _redirectPlaylist = redirectPlaylist;
             _delayAllSegments = delayAllSegments;
@@ -1037,8 +1150,14 @@ public sealed class VodCacheServiceTests
                         {
                             await Task.Delay(800);
                         }
-                        body = Enumerable.Repeat((byte)(path.Contains('1') ? 1 : path.Contains('2') ? 2 : 3), 1024).ToArray();
+                        body = FakeTsSegment(path.Contains('1') ? 1 : path.Contains('2') ? 2 : 3);
                         type = "video/mp2t";
+                        if (requestNumber <= _secondSegmentBadResponses && path.Contains("seg2", StringComparison.Ordinal))
+                        {
+                            // 状态码仍是 200，但正文不是视频。
+                            body = _badSegmentBody;
+                            type = "text/html";
+                        }
                     }
                     finally
                     {
