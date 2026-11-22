@@ -46,7 +46,28 @@ public sealed class CatalogService
 
     public AppleCmsClient AppleCms => _clients.AppleCms;
 
+    /// <summary>
+    /// 成人内容(18+)过滤（对齐 RN 端 services/api.ts）：由宿主提供，给定源 key 返回它当前是否被隐藏
+    /// （成人源且开关关闭）。为空表示不过滤。
+    /// </summary>
+    public Func<string, bool>? IsAdultSourceHidden { get; init; }
+
     public IVodSourceClient ClientFor(VideoSource source) => _clients.For(source);
+
+    // 所有取数入口（首页、搜索、详情、补剧集）只能用这份列表，不直接用调用方传入的 sources：
+    // 调用方手里可能还是开关关闭之前的快照。
+    private IReadOnlyList<VideoSource> VisibleSources(IReadOnlyList<VideoSource> sources) =>
+        sources.Any(source => IsHidden(source.Key))
+            ? sources.Where(source => !IsHidden(source.Key)).ToList()
+            : sources;
+
+    // 请求在途时开关可能被关掉（或该源刚被标记为成人源）：结果落地前按当前状态再确认一次。
+    private bool IsHidden(string sourceKey) => IsAdultSourceHidden?.Invoke(sourceKey) == true;
+
+    private IReadOnlyList<SearchResult> VisibleResults(IReadOnlyList<SearchResult> results) =>
+        results.Any(result => IsHidden(result.Source))
+            ? results.Where(result => !IsHidden(result.Source)).ToList()
+            : results;
 
     public async Task<IReadOnlyList<CatalogItem>> GetHomeDataAsync(
         IReadOnlyList<VideoSource> sources,
@@ -72,10 +93,10 @@ public sealed class CatalogService
         }
 
         var perSource = await Task.WhenAll(
-            sources.Select(source => SafeHomePageAsync(source, type, tag, pageStart, pageSize, cancellationToken)));
+            VisibleSources(sources).Select(source => SafeHomePageAsync(source, type, tag, pageStart, pageSize, cancellationToken)));
         // 混合时不按 pageSize 截断:被裁掉的条目在下一次请求(源站已翻页)中永久丢失;
         // 去重与按位交错混合保留。
-        var mixed = MixSourceResults(perSource, int.MaxValue, GetDedupeKey);
+        var mixed = MixSourceResults(perSource.Select(VisibleResults).ToList(), int.MaxValue, GetDedupeKey);
         return mixed.Select(ToCatalogItem).ToList();
     }
 
@@ -140,7 +161,7 @@ public sealed class CatalogService
             return [];
         }
 
-        var source = sources.FirstOrDefault(item => item.Key == sourceKey);
+        var source = VisibleSources(sources).FirstOrDefault(item => item.Key == sourceKey);
         if (source is null)
         {
             return [];
@@ -149,6 +170,11 @@ public sealed class CatalogService
         try
         {
             var results = await ClientFor(source).GetByIdAsync(source, id, cancellationToken).ConfigureAwait(false);
+            if (IsHidden(source.Key))
+            {
+                return [];
+            }
+
             var result = results.FirstOrDefault(item => item.Id == id)
                 ?? (!string.IsNullOrWhiteSpace(title) ? results.FirstOrDefault(item => item.Title == title) : null)
                 ?? results.FirstOrDefault();
@@ -202,7 +228,7 @@ public sealed class CatalogService
             return item;
         }
 
-        var source = sources.FirstOrDefault(s => s.Key == item.Source);
+        var source = VisibleSources(sources).FirstOrDefault(s => s.Key == item.Source);
         if (source is null || string.IsNullOrWhiteSpace(item.Id))
         {
             return item;
@@ -211,6 +237,11 @@ public sealed class CatalogService
         try
         {
             var results = await ClientFor(source).GetByIdAsync(source, item.Id, cancellationToken).ConfigureAwait(false);
+            if (IsHidden(source.Key))
+            {
+                return item;
+            }
+
             var match = results.FirstOrDefault(r => r.Id == item.Id)
                 ?? results.FirstOrDefault(r => CatalogTitleMatcher.Matches(r.Title, item.Title))
                 ?? results.FirstOrDefault();
@@ -248,6 +279,7 @@ public sealed class CatalogService
         string query,
         CancellationToken cancellationToken)
     {
+        sources = VisibleSources(sources);
         if (sources.Count == 0)
         {
             return [];
@@ -268,7 +300,8 @@ public sealed class CatalogService
                 gate.Release();
             }
         });
-        return await Task.WhenAll(tasks).ConfigureAwait(false);
+        var perSource = await Task.WhenAll(tasks).ConfigureAwait(false);
+        return perSource.Select(VisibleResults).ToArray();
     }
 
     private async Task<IReadOnlyList<SearchResult>> SafeHomePageAsync(

@@ -39,7 +39,7 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
     private void BuildCategories()
     {
         _categories.Clear();
-        if (_host.Services.PlayRecords.GetAll().Count > 0)
+        if (_host.Services.PlayRecords.GetLatestByMedia(_host.Services.IsAdultSourceHidden).Count > 0)
         {
             _categories.Add(new HomeCategory("观看历史", "record"));
         }
@@ -266,7 +266,7 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
 
     private List<CatalogItem> LoadRecords()
     {
-        return _host.Services.PlayRecords.GetLatestByMedia()
+        return _host.Services.PlayRecords.GetLatestByMedia(_host.Services.IsAdultSourceHidden)
             .Select(entry =>
             {
                 var source = entry.Source;

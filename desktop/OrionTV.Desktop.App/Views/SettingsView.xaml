@@ -56,6 +56,77 @@
                     </StackPanel>
                 </Border>
 
+                <!-- 成人内容(18+)：默认关闭；切换后立即生效并保存，不随“保存设置”提交。
+                     放在“一键加源”之前：下面的源列表再长，开关的位置也不变 -->
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <DockPanel>
+                        <ToggleButton x:Name="AdultContentToggle" DockPanel.Dock="Right" Style="{StaticResource SwitchStyle}"
+                                      VerticalAlignment="Center" Margin="14,0,0,0"
+                                      Checked="AdultContentToggle_Changed" Unchecked="AdultContentToggle_Changed" />
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="成人内容(18+)" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" />
+                            <TextBlock x:Name="AdultContentStatus" Foreground="{StaticResource MutedTextBrush}"
+                                       FontSize="12" Margin="0,5,0,0" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <!-- 一键加源：校验通过即写入 extra_sources.json 并生效，不随“保存设置”提交 -->
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <StackPanel>
+                        <TextBlock Text="一键加源" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,10" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="AddSourceBox" Grid.Column="0" Margin="0,0,8,0"
+                                     Tag="粘贴源订阅链接，或单个源接口地址（JSON / XML 自动识别）"
+                                     KeyDown="AddSourceBox_KeyDown" />
+                            <Button x:Name="AddSourceButton" Grid.Column="1" Content="添加" Width="74" Height="40"
+                                    Style="{StaticResource SecondaryButtonStyle}" Click="AddSourceButton_Click" />
+                        </Grid>
+                        <CheckBox x:Name="AddSourceAdultCheck" Content="这是成人源(18+)"
+                                  Foreground="{StaticResource TextBrush}" FontSize="13" Margin="0,10,0,0" />
+                        <TextBlock x:Name="AddSourceStatus" Foreground="{StaticResource MutedTextBrush}"
+                                   FontSize="12" Margin="0,8,0,0" TextWrapping="Wrap" />
+                        <TextBlock x:Name="SourceSummaryText" Foreground="{StaticResource MutedTextBrush}"
+                                   FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap" />
+                        <ItemsControl x:Name="ExtraSourcesList" Margin="0,10,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{StaticResource InputBrush}" BorderBrush="{StaticResource BorderBrushDark}"
+                                            BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,7">
+                                        <DockPanel>
+                                            <Button DockPanel.Dock="Right" Content="删除" Height="30" Padding="12,0" Margin="10,0,0,0"
+                                                    Style="{StaticResource SecondaryButtonStyle}" FontSize="12"
+                                                    Click="DeleteExtraSourceButton_Click" />
+                                            <StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextBrush}" FontSize="13" FontWeight="SemiBold" />
+                                                    <TextBlock Text="18+" Foreground="{StaticResource DangerBrush}" FontSize="12" FontWeight="SemiBold" Margin="8,0,0,0">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding Adult}" Value="True">
+                                                                        <Setter Property="Visibility" Value="Visible" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </StackPanel>
+                                                <TextBlock Text="{Binding Api}" Foreground="{StaticResource MutedTextBrush}" FontSize="11"
+                                                           Margin="0,3,0,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding Api}" />
+                                            </StackPanel>
+                                        </DockPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
 
                 <Border Style="{StaticResource CardPanelStyle}">
                     <DockPanel>

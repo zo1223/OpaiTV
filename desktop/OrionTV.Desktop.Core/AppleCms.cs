@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Xml.Linq;
 
 namespace OrionTV.Desktop.Core;
 
@@ -330,7 +331,7 @@ public sealed class AppleCmsClient(HttpClient httpClient) : IVodSourceClient
             ["ac"] = "detail",
             ["wd"] = query
         });
-        var items = await FetchVodItemsAsync(url, cancellationToken).ConfigureAwait(false);
+        var items = await FetchVodItemsAsync(source, url, null, cancellationToken).ConfigureAwait(false);
         return items
             .Select(item => AppleCmsMapper.ToSearchResult(source, item))
             .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Title))
@@ -348,7 +349,7 @@ public sealed class AppleCmsClient(HttpClient httpClient) : IVodSourceClient
             ["ac"] = "detail",
             ["ids"] = id
         });
-        var items = await FetchVodItemsAsync(url, cancellationToken).ConfigureAwait(false);
+        var items = await FetchVodItemsAsync(source, url, id, cancellationToken).ConfigureAwait(false);
         return items
             .Select(item => AppleCmsMapper.ToSearchResult(source, item))
             .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Title))
@@ -363,7 +364,7 @@ public sealed class AppleCmsClient(HttpClient httpClient) : IVodSourceClient
             ["ac"] = "detail",
             ["ids"] = id
         });
-        var item = (await FetchVodItemsAsync(url, cancellationToken).ConfigureAwait(false)).FirstOrDefault()
+        var item = (await FetchVodItemsAsync(source, url, id, cancellationToken).ConfigureAwait(false)).FirstOrDefault()
             ?? throw new InvalidOperationException("APPLE_CMS_DETAIL_NOT_FOUND");
         return AppleCmsMapper.ToVideoDetail(source, item);
     }
@@ -382,7 +383,7 @@ public sealed class AppleCmsClient(HttpClient httpClient) : IVodSourceClient
             ["ac"] = "detail",
             ["pg"] = page.ToString(System.Globalization.CultureInfo.InvariantCulture)
         });
-        var (items, _, _, _) = await FetchVodPageAsync(url, cancellationToken).ConfigureAwait(false);
+        var (items, _, _, _) = await FetchVodPageAsync(source, url, cancellationToken).ConfigureAwait(false);
         // 返回整页,不按 pageSize 截断:源站页大小与客户端页大小不一致时,
         // 截断掉的条目在下一次请求(已翻到源站下一页)中永久丢失。
         return MapResults(source, items).ToList();
@@ -396,7 +397,7 @@ public sealed class AppleCmsClient(HttpClient httpClient) : IVodSourceClient
             ["t"] = categoryId,
             ["pg"] = page.ToString(System.Globalization.CultureInfo.InvariantCulture)
         });
-        var (items, total, responsePage, pageCount) = await FetchVodPageAsync(url, cancellationToken).ConfigureAwait(false);
+        var (items, total, responsePage, pageCount) = await FetchVodPageAsync(source, url, cancellationToken).ConfigureAwait(false);
         var results = MapResults(source, items).Take(pageSize).ToList();
         return new CategoryVideosResponse(results, total, responsePage == 0 ? page : responsePage, pageCount);
     }
@@ -436,7 +437,7 @@ public sealed class AppleCmsClient(HttpClient httpClient) : IVodSourceClient
                 ["t"] = match.Category.Id,
                 ["pg"] = page.ToString(System.Globalization.CultureInfo.InvariantCulture)
             });
-            var (items, _, _, _) = await FetchVodPageAsync(url, cancellationToken).ConfigureAwait(false);
+            var (items, _, _, _) = await FetchVodPageAsync(source, url, cancellationToken).ConfigureAwait(false);
             var filtered = items.Where(item => HomeCategoryMatcher.ShouldIncludeHomeItem(item, type, normalizedTag, match.UsedTypeFallback, match.Candidate));
             // 同上:返回过滤后的整页,截断会造成条目永久丢失。
             return MapResults(source, filtered).ToList();
@@ -452,7 +453,8 @@ public sealed class AppleCmsClient(HttpClient httpClient) : IVodSourceClient
             .Select(item => AppleCmsMapper.ToSearchResult(source, item))
             .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Title));
 
-    private async Task<IReadOnlyList<AppleCmsVodItem>> FetchVodItemsAsync(string url, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<AppleCmsVodItem>> FetchVodItemsAsync(
+        VideoSource source, string url, string? requestedIds, CancellationToken cancellationToken)
     {
         using var response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
@@ -460,21 +462,21 @@ public sealed class AppleCmsClient(HttpClient httpClient) : IVodSourceClient
             throw new InvalidOperationException($"APPLE_CMS_REQUEST_FAILED:{(int)response.StatusCode}");
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (!document.RootElement.TryGetProperty("list", out var list) || list.ValueKind != JsonValueKind.Array)
+        var (document, xml) = await ReadPayloadAsync(response, cancellationToken).ConfigureAwait(false);
+        if (xml is not null)
         {
-            return [];
+            return await CompleteXmlItemsAsync(source, MacCmsXmlClient.ParseVodItems(xml), requestedIds, cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        return list.EnumerateArray()
-            .Select(item => item.Deserialize<AppleCmsVodItem>(JsonOptions))
-            .Where(item => item is not null)
-            .Cast<AppleCmsVodItem>()
-            .ToList();
+        using (document)
+        {
+            return ReadVodList(document!.RootElement);
+        }
     }
 
-    private async Task<(IReadOnlyList<AppleCmsVodItem> Items, int Total, int Page, int PageCount)> FetchVodPageAsync(string url, CancellationToken cancellationToken)
+    private async Task<(IReadOnlyList<AppleCmsVodItem> Items, int Total, int Page, int PageCount)> FetchVodPageAsync(
+        VideoSource source, string url, CancellationToken cancellationToken)
     {
         using var response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
@@ -482,11 +484,27 @@ public sealed class AppleCmsClient(HttpClient httpClient) : IVodSourceClient
             throw new InvalidOperationException($"APPLE_CMS_REQUEST_FAILED:{(int)response.StatusCode}");
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
-        var root = document.RootElement;
+        var (document, xml) = await ReadPayloadAsync(response, cancellationToken).ConfigureAwait(false);
+        if (xml is not null)
+        {
+            var xmlItems = await CompleteXmlItemsAsync(source, MacCmsXmlClient.ParseVodItems(xml), null, cancellationToken)
+                .ConfigureAwait(false);
+            return (
+                xmlItems,
+                MacCmsXmlClient.TryReadInt(xml, "list", "recordcount"),
+                MacCmsXmlClient.TryReadInt(xml, "list", "page"),
+                MacCmsXmlClient.TryReadInt(xml, "list", "pagecount"));
+        }
 
-        var items = root.TryGetProperty("list", out var list) && list.ValueKind == JsonValueKind.Array
+        using (document)
+        {
+            var root = document!.RootElement;
+            return (ReadVodList(root), GetInt(root, "total"), GetInt(root, "page"), GetInt(root, "pagecount", "pageCount"));
+        }
+    }
+
+    private static List<AppleCmsVodItem> ReadVodList(JsonElement root) =>
+        root.TryGetProperty("list", out var list) && list.ValueKind == JsonValueKind.Array
             ? list.EnumerateArray()
                 .Select(item => item.Deserialize<AppleCmsVodItem>(JsonOptions))
                 .Where(item => item is not null)
@@ -494,8 +512,114 @@ public sealed class AppleCmsClient(HttpClient httpClient) : IVodSourceClient
                 .ToList()
             : [];
 
-        return (items, GetInt(root, "total"), GetInt(root, "page"), GetInt(root, "pagecount", "pageCount"));
+    /// <summary>
+    /// 接口格式（JSON / XML）由应答内容决定，不需要配置字段（对齐 RN 端 readAppleCmsPayload）。
+    /// JSON 源仍然只按 JSON 解析；只有 JSON 解析失败时才看应答是不是 AppleCMS XML，都不是则抛出原来的 JSON 错误。
+    /// </summary>
+    private static async Task<(JsonDocument? Json, XDocument? Xml)> ReadPayloadAsync(
+        HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var payload = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var stream = new MemoryStream(payload, writable: false);
+            return (JsonDocument.Parse(stream), null);
+        }
+        catch (JsonException)
+        {
+            if (MacCmsXmlClient.TryParseCmsDocument(payload) is { } xml)
+            {
+                return (null, xml);
+            }
+
+            throw;
+        }
     }
+
+    /// <summary>
+    /// 经典 XML 接口（TVBox type=0）的列表/搜索应答只有 id、名称、分类，图片和播放地址要用
+    /// ac=videolist&amp;ids= 再取一次（对齐 RN 端 readAppleCmsVodData）。应答里已带播放地址的 XML 源不走这一步。
+    /// requestedIds：按 id 取详情时传入。不认识 ac=detail 的老接口可能忽略 ids 返回最新列表，
+    /// 这时结果必须以请求的 id 为准，不能把列表里的第一条当成详情。
+    /// </summary>
+    private async Task<IReadOnlyList<AppleCmsVodItem>> CompleteXmlItemsAsync(
+        VideoSource source, IReadOnlyList<AppleCmsVodItem> items, string? requestedIds, CancellationToken cancellationToken)
+    {
+        // 空列表没有可补取的条目；按 id 取详情时例外，仍用 ac=videolist 再问一次。
+        if (items.Any(item => !string.IsNullOrWhiteSpace(item.VodPlayUrl)) || (items.Count == 0 && requestedIds is null))
+        {
+            return items;
+        }
+
+        var wantedIds = (requestedIds is not null ? requestedIds.Split(',') : items.Select(IdOf))
+            .Select(id => id.Trim())
+            .Where(id => id.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (wantedIds.Count == 0)
+        {
+            return items;
+        }
+
+        IReadOnlyList<AppleCmsVodItem> fullItems = [];
+        try
+        {
+            var url = AppleCmsUrlBuilder.Build(source.Api, new Dictionary<string, string>
+            {
+                ["ac"] = "videolist",
+                ["ids"] = string.Join(',', wantedIds),
+            });
+            using var response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+            {
+                var (document, xml) = await ReadPayloadAsync(response, cancellationToken).ConfigureAwait(false);
+                using (document)
+                {
+                    fullItems = xml is not null ? MacCmsXmlClient.ParseVodItems(xml) : ReadVodList(document!.RootElement);
+                }
+            }
+        }
+        catch when (!cancellationToken.IsCancellationRequested)
+        {
+            // 补取失败时退回列表应答本身（没有图片和播放地址，但条目仍然可见）。
+        }
+
+        var result = new List<AppleCmsVodItem>();
+        foreach (var id in wantedIds)
+        {
+            var brief = items.FirstOrDefault(item => IdOf(item) == id);
+            var full = fullItems.FirstOrDefault(item => IdOf(item) == id);
+            if (brief is not null || full is not null)
+            {
+                result.Add(MergeVodItems(brief, full));
+            }
+        }
+
+        return result;
+    }
+
+    private static string IdOf(AppleCmsVodItem item) =>
+        Convert.ToString(item.VodId, System.Globalization.CultureInfo.InvariantCulture)?.Trim() ?? "";
+
+    // 补取到的字段优先，缺的字段沿用列表应答里的。
+    private static AppleCmsVodItem MergeVodItems(AppleCmsVodItem? brief, AppleCmsVodItem? full) => new()
+    {
+        VodId = full?.VodId ?? brief?.VodId,
+        VodName = full?.VodName ?? brief?.VodName,
+        VodPic = full?.VodPic ?? brief?.VodPic,
+        VodPlayUrl = full?.VodPlayUrl ?? brief?.VodPlayUrl,
+        VodPlayFrom = full?.VodPlayFrom ?? brief?.VodPlayFrom,
+        VodYear = full?.VodYear ?? brief?.VodYear,
+        VodBlurb = full?.VodBlurb ?? brief?.VodBlurb,
+        VodContent = full?.VodContent ?? brief?.VodContent,
+        VodRemarks = full?.VodRemarks ?? brief?.VodRemarks,
+        TypeName = full?.TypeName ?? brief?.TypeName,
+        TypeId = full?.TypeId ?? brief?.TypeId,
+        VodClass = full?.VodClass ?? brief?.VodClass,
+        VodArea = full?.VodArea ?? brief?.VodArea,
+        VodActor = full?.VodActor ?? brief?.VodActor,
+        VodDirector = full?.VodDirector ?? brief?.VodDirector,
+    };
 
     private async Task<IReadOnlyList<VideoSourceCategory>> FetchCategoriesAsync(string url, CancellationToken cancellationToken)
     {
@@ -505,8 +629,13 @@ public sealed class AppleCmsClient(HttpClient httpClient) : IVodSourceClient
             throw new InvalidOperationException($"APPLE_CMS_CATEGORIES_FAILED:{(int)response.StatusCode}");
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var (jsonDocument, xml) = await ReadPayloadAsync(response, cancellationToken).ConfigureAwait(false);
+        if (xml is not null)
+        {
+            return MacCmsXmlClient.ParseCategories(xml);
+        }
+
+        using var document = jsonDocument!;
         if (!document.RootElement.TryGetProperty("class", out var classes) || classes.ValueKind != JsonValueKind.Array)
         {
             return [];

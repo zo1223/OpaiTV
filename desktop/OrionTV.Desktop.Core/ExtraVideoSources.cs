@@ -83,9 +83,31 @@ public static class ExtraVideoSourcesStore
         };
     }
 
+    /// <summary>
+    /// 一键加源 / 删除源改写文件之前读取现有内容。与 <see cref="Load"/> 不同：文件存在但无法解析时抛出异常，
+    /// 调用方据此放弃写入，避免把读不出来的现有源整体覆盖掉。
+    /// </summary>
+    public static IReadOnlyList<VideoSource> LoadForUpdate()
+    {
+        if (!File.Exists(FilePath))
+        {
+            return [];
+        }
+
+        return ParseFlexible(File.ReadAllText(FilePath));
+    }
+
     public static void Save(IEnumerable<VideoSource> sources)
     {
         DesktopPaths.EnsureDirectory();
+        var tmp = FilePath + ".tmp";
+        File.WriteAllText(tmp, Serialize(sources), Encoding.UTF8);
+        File.Move(tmp, FilePath, overwrite: true);
+    }
+
+    /// <summary>序列化为 extra_sources.json 的标准格式（{ "api_site": { key: {...} } }）。</summary>
+    public static string Serialize(IEnumerable<VideoSource> sources)
+    {
         var list = sources
             .Where(source => !string.IsNullOrWhiteSpace(source.Api) && !string.IsNullOrWhiteSpace(source.Name))
             .Select(source =>
@@ -117,6 +139,12 @@ public static class ExtraVideoSourcesStore
                     map["options"] = source.Options.ToDictionary(kv => kv.Key, kv => kv.Value);
                 }
 
+                // 未标记的源不写入该字段，存储格式与原来一致
+                if (source.Adult)
+                {
+                    map["adult"] = true;
+                }
+
                 return (key, map);
             })
             .ToList();
@@ -126,9 +154,7 @@ public static class ExtraVideoSourcesStore
             ["api_site"] = list.ToDictionary(item => item.key, item => item.map),
         };
 
-        var tmp = FilePath + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(envelope, WriteOptions), Encoding.UTF8);
-        File.Move(tmp, FilePath, overwrite: true);
+        return JsonSerializer.Serialize(envelope, WriteOptions);
     }
 
     public static void EnsureFileExists()
@@ -191,7 +217,8 @@ public static class ExtraVideoSourcesStore
             string.IsNullOrWhiteSpace(detail) ? null : detail.Trim().TrimEnd('/'),
             protocol,
             string.IsNullOrWhiteSpace(dialect) ? null : dialect.Trim(),
-            options);
+            options,
+            AdultContentFilter.ReadFlag(item));
     }
 
     private static string? GetString(JsonElement item, string propertyName)
@@ -251,6 +278,157 @@ public static class VideoSourceMerger
 
         return map.Values.ToList();
     }
+}
+
+/// <summary>
+/// 一键加源（对齐 RN 端 addManualVideoSource）：粘贴一个源订阅链接或单个源接口地址即可添加，可标记为成人源。
+/// 添加的源写入 extra_sources.json，与订阅源合并；主订阅链接被清空或更换时这些源保留。
+/// 接口是 JSON 还是 XML 不需要选择，请求时按应答自动识别。
+/// </summary>
+public static partial class OneClickVideoSources
+{
+    /// <summary>单个源地址生成的 key 带固定前缀（与 RN 端一致）。</summary>
+    public const string ManualKeyPrefix = "custom_";
+
+    public const string InvalidUrlError = "INVALID_VIDEO_SOURCE_URL";
+
+    /// <param name="ExtraSources">加入后的额外源列表（写回 extra_sources.json）。</param>
+    /// <param name="Added">新增的源数量。</param>
+    /// <param name="Updated">地址已存在、只更新了成人标记的源数量。</param>
+    /// <param name="FromSubscription">粘贴的地址被识别为订阅配置（导入其中全部源），否则是单个源接口。</param>
+    public sealed record Result(IReadOnlyList<VideoSource> ExtraSources, int Added, int Updated, bool FromSubscription = false);
+
+    // 主机必须是域名、IP 或带端口的主机名：ftp://…、javascript:… 以及随手输入的一段文字都不会被当成地址存下来。
+    [GeneratedRegex(@"^https?://((?:[a-z0-9-]+\.)*[a-z0-9-]+)(:[0-9]{1,5})?(?:[/?#]\S*)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex HttpUrlRegex();
+
+    [GeneratedRegex(@"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]+)?$")]
+    private static partial Regex IpHostRegex();
+
+    /// <summary>
+    /// 整理粘贴的地址：去掉首尾空白和结尾的 /，没写协议时补全（IP 或带端口按 http，其余按 https）。
+    /// 不是可用的 http(s) 地址时抛出 <see cref="InvalidUrlError"/>。
+    /// </summary>
+    public static string NormalizeUrl(string? input) => ParseUrl(input).Url;
+
+    private static (string Url, string Host) ParseUrl(string? input)
+    {
+        var url = (input ?? "").Trim().TrimEnd('/');
+
+        if (url.Length > 0 && !url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            && !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            var hostPart = url.Split('/')[0];
+            url = (IpHostRegex().IsMatch(hostPart) || Regex.IsMatch(hostPart, ":[0-9]+") ? "http://" : "https://") + url;
+        }
+
+        var match = HttpUrlRegex().Match(url);
+        var host = match.Success ? (match.Groups[1].Value + match.Groups[2].Value).ToLowerInvariant() : "";
+        if (!match.Success || !(match.Groups[1].Value.Contains('.') || match.Groups[2].Success || host == "localhost"))
+        {
+            throw new InvalidOperationException(InvalidUrlError);
+        }
+
+        return (url, host);
+    }
+
+    /// <summary>
+    /// 添加单个源接口地址。地址已存在时不重复添加，只按本次选择更新它的成人标记
+    /// （地址属于主订阅里的源时，在额外源里写一份同 key 的记录覆盖它的标记）。
+    /// </summary>
+    public static Result AddSingle(
+        IReadOnlyList<VideoSource> extraSources,
+        IReadOnlyList<VideoSource> subscriptionSources,
+        string? url,
+        bool adult)
+    {
+        var (api, host) = ParseUrl(url);
+        var key = ManualKeyPrefix + Regex.Replace(host, "[^a-z0-9.-]", "_");
+        return Upsert(extraSources, subscriptionSources, [new VideoSource(key, host, api, Adult: adult)], keepExistingMark: false);
+    }
+
+    /// <summary>
+    /// 添加一个订阅链接下发的全部源。adult 为 true 时全部标记为成人源；订阅里自带的成人标记始终保留，
+    /// 已存在的源原有的成人标记也不会被这次导入取消。
+    /// </summary>
+    public static Result AddSubscription(
+        IReadOnlyList<VideoSource> extraSources,
+        IReadOnlyList<VideoSource> subscriptionSources,
+        IEnumerable<VideoSource> incoming,
+        bool adult) =>
+        Upsert(
+            extraSources,
+            subscriptionSources,
+            incoming.Select(source => adult ? source with { Adult = true } : source),
+            keepExistingMark: true) with { FromSubscription = true };
+
+    public static IReadOnlyList<VideoSource> Remove(IReadOnlyList<VideoSource> extraSources, string key) =>
+        extraSources.Where(source => !SameKey(source.Key, key)).ToList();
+
+    private static Result Upsert(
+        IReadOnlyList<VideoSource> extraSources,
+        IReadOnlyList<VideoSource> subscriptionSources,
+        IEnumerable<VideoSource> incoming,
+        bool keepExistingMark)
+    {
+        var extras = extraSources.ToList();
+        var added = 0;
+        var updated = 0;
+        foreach (var source in incoming)
+        {
+            if (string.IsNullOrWhiteSpace(source.Api) || string.IsNullOrWhiteSpace(source.Name))
+            {
+                continue;
+            }
+
+            var index = extras.FindIndex(existing => SameApi(existing, source));
+            if (index >= 0)
+            {
+                var adult = source.Adult || (keepExistingMark && extras[index].Adult);
+                if (extras[index].Adult != adult)
+                {
+                    extras[index] = extras[index] with { Adult = adult };
+                    updated++;
+                }
+
+                continue;
+            }
+
+            // 被同 key 额外源覆盖的订阅源本来就不生效，不算“已存在”。
+            var subscribed = subscriptionSources.FirstOrDefault(existing =>
+                SameApi(existing, source) && !extras.Any(extra => SameKey(extra.Key, existing.Key)));
+            if (subscribed is not null)
+            {
+                var adult = source.Adult || (keepExistingMark && subscribed.Adult);
+                if (subscribed.Adult != adult)
+                {
+                    // 同 key 的额外源在合并时覆盖订阅源
+                    extras.Add(subscribed with { Adult = adult });
+                    updated++;
+                }
+
+                continue;
+            }
+
+            var baseKey = string.IsNullOrWhiteSpace(source.Key) ? ExtraVideoSourcesStore.SlugKey(source.Name) : source.Key.Trim();
+            var key = baseKey;
+            for (var n = 2; extras.Concat(subscriptionSources).Any(existing => SameKey(existing.Key, key)); n++)
+            {
+                key = $"{baseKey}_{n}";
+            }
+
+            extras.Add(source with { Key = key });
+            added++;
+        }
+
+        return new Result(extras, added, updated);
+    }
+
+    private static bool SameKey(string left, string right) =>
+        string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+
+    private static bool SameApi(VideoSource left, VideoSource right) =>
+        string.Equals(left.Api.Trim().TrimEnd('/'), right.Api.Trim().TrimEnd('/'), StringComparison.Ordinal);
 }
 
 /// <summary>生成给 Claude Code / Codex 的视频源任务提示词（仅 AppleCMS / 类 CMS）。</summary>

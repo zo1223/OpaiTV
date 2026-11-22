@@ -17,7 +17,8 @@ public partial class FavoritesView : UserControl, INavigationAware
 
     public void OnNavigatedTo(object? parameter)
     {
-        var items = _host.Services.Favorites.GetAll()
+        // 成人内容开关关闭时，成人源的收藏不取出（收藏本身保留，开关打开后恢复）
+        var items = _host.Services.Favorites.GetVisible(_host.Services.IsAdultSourceHidden)
             .OrderByDescending(kv => kv.Value.SaveTime)
             .Select(kv =>
             {

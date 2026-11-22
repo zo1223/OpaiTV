@@ -13,6 +13,13 @@ public abstract class JsonDictionaryStore<T>
 
     protected static string Key(string source, string id) => $"{source}+{id}";
 
+    /// <summary>存储 key（源 key+id）里的源 key 部分。</summary>
+    protected static string SourceOf(string key)
+    {
+        var separator = key.IndexOf('+');
+        return separator >= 0 ? key[..separator] : key;
+    }
+
     public Dictionary<string, T> GetAll()
     {
         lock (_lock)
@@ -92,8 +99,25 @@ public abstract class JsonDictionaryStore<T>
 }
 
 /// <summary>本地收藏存储（对齐安卓 FavoriteManager 的 localstorage 模式）。</summary>
-public sealed class FavoriteStore() : JsonDictionaryStore<FavoriteItem>(DesktopPaths.FavoritesFile)
+public sealed class FavoriteStore : JsonDictionaryStore<FavoriteItem>
 {
+    public FavoriteStore() : this(DesktopPaths.FavoritesFile)
+    {
+    }
+
+    public FavoriteStore(string filePath) : base(filePath)
+    {
+    }
+
+    /// <summary>
+    /// 收藏按「源 key+id」保存。成人内容开关关闭时，被隐藏源的收藏不返回
+    /// （收藏本身不删除，开关打开后恢复）。
+    /// </summary>
+    public Dictionary<string, FavoriteItem> GetVisible(Func<string, bool> isSourceHidden) =>
+        GetAll()
+            .Where(item => !isSourceHidden(SourceOf(item.Key)))
+            .ToDictionary(item => item.Key, item => item.Value);
+
     public bool IsFavorited(string source, string id) => GetAll().ContainsKey(Key(source, id));
 
     public void Save(string source, string id, FavoriteItem item) =>
@@ -130,10 +154,15 @@ public sealed class PlayRecordStore : JsonDictionaryStore<PlayRecordItem>
     public PlayRecordItem? Get(string source, string id) =>
         GetAll().TryGetValue(Key(source, id), out var record) ? record : null;
 
-    public IReadOnlyList<PlayRecordHistoryEntry> GetLatestByMedia()
+    /// <param name="isSourceHidden">
+    /// 观看历史按源 key 保存：成人内容开关关闭时，被隐藏源的记录不进入结果（记录本身不删除）。
+    /// 在按影片归并之前过滤，同一部片在其他源的记录仍然保留。
+    /// </param>
+    public IReadOnlyList<PlayRecordHistoryEntry> GetLatestByMedia(Func<string, bool>? isSourceHidden = null)
     {
         return GetAll()
             .Select(ToHistoryEntry)
+            .Where(entry => isSourceHidden?.Invoke(entry.Source) != true)
             .GroupBy(GetMediaKey, StringComparer.Ordinal)
             .Select(group =>
             {

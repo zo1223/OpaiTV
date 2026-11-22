@@ -21,7 +21,7 @@ public sealed class AppServices : IDisposable
         VodClients = new VodSourceClientFactory(Http);
         AppleCms = VodClients.AppleCms;
         Douban = new DoubanClient(Http);
-        Catalog = new CatalogService(VodClients, Douban);
+        Catalog = new CatalogService(VodClients, Douban) { IsAdultSourceHidden = IsAdultSourceHidden };
         M3u = new M3uParser(Http);
         Hls = new HlsAdSkip(Http);
         ChannelHealth = new ChannelHealthProbe(Http);
@@ -36,7 +36,7 @@ public sealed class AppServices : IDisposable
                 cancellationToken));
         VodCache = new VodCacheService();
         Downloads = new VodDownloadManager(VodCache);
-        Settings = SettingsStore.Load();
+        _settings = SettingsStore.Load();
         // 启动时先挂上磁盘里已有的 AI 额外源（订阅随后异步加载再合并）
         RebuildSources();
     }
@@ -59,16 +59,102 @@ public sealed class AppServices : IDisposable
     public FavoriteStore Favorites { get; } = new();
     public PlayRecordStore PlayRecords { get; } = new();
     public LocalMediaStore LocalMedia { get; } = new();
-    public DesktopSettings Settings { get; set; }
+    private DesktopSettings _settings;
+
+    public DesktopSettings Settings
+    {
+        get => _settings;
+        set
+        {
+            var adultChanged = _settings.ShowAdultContent != value.ShowAdultContent;
+            _settings = value;
+            if (adultChanged)
+            {
+                // 成人内容开关变化（设置页切换，或 settings.json 被外部改写后重载）：可见源列表立即重算
+                RebuildSources();
+            }
+        }
+    }
 
     private IReadOnlyList<VideoSource> _subscriptionSources = [];
     private IReadOnlyList<VideoSource> _extraSources = ExtraVideoSourcesStore.Load();
+    private IReadOnlyList<VideoSource> _allSources = [];
+    private string _hiddenAdultSignature = "";
 
-    /// <summary>当前已加载的视频源(订阅 + AI 额外源;只读快照;整体替换引用,后台线程在途的枚举不受影响)。</summary>
+    /// <summary>
+    /// 当前可用的视频源(订阅 + 额外源;只读快照;整体替换引用,后台线程在途的枚举不受影响)。
+    /// 成人内容(18+)开关关闭时不含成人源：所有页面都从这里取源，被隐藏的源对它们不存在。
+    /// </summary>
     public IReadOnlyList<VideoSource> Sources { get; private set; } = [];
 
-    /// <summary>仅 AI/CLI 写入的额外源数量。</summary>
-    public int ExtraSourceCount => _extraSources.Count;
+    /// <summary>额外源（AI/CLI 写入 + 一键加源）里当前可见的那些，供设置页列出。</summary>
+    public IReadOnlyList<VideoSource> VisibleExtraSources =>
+        AdultContentFilter.VisibleSources(_extraSources, _settings.ShowAdultContent);
+
+    /// <summary>额外源数量（不含被隐藏的成人源）。</summary>
+    public int ExtraSourceCount => VisibleExtraSources.Count;
+
+    /// <summary>因成人内容开关关闭而被隐藏的源数量。</summary>
+    public int HiddenAdultSourceCount => _allSources.Count - Sources.Count;
+
+    /// <summary>该源是成人源且成人内容开关关闭。收藏、观看历史等按源 key 保存的数据用它过滤。</summary>
+    public bool IsAdultSourceHidden(string? sourceKey) =>
+        AdultContentFilter.IsHidden(_allSources, _settings.ShowAdultContent, sourceKey);
+
+    /// <summary>
+    /// 被隐藏的成人源发生变化（开关切换，或成人源被添加/删除/改标记）。
+    /// 已打开的页面要丢弃按旧状态取到的内容；可能在后台线程触发。
+    /// </summary>
+    public event Action? AdultVisibilityChanged;
+
+    /// <summary>
+    /// 成人内容(18+)开关：立即生效并保存，不等“保存设置”——关掉之后不能因为忘了点保存而继续显示。
+    /// 先让取数层生效，再落盘；落盘失败时抛出异常，本次运行内开关仍按新值生效。
+    /// </summary>
+    public void SetShowAdultContent(bool enabled)
+    {
+        Settings = _settings with { ShowAdultContent = enabled };
+        SettingsStore.Save(_settings);
+    }
+
+    /// <summary>
+    /// 一键加源：粘贴源订阅链接或单个源接口地址，校验通过即写入 extra_sources.json 并生效。
+    /// 地址返回的是订阅配置（api_site）时导入其中全部源，否则按单个源接口添加。
+    /// </summary>
+    public async Task<OneClickVideoSources.Result> AddVideoSourceAsync(string input, bool adult)
+    {
+        var url = OneClickVideoSources.NormalizeUrl(input);
+
+        IReadOnlyList<VideoSource>? subscription = null;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            subscription = (await VideoSourceSubscriptionParser.FetchAsync(Http, url, timeout.Token).ConfigureAwait(true)).Sources;
+        }
+        catch
+        {
+            // 不是订阅配置（或暂时连不上）：按单个源接口地址添加，与 RN 端一样不要求此刻能连通。
+        }
+
+        // 文件存在但读不出来时这里抛出异常，不继续写入，避免把现有源整体覆盖掉。
+        var current = ExtraVideoSourcesStore.LoadForUpdate();
+        var result = subscription is { Count: > 0 }
+            ? OneClickVideoSources.AddSubscription(current, _subscriptionSources, subscription, adult)
+            : OneClickVideoSources.AddSingle(current, _subscriptionSources, url, adult);
+        ExtraVideoSourcesStore.Save(result.ExtraSources);
+        _extraSources = result.ExtraSources;
+        RebuildSources();
+        return result;
+    }
+
+    /// <summary>从 extra_sources.json 删除一个额外源并立即生效。</summary>
+    public void RemoveExtraSource(string key)
+    {
+        var updated = OneClickVideoSources.Remove(ExtraVideoSourcesStore.LoadForUpdate(), key);
+        ExtraVideoSourcesStore.Save(updated);
+        _extraSources = updated;
+        RebuildSources();
+    }
 
     public bool HasSources => Sources.Count > 0;
 
@@ -220,9 +306,18 @@ public sealed class AppServices : IDisposable
 
     private void RebuildSources()
     {
-        Sources = VideoSourceMerger.Merge(_subscriptionSources, _extraSources);
+        var all = VideoSourceMerger.Merge(_subscriptionSources, _extraSources);
+        var showAdultContent = _settings.ShowAdultContent;
+        var signature = AdultContentFilter.HiddenSignature(all, showAdultContent);
+        _allSources = all;
+        Sources = AdultContentFilter.VisibleSources(all, showAdultContent);
         PlayabilityCache.Invalidate();
         VodPlayableSources.Invalidate();
+
+        if (!string.Equals(signature, Interlocked.Exchange(ref _hiddenAdultSignature, signature), StringComparison.Ordinal))
+        {
+            AdultVisibilityChanged?.Invoke();
+        }
     }
 
     public void ClearSources()

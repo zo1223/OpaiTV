@@ -5,6 +5,7 @@ using System.IO;
 using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using Microsoft.Win32;
 using OrionTV.Desktop.App.LiveTranslation;
 using OrionTV.Desktop.App.LocalPlayback;
@@ -19,6 +20,8 @@ public partial class SettingsView : UserControl, INavigationAware
     private DesktopUpdateInfo? _availableUpdate;
     private bool _updateBusy;
     private bool _loaded;
+    private bool _addSourceBusy;
+    private bool _adultToggleSaveFailed;
 
     public SettingsView(IAppHost host)
     {
@@ -39,6 +42,11 @@ public partial class SettingsView : UserControl, INavigationAware
         SubBox.Text = settings.SubscriptionUrl;
         M3uBox.Text = settings.M3uUrl;
         AutoSkipToggle.IsChecked = settings.AutoSkipAds;
+        AdultContentToggle.IsChecked = settings.ShowAdultContent;
+        AddSourceBox.Text = "";
+        AddSourceAdultCheck.IsChecked = false;
+        AddSourceStatus.Text = "";
+        RenderVideoSourceState();
         VodCacheDirectoryBox.Text = VodCacheSettings.ResolveDirectory(settings.VodCacheDirectory);
         VodCacheStatusText.Text = "";
         UsePotPlayerToggle.IsChecked = settings.UsePotPlayerForLocal;
@@ -409,7 +417,7 @@ public partial class SettingsView : UserControl, INavigationAware
             ReplaceAdditionalLiveSources(settings.AdditionalLiveSources, settings.M3uUrl);
 
             UpdateOpenAiKeyStatus();
-            UpdateSubHint();
+            RenderVideoSourceState();
             LiveSourceEditStatus.Text = _additionalLiveSources.Count == 0
                 ? string.IsNullOrWhiteSpace(settings.M3uUrl)
                     ? "当前未配置直播源"
@@ -423,6 +431,145 @@ public partial class SettingsView : UserControl, INavigationAware
             StatusText.Text = "保存失败：请检查订阅地址、直播源或翻译 API Key";
             SaveButton.IsEnabled = true;
         }
+    }
+
+    // 成人内容(18+)开关：立即生效并保存，不需要再点“保存设置”
+    private void AdultContentToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_loaded)
+        {
+            return;
+        }
+
+        try
+        {
+            _host.Services.SetShowAdultContent(AdultContentToggle.IsChecked == true);
+            _adultToggleSaveFailed = false;
+        }
+        catch
+        {
+            _adultToggleSaveFailed = true;
+        }
+
+        RenderVideoSourceState();
+    }
+
+    /// <summary>
+    /// 被隐藏的成人源在设置页之外发生变化（订阅加载完成、AI 写入额外源、settings.json 被外部改写）：
+    /// 设置页常驻不重建，这里把开关和源列表同步到当前状态。
+    /// </summary>
+    internal void RefreshVideoSourceState()
+    {
+        if (!_loaded)
+        {
+            return;
+        }
+
+        _loaded = false;
+        AdultContentToggle.IsChecked = _host.Services.Settings.ShowAdultContent;
+        _loaded = true;
+        RenderVideoSourceState();
+    }
+
+    private void AddSourceBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            AddSourceButton_Click(sender, e);
+        }
+    }
+
+    // 一键加源：校验通过即保存并生效，不需要再点“保存设置”
+    private async void AddSourceButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_addSourceBusy)
+        {
+            return;
+        }
+
+        var adult = AddSourceAdultCheck.IsChecked == true;
+        _addSourceBusy = true;
+        AddSourceButton.IsEnabled = false;
+        AddSourceButton.Content = "添加中…";
+        SetAddSourceStatus("正在识别地址…", isError: false);
+        try
+        {
+            var result = await _host.Services.AddVideoSourceAsync(AddSourceBox.Text, adult);
+            AddSourceBox.Text = "";
+            AddSourceAdultCheck.IsChecked = false;
+            var kind = result.FromSubscription ? "已识别为订阅链接：" : "已按单个源接口处理：";
+            var summary = kind + (result.Added > 0
+                ? $"添加了 {result.Added} 个源" + (result.Updated > 0 ? $"，另有 {result.Updated} 个已存在的源更新了成人标记" : "")
+                : result.Updated > 0
+                    ? $"源已存在，更新了 {result.Updated} 个源的成人标记"
+                    : "源已存在，无需重复添加");
+            SetAddSourceStatus(
+                adult && !_host.Services.Settings.ShowAdultContent ? summary + "。成人内容开关已关闭，成人源暂不显示" : summary,
+                isError: false);
+        }
+        catch (InvalidOperationException exception) when (exception.Message == OneClickVideoSources.InvalidUrlError)
+        {
+            SetAddSourceStatus("请输入有效的源订阅链接或源接口地址（http/https）", isError: true);
+        }
+        catch
+        {
+            SetAddSourceStatus("添加失败：无法读写额外源文件（extra_sources.json），现有源未被改动", isError: true);
+        }
+        finally
+        {
+            _addSourceBusy = false;
+            AddSourceButton.IsEnabled = true;
+            AddSourceButton.Content = "添加";
+            RenderVideoSourceState();
+        }
+    }
+
+    private void DeleteExtraSourceButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: VideoSource source })
+        {
+            return;
+        }
+
+        try
+        {
+            _host.Services.RemoveExtraSource(source.Key);
+            SetAddSourceStatus($"已删除 {source.Name}", isError: false);
+        }
+        catch
+        {
+            SetAddSourceStatus("删除失败：无法读写额外源文件（extra_sources.json）", isError: true);
+        }
+
+        RenderVideoSourceState();
+    }
+
+    private void SetAddSourceStatus(string text, bool isError)
+    {
+        AddSourceStatus.Foreground = (System.Windows.Media.Brush)FindResource(isError ? "DangerBrush" : "PrimaryBrush");
+        AddSourceStatus.Text = text;
+    }
+
+    /// <summary>
+    /// 刷新开关说明、源数量和额外源列表。成人内容开关关闭时不列出成人源，只说明有多少个被隐藏。
+    /// </summary>
+    private void RenderVideoSourceState()
+    {
+        var services = _host.Services;
+        var showAdultContent = services.Settings.ShowAdultContent;
+        AdultContentStatus.Foreground = (System.Windows.Media.Brush)FindResource(
+            showAdultContent || _adultToggleSaveFailed ? "DangerBrush" : "MutedTextBrush");
+        AdultContentStatus.Text = (showAdultContent
+                ? "已开启：成人源及其内容正常显示"
+                : "已关闭：成人源及其内容已隐藏（源列表、首页、搜索、收藏、观看历史）")
+            + (_adultToggleSaveFailed ? "。本次已生效，但写入设置文件失败，重启后可能恢复原状" : "");
+
+        var hidden = services.HiddenAdultSourceCount;
+        SourceSummaryText.Text = $"当前共 {services.Sources.Count} 个视频源"
+            + (hidden > 0 ? $"，另有 {hidden} 个成人源已隐藏（成人内容开关已关闭）" : "");
+        ExtraSourcesList.ItemsSource = services.VisibleExtraSources;
+        UpdateSubHint();
     }
 
     private void AddLiveSourceButton_Click(object sender, RoutedEventArgs e)

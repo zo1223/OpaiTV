@@ -6,6 +6,7 @@ namespace OrionTV.Desktop.Core;
 /// 点播源。Protocol 缺省 applecms，保持订阅兼容。
 /// protocol: applecms | maccms_json | maccms_xml
 /// dialect/options: 方言细节（如 searchAc=list、listAc=videolist）。
+/// adult: 成人(18+)源。设置里的“成人内容(18+)”开关关闭时，该源及其内容整体隐藏。
 /// </summary>
 public sealed record VideoSource(
     string Key,
@@ -14,7 +15,8 @@ public sealed record VideoSource(
     string? Detail = null,
     string Protocol = VideoSourceProtocols.AppleCms,
     string? Dialect = null,
-    IReadOnlyDictionary<string, string>? Options = null);
+    IReadOnlyDictionary<string, string>? Options = null,
+    bool Adult = false);
 
 public static class VideoSourceProtocols
 {

@@ -21,6 +21,7 @@ public partial class MainWindow : Window, IAppHost
     {
         InitializeComponent();
         Services = new AppServices();
+        Services.AdultVisibilityChanged += OnAdultVisibilityChanged;
         Loaded += MainWindow_Loaded;
         Closed += MainWindow_Closed;
     }
@@ -477,6 +478,75 @@ public partial class MainWindow : Window, IAppHost
         }
     }
 
+    // 可能在后台线程触发（订阅加载完成后重算源列表）
+    private void OnAdultVisibilityChanged() => Dispatcher.BeginInvoke(ResetCatalogPagesForAdultFilter);
+
+    /// <summary>
+    /// 成人内容(18+)开关切换，或成人源被添加/删除/改标记之后：已打开的首页、搜索、收藏、详情页
+    /// 里还留着按旧状态取到的内容，全部丢弃，下次进入时按当前状态重新取数；正在播放被隐藏源时关闭播放页。
+    /// </summary>
+    private void ResetCatalogPagesForAdultFilter()
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        var refresh = false;
+        if (_playerView is { } player)
+        {
+            if (Services.IsAdultSourceHidden(player.CurrentSourceKey))
+            {
+                refresh = _current is PlayerView;
+                ClosePlayer();
+            }
+            else
+            {
+                player.DropSourceSwitchResults();
+            }
+        }
+
+        foreach (var (page, section) in _sectionStates.ToList())
+        {
+            var isCatalogPage = page is AppPage.Home or AppPage.Search or AppPage.Favorites;
+            if (!isCatalogPage && section.BackStack.Count == 0)
+            {
+                continue;
+            }
+
+            if (ReferenceEquals(_current, section.Current))
+            {
+                NotifyHidden(_current);
+                refresh = true;
+            }
+
+            // 其它分区只可能在根页面之上叠了详情页：退回根页面
+            while (section.BackStack.Count > 0)
+            {
+                Discard(section.Current);
+                section.Current = section.BackStack.Pop();
+            }
+
+            if (isCatalogPage)
+            {
+                Discard(section.Current);
+                _sectionStates.Remove(page);
+            }
+        }
+
+        if (_sectionStates.TryGetValue(AppPage.Settings, out var settingsSection)
+            && settingsSection.Current is SettingsView settingsView)
+        {
+            settingsView.RefreshVideoSourceState();
+        }
+
+        if (refresh)
+        {
+            // 被丢弃的分区在这里重建，并按当前状态重新取数
+            ShowActiveSection();
+        }
+    }
+
     private void OnAiSourcesFileChanged(AiSourceWatcher.ChangeKind kind)
     {
         _ = ReloadAiSourcesAsync(kind);
@@ -506,6 +576,7 @@ public partial class MainWindow : Window, IAppHost
 
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
+        Services.AdultVisibilityChanged -= OnAdultVisibilityChanged;
         _aiSourceWatcher?.Dispose();
         _aiSourceWatcher = null;
 

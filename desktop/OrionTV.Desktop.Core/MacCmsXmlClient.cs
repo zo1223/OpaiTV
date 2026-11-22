@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Xml;
 using System.Xml.Linq;
 
 namespace OrionTV.Desktop.Core;
@@ -131,7 +132,126 @@ public sealed class MacCmsXmlClient(HttpClient httpClient) : IVodSourceClient
         return XDocument.Load(stream);
     }
 
-    private static IReadOnlyList<VideoSourceCategory> ParseCategories(XDocument document)
+    /// <summary>
+    /// 应答是不是 AppleCMS / MacCMS XML（判断方式对齐 RN 端 parseAppleCmsXml）。JSON、HTML 错误页、
+    /// 其它 XML 一律返回 null。供 <see cref="AppleCmsClient"/> 在 JSON 解析失败后按应答内容自动识别 XML 源。
+    /// </summary>
+    internal static XDocument? TryParseCmsDocument(byte[] payload)
+    {
+        ReadOnlySpan<byte> text = payload;
+        if (text.StartsWith("\uFEFF"u8))
+        {
+            text = text[3..];
+        }
+
+        text = text.TrimStart(" \t\r\n"u8);
+        if (text.IsEmpty || text[0] != (byte)'<' || StartsWithTag(text, "<!doctype html") || StartsWithTag(text, "<html"))
+        {
+            return null;
+        }
+
+        XDocument document;
+        try
+        {
+            using var stream = new MemoryStream(payload, writable: false);
+            // 这里的应答没有经过任何格式约定：不解析 DTD，也不解析外部实体。
+            using var reader = XmlReader.Create(stream, new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Ignore,
+                XmlResolver = null,
+            });
+            document = XDocument.Load(reader);
+        }
+        catch (Exception exception) when (exception is XmlException or InvalidOperationException or NotSupportedException or ArgumentException or IOException)
+        {
+            return null;
+        }
+
+        var root = document.Root;
+        return root is not null && (root.Name.LocalName == "rss" || IsCmsNode(root) || root.Elements().Any(IsCmsNode))
+            ? document
+            : null;
+
+        static bool IsCmsNode(XElement element) => element.Name.LocalName is "list" or "class";
+
+        // 标签名之后必须是空白或 '>'，<htmlx> 之类不算
+        static bool StartsWithTag(ReadOnlySpan<byte> text, string tag)
+        {
+            if (text.Length <= tag.Length)
+            {
+                return false;
+            }
+
+            for (var index = 0; index < tag.Length; index++)
+            {
+                if (char.ToLowerInvariant((char)text[index]) != tag[index])
+                {
+                    return false;
+                }
+            }
+
+            return text[tag.Length] is (byte)'>' or (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n';
+        }
+    }
+
+    /// <summary>
+    /// 把 XML 的 &lt;video&gt; 转成与 JSON 接口相同的字段形状（字段对应关系对齐 RN 端 appleCmsXml.ts），
+    /// 后续的映射、筛选逻辑与 JSON 源共用。
+    /// </summary>
+    internal static List<AppleCmsVodItem> ParseVodItems(XDocument document)
+    {
+        var items = new List<AppleCmsVodItem>();
+        foreach (var video in document.Descendants("video"))
+        {
+            var item = new AppleCmsVodItem
+            {
+                VodId = ChildText(video, "id", "vod_id"),
+                VodName = ChildText(video, "name", "vod_name", "title"),
+                VodPic = ChildText(video, "pic", "vod_pic", "img"),
+                TypeId = ChildText(video, "tid", "type_id"),
+                TypeName = ChildText(video, "type", "type_name"),
+                VodRemarks = ChildText(video, "note", "vod_remarks", "remarks"),
+                VodYear = ChildText(video, "year", "vod_year"),
+                VodArea = ChildText(video, "area", "vod_area"),
+                VodActor = ChildText(video, "actor", "vod_actor"),
+                VodDirector = ChildText(video, "director", "vod_director"),
+                VodContent = ChildText(video, "des", "vod_content", "content"),
+            };
+
+            // 线路名与播放组取自同一批 dd：缺 flag 或内容为空的 dd 不会让后面的线路名错位。
+            var playDds = video.Descendants("dd").Where(dd => !string.IsNullOrWhiteSpace(dd.Value)).ToList();
+            if (playDds.Count > 0)
+            {
+                item.VodPlayFrom = string.Join("$$$", playDds.Select(dd => ((string?)dd.Attribute("flag") ?? "").Trim()));
+                item.VodPlayUrl = string.Join("$$$", playDds.Select(dd => dd.Value.Trim()));
+            }
+            else
+            {
+                item.VodPlayUrl = ChildText(video, "dl", "vod_play_url", "playurl");
+                item.VodPlayFrom = item.VodPlayUrl is null ? null : ChildText(video, "vod_play_from", "playfrom");
+            }
+
+            items.Add(item);
+        }
+
+        return items;
+
+        static string? ChildText(XElement parent, params string[] names)
+        {
+            foreach (var name in names)
+            {
+                var text = parent.Element(name)?.Value.Trim();
+                if (!string.IsNullOrEmpty(text))
+                {
+                    return text;
+                }
+            }
+
+            return null;
+        }
+    }
+
+    internal static IReadOnlyList<VideoSourceCategory> ParseCategories(XDocument document)
     {
         var result = new List<VideoSourceCategory>();
         foreach (var ty in document.Descendants("ty"))
@@ -222,7 +342,7 @@ public sealed class MacCmsXmlClient(HttpClient httpClient) : IVodSourceClient
         return null;
     }
 
-    private static int TryReadInt(XDocument document, string elementName, string attributeName)
+    internal static int TryReadInt(XDocument document, string elementName, string attributeName)
     {
         var el = document.Descendants(elementName).FirstOrDefault();
         var attr = el?.Attribute(attributeName)?.Value;

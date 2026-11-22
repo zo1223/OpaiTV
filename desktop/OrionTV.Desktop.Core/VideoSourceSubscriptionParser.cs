@@ -98,7 +98,8 @@ public static class VideoSourceSubscriptionParser
             string.IsNullOrWhiteSpace(detail) ? null : StripTrailingSlash(detail.Trim()),
             protocol,
             string.IsNullOrWhiteSpace(dialect) ? null : dialect.Trim(),
-            options);
+            options,
+            AdultContentFilter.ReadFlag(item));
     }
 
     private static IReadOnlyDictionary<string, string>? ReadOptions(JsonElement item)

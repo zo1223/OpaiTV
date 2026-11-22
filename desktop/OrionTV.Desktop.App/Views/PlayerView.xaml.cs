@@ -134,6 +134,9 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
     private string _title = "";
     private string _id = "";
     private string _sourceKey = "";
+
+    /// <summary>当前播放内容所属的源 key（成人内容开关关闭时据此关闭正在播放的成人源）。</summary>
+    internal string CurrentSourceKey => _sourceKey;
     private string _sourceName = "";
     private string? _playbackSourceKey;
     private string _poster = "";
@@ -1479,6 +1482,21 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         BuildEpisodeButtons();
         UpdateHistoryPlaybackControls();
         PlayEpisode(_episodeIndex, (long)_resumeContext.StartPositionMs);
+    }
+
+    /// <summary>
+    /// 被隐藏的成人源发生变化：换源面板里按旧状态查到的线路作废（再次打开面板时按当前状态重新查找）。
+    /// </summary>
+    internal void DropSourceSwitchResults()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        CloseSourceSwitchPanel();
+        _sourceSwitchCandidates = [];
+        _sourceSwitchHealth.Clear();
     }
 
     private void CloseSourceSwitchPanel()

@@ -46,7 +46,12 @@ public sealed record DesktopSettings(
     /// <summary>本地文件是否用外部 PotPlayer 播放（默认关；本地优先内嵌 mpv）。</summary>
     bool UsePotPlayerForLocal = false,
     /// <summary>PotPlayerMini64.exe 路径；空则自动探测。</summary>
-    string PotPlayerPath = "");
+    string PotPlayerPath = "",
+    /// <summary>
+    /// 成人内容(18+)开关，默认关闭；关闭时成人源及其内容在所有取数入口被过滤。
+    /// 设置页切换后立即生效并保存，不随“保存设置”提交。
+    /// </summary>
+    bool ShowAdultContent = false);
 
 public static class VodCacheSettings
 {
