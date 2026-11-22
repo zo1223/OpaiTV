@@ -35,6 +35,8 @@ export interface AppSettings {
   videoSourceSubscriptionUrl: string;
   subscribedVideoSources: VideoSourceSubscriptionSource[];
   autoSkipAdsEnabled: boolean;
+  /** 成人内容(18+)开关,默认关闭 */
+  showAdultContent: boolean;
   remoteInputEnabled: boolean;
   videoSource: {
     enabledAll: boolean;
@@ -340,6 +342,7 @@ export class SettingsManager {
       videoSourceSubscriptionUrl: "",
       subscribedVideoSources: [],
       autoSkipAdsEnabled: true,
+      showAdultContent: false,
       remoteInputEnabled: true,
       videoSource: {
         enabledAll: true,

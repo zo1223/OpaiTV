@@ -15,7 +15,7 @@ interface StyledButtonProps extends PressableProps {
 }
 
 export const StyledButton = forwardRef<View, StyledButtonProps>(
-  ({ children, text, variant = "default", isSelected = false, style, textStyle, ...rest }, ref) => {
+  ({ children, text, variant = "default", isSelected = false, style, textStyle, onFocus, onBlur, ...rest }, ref) => {
     const colorScheme = "dark";
     const colors = Colors[colorScheme];
     const [isFocused, setIsFocused] = React.useState(false);
@@ -112,8 +112,15 @@ export const StyledButton = forwardRef<View, StyledButtonProps>(
         <Pressable
           android_ripple={Platform.isTV || deviceType !== 'tv'? { color: 'transparent' } : { color: Colors.dark.link }}
           ref={ref}
-          onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
+          // 调用方传入的 onFocus/onBlur 与内部焦点状态一起生效,而不是覆盖它
+          onFocus={(event) => {
+            setIsFocused(true);
+            onFocus?.(event);
+          }}
+          onBlur={(event) => {
+            setIsFocused(false);
+            onBlur?.(event);
+          }}
           style={({ focused }) => [
             styles.button,
             variantStyles[variant].button,

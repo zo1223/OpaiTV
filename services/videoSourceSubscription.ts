@@ -1,4 +1,6 @@
 import type { ApiSite, SearchResult, VideoDetail } from "./api";
+import { parseAppleCmsXml } from "./appleCmsXml";
+import { normalizeApiBaseUrl } from "./settingsNormalization";
 
 const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 const BASE58_MAP = BASE58_ALPHABET.split("").reduce<Record<string, number>>((acc, char, index) => {
@@ -11,6 +13,8 @@ export interface VideoSourceSubscriptionSource {
   name: string;
   api: string;
   detail?: string;
+  /** 成人(18+)源:设置里的"成人内容"开关关闭时,该源及其内容整体隐藏 */
+  adult?: boolean;
 }
 
 export interface VideoSourceSubscriptionConfig {
@@ -118,6 +122,11 @@ export const decodeSubscriptionPayload = (payload: string) => {
   }
 };
 
+// 成人源标记:除布尔 true 外,也接受手写配置里常见的 1 / "1" / "true"。
+// 宁可多认也不能漏认(漏认 = 成人源在开关关闭时照常显示);"false"、0 等一律不算
+const isAdultFlag = (value: unknown) =>
+  value === true || value === 1 || (typeof value === "string" && ["1", "true"].includes(value.trim().toLowerCase()));
+
 export const normalizeVideoSourceConfig = (rawConfig: any): VideoSourceSubscriptionConfig => {
   const apiSite = rawConfig?.api_site;
   if (!apiSite || typeof apiSite !== "object") {
@@ -140,6 +149,8 @@ export const normalizeVideoSourceConfig = (rawConfig: any): VideoSourceSubscript
         name,
         api,
         detail: typeof item?.detail === "string" ? item.detail : undefined,
+        // is_adult 是同类 api_site 配置里的同义字段;未标记的源不写入该字段,存储格式与原来一致
+        ...(isAdultFlag(item?.adult ?? item?.is_adult) ? { adult: true } : {}),
       };
     })
     .filter(Boolean) as VideoSourceSubscriptionSource[];
@@ -149,6 +160,47 @@ export const normalizeVideoSourceConfig = (rawConfig: any): VideoSourceSubscript
   }
 
   return { sources };
+};
+
+// 一键添加的源:key 带固定前缀,用来和订阅下发的源区分(存储格式不变)。
+// 保存设置时订阅链接被清空或更换,只替换订阅下发的源,这些源保留。
+const MANUAL_SOURCE_KEY_PREFIX = "custom_";
+
+export const isManualVideoSource = (source: Pick<VideoSourceSubscriptionSource, "key">) =>
+  source.key.startsWith(MANUAL_SOURCE_KEY_PREFIX);
+
+/**
+ * 一键添加视频源:返回加入新源后的列表。地址不是可用的 http(s) 地址时抛出 INVALID_VIDEO_SOURCE_URL。
+ * 接口地址已存在时不重复添加,只按本次选择更新它的成人标记。
+ */
+export const addManualVideoSource = (
+  sources: VideoSourceSubscriptionSource[],
+  url: string,
+  adult: boolean
+): VideoSourceSubscriptionSource[] => {
+  // 没写协议的地址按"服务器地址"同样的规则补全;主机必须是域名、IP 或带端口的主机名,
+  // 这样 ftp://…、javascript:… 以及随手输入的一段文字都不会被当成接口地址存下来
+  const api = stripTrailingSlash(normalizeApiBaseUrl(url));
+  const match = api.match(/^https?:\/\/((?:[a-z0-9-]+\.)*[a-z0-9-]+)(:\d{1,5})?(?:[/?#]\S*)?$/i);
+  const host = match ? `${match[1]}${match[2] || ""}`.toLowerCase() : "";
+  if (!match || !(match[1].includes(".") || match[2] || host === "localhost")) {
+    throw new Error("INVALID_VIDEO_SOURCE_URL");
+  }
+
+  const existing = sources.find((source) => source.api === api);
+  if (existing) {
+    const { adult: _previous, ...rest } = existing;
+    return sources.map((source) => (source === existing ? { ...rest, ...(adult ? { adult: true } : {}) } : source));
+  }
+
+  const baseKey = `${MANUAL_SOURCE_KEY_PREFIX}${host.replace(/[^a-z0-9.-]/g, "_")}`;
+  let key = baseKey;
+  for (let n = 2; sources.some((source) => source.key === key); n++) {
+    key = `${baseKey}_${n}`;
+  }
+  // 与订阅下发的源走同一套字段整理和校验
+  const [source] = normalizeVideoSourceConfig({ api_site: { [key]: { api, name: host, adult } } }).sources;
+  return [...sources, source];
 };
 
 // RN 的 OkHttp 客户端没有连接/读取超时:订阅地址连得上却一直不回数据时,
@@ -251,6 +303,72 @@ const buildAppleCmsUrl = (apiUrl: string, params: Record<string, string>) => {
   return `${strippedApiUrl.slice(0, matchStart)}${proxyTargetMatch[1]}${targetWithParams}${strippedApiUrl.slice(matchEnd)}`;
 };
 
+// 接口格式(JSON / XML)由应答内容决定,不需要配置字段。JSON 源仍然只走 response.json(),与原来完全一致;
+// 只有 JSON 解析失败时才看应答是不是 AppleCMS XML。应答体只能读取一次,所以先留一份副本。
+const readAppleCmsPayload = async (response: Response): Promise<{ data: any; isXml: boolean }> => {
+  let copy: Response | null = null;
+  try {
+    copy = response.clone();
+  } catch {
+    // 没有可用的副本就只按 JSON 处理
+  }
+
+  try {
+    return { data: await response.json(), isXml: false };
+  } catch (error) {
+    const xml = copy ? parseAppleCmsXml(await copy.text().catch(() => "")) : null;
+    if (!xml) {
+      throw error;
+    }
+    return { data: xml, isXml: true };
+  }
+};
+
+// 经典 XML 接口(TVBox type=0)的列表/搜索应答只有 id、名称、分类,图片和播放地址要用
+// ac=videolist&ids= 再取一次(与 TVBox 的做法相同)。应答里已带播放地址的 XML 源和所有 JSON 源不走这一步。
+// requestedIds:按 id 取详情时传入。不认识 ac=detail 的老接口可能忽略 ids 返回最新列表,
+// 这时结果必须以请求的 id 为准,不能把列表里的第一条当成详情。
+const readAppleCmsVodData = async (
+  response: Response,
+  source: VideoSourceSubscriptionSource,
+  signal?: AbortSignal,
+  requestedIds?: string
+) => {
+  const { data, isXml } = await readAppleCmsPayload(response);
+  const list = getVodList(data);
+  // 空列表没有可补取的条目;按 id 取详情时例外,仍用 ac=videolist 再问一次
+  if (!isXml || list.some((item: any) => item.vod_play_url) || (list.length === 0 && !requestedIds)) {
+    return data;
+  }
+
+  const wantedIds: string[] = (requestedIds ? requestedIds.split(",") : list.map((item: any) => String(item.vod_id || "")))
+    .map((id: string) => id.trim())
+    .filter(Boolean);
+  let fullList: any[] = [];
+  try {
+    const fullResponse = await fetch(buildAppleCmsUrl(source.api, { ac: "videolist", ids: wantedIds.join(",") }), {
+      signal,
+    });
+    if (fullResponse.ok) {
+      fullList = getVodList((await readAppleCmsPayload(fullResponse)).data);
+    }
+  } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
+    // 补取失败时退回列表应答本身(没有图片和播放地址,但条目仍然可见)
+  }
+
+  const briefById = new Map<string, any>(list.map((item: any) => [String(item.vod_id), item]));
+  const fullById = new Map<string, any>(fullList.map((item: any) => [String(item.vod_id), item]));
+  return {
+    ...data,
+    list: wantedIds
+      .filter((id) => briefById.has(id) || fullById.has(id))
+      .map((id) => ({ ...briefById.get(id), ...fullById.get(id) })),
+  };
+};
+
 const mapAppleCmsSearchResult = (source: VideoSourceSubscriptionSource, item: any): SearchResult => {
   const playbackSources = parseAppleCmsPlaybackSources(item.vod_play_from, item.vod_play_url);
   return {
@@ -293,7 +411,7 @@ export const searchAppleCmsSource = async (
     throw new Error(`APPLE_CMS_SEARCH_FAILED:${response.status}`);
   }
 
-  const data = await response.json();
+  const data = await readAppleCmsVodData(response, source, signal);
   return getVodList(data)
     .map((item: any) => mapAppleCmsSearchResult(source, item))
     .filter((item: SearchResult) => item.id && item.title);
@@ -309,7 +427,7 @@ export const getAppleCmsSourceResult = async (
     throw new Error(`APPLE_CMS_DETAIL_FAILED:${response.status}`);
   }
 
-  const data = await response.json();
+  const data = await readAppleCmsVodData(response, source, signal, id);
   return getVodList(data)
     .map((item: any) => mapAppleCmsSearchResult(source, item))
     .filter((item: SearchResult) => item.id && item.title);
@@ -327,7 +445,7 @@ export const fetchAppleCmsSourcePage = async (
     throw new Error(`APPLE_CMS_PAGE_FAILED:${response.status}`);
   }
 
-  const data = await response.json();
+  const data = await readAppleCmsVodData(response, source, signal);
   return getVodList(data)
     .map((item: any) => mapAppleCmsSearchResult(source, item))
     .filter((item: SearchResult) => item.id && item.title)
@@ -566,7 +684,7 @@ const fetchAppleCmsFilteredCategoryResults = async (
     throw new Error(`APPLE_CMS_CATEGORY_VIDEOS_FAILED:${response.status}`);
   }
 
-  const data = await response.json();
+  const data = await readAppleCmsVodData(response, source, signal);
   return getVodList(data)
     .filter((item: any) => shouldIncludeHomeItem(item, type, tag, usedTypeFallback, matchedCandidate))
     .map((item: any) => mapAppleCmsSearchResult(source, item))
@@ -627,7 +745,7 @@ export const fetchAppleCmsCategories = async (
     throw new Error(`APPLE_CMS_CATEGORIES_FAILED:${response.status}`);
   }
 
-  const data = await response.json();
+  const { data } = await readAppleCmsPayload(response);
   return getCategoryList(data)
     .map((item: any) => ({
       id: item.type_id !== undefined ? String(item.type_id) : "",
@@ -651,7 +769,7 @@ export const fetchAppleCmsCategoryVideos = async (
     throw new Error(`APPLE_CMS_CATEGORY_VIDEOS_FAILED:${response.status}`);
   }
 
-  const data = await response.json();
+  const data = await readAppleCmsVodData(response, source, signal);
   return {
     results: getVodList(data)
       .map((item: any) => mapAppleCmsSearchResult(source, item))
@@ -675,7 +793,7 @@ export const getAppleCmsDetail = async (
     throw new Error(`APPLE_CMS_DETAIL_FAILED:${response.status}`);
   }
 
-  const data = await response.json();
+  const data = await readAppleCmsVodData(response, source, signal, id);
   const item = getVodList(data)[0];
   if (!item) {
     throw new Error("APPLE_CMS_DETAIL_NOT_FOUND");
@@ -690,6 +808,7 @@ export const videoSourceConfigToApiSites = (config: VideoSourceSubscriptionConfi
     name: source.name,
     api: source.api,
     detail: source.detail,
+    ...(source.adult ? { adult: true } : {}),
   }));
 
 export const findVideoSource = (config: VideoSourceSubscriptionConfig, key: string) =>

@@ -11,6 +11,8 @@ import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { APIConfigSection } from "@/components/settings/APIConfigSection";
 import { LiveStreamSection } from "@/components/settings/LiveStreamSection";
 import { VideoSourceSubscriptionSection } from "@/components/settings/VideoSourceSubscriptionSection";
+import { AddVideoSourceSection, AddVideoSourceSectionRef } from "@/components/settings/AddVideoSourceSection";
+import { AdultContentSection } from "@/components/settings/AdultContentSection";
 import { RemoteInputSection } from "@/components/settings/RemoteInputSection";
 import { SettingsSection } from "@/components/settings/SettingsSection";
 import { UpdateSection } from "@/components/settings/UpdateSection";
@@ -136,6 +138,7 @@ export default function SettingsScreen() {
   const apiSectionRef = useRef<any>(null);
   const videoSourceSubscriptionSectionRef = useRef<any>(null);
   const liveStreamSectionRef = useRef<any>(null);
+  const addVideoSourceSectionRef = useRef<AddVideoSourceSectionRef>(null);
 
   useEffect(() => {
     loadSettings();
@@ -158,6 +161,8 @@ export default function SettingsScreen() {
       setApiBaseUrl(message);
     } else if (currentSection === "videoSourceSubscription" && videoSourceSubscriptionSectionRef.current) {
       setVideoSourceSubscriptionUrl(message);
+    } else if (currentSection === "addVideoSource" && addVideoSourceSectionRef.current) {
+      addVideoSourceSectionRef.current.setInputValue(message);
     } else if (currentSection === "livestream" && liveStreamSectionRef.current) {
       // Live Stream Section
       setM3uUrl(message);
@@ -285,10 +290,33 @@ export default function SettingsScreen() {
     },
     {
       component: (
+        <AddVideoSourceSection
+          ref={addVideoSourceSectionRef}
+          onFocus={() => {
+            setCurrentFocusIndex(3);
+            setCurrentSection("addVideoSource");
+          }}
+        />
+      ),
+      key: "addVideoSource",
+    },
+    {
+      component: (
+        <AdultContentSection
+          onFocus={() => {
+            setCurrentFocusIndex(4);
+            setCurrentSection("adultContent");
+          }}
+        />
+      ),
+      key: "adultContent",
+    },
+    {
+      component: (
         <AutoSkipAdsSection
           onChanged={markAsChanged}
           onFocus={() => {
-            setCurrentFocusIndex(3);
+            setCurrentFocusIndex(5);
             setCurrentSection("autoSkipAds");
           }}
         />
@@ -301,7 +329,7 @@ export default function SettingsScreen() {
           ref={liveStreamSectionRef}
           onChanged={markAsChanged}
           onFocus={() => {
-            setCurrentFocusIndex(4);
+            setCurrentFocusIndex(6);
             setCurrentSection("livestream");
           }}
         />

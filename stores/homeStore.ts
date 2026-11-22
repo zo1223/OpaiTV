@@ -135,6 +135,12 @@ interface HomeState {
 // 内存缓存，应用生命周期内有效
 const dataCache = new Map<string, CacheItem>();
 
+// 观看历史按源 key 保存:成人内容开关关闭时,成人源的记录不进入首页(列表和"是否有历史"的判断都用它)
+const getVisiblePlayRecords = async () => {
+  const records = await PlayRecordManager.getAll();
+  return Object.fromEntries(Object.entries(records).filter(([key]) => !api.isAdultSourceHidden(key.split("+")[0])));
+};
+
 const useHomeStore = create<HomeState>((set, get) => ({
   categories: initialCategories,
   selectedCategory: initialCategories[0],
@@ -194,7 +200,7 @@ const useHomeStore = create<HomeState>((set, get) => ({
 
     try {
       if (selectedCategory.type === "record") {
-        const records = await PlayRecordManager.getAll();
+        const records = await getVisiblePlayRecords();
         if (get()._fetchSeq !== seq) return;
         const rowItems = Object.entries(records)
           .map(([key, record]) => {
@@ -400,7 +406,7 @@ const useHomeStore = create<HomeState>((set, get) => ({
     await useAuthStore.getState().checkLoginStatus(apiBaseUrl);
     let records: Awaited<ReturnType<typeof PlayRecordManager.getAll>>;
     try {
-      records = await PlayRecordManager.getAll();
+      records = await getVisiblePlayRecords();
     } catch (error) {
       const { isLoggedIn } = useAuthStore.getState();
       if (!isLoggedIn) {
@@ -446,5 +452,30 @@ const useHomeStore = create<HomeState>((set, get) => ({
     set({ error: null });
   },
 }));
+
+// 被隐藏的成人源发生变化(开关切换,或成人源被添加/删除)后,首页不能留着按旧状态取到的内容:
+// 缓存整体作废(两个方向都要重新取),已显示的条目去掉被隐藏源的内容,豆瓣条目的"可播放源数"重新探测。
+// 取数层(api)在 store 通知订阅者之前已经切到新状态。按内容比较而不是按引用比较:
+// loadSettings 每次都会换一个新的源数组,不能因此每次打开设置页都清缓存、重新探测。
+const getHiddenAdultSourceKeys = (state: ReturnType<typeof useSettingsStore.getState>) =>
+  state.showAdultContent
+    ? ""
+    : (state.subscribedVideoSources || [])
+        .filter((source) => source.adult)
+        .map((source) => source.key)
+        .join("\u001f");
+
+useSettingsStore.subscribe((state, previous) => {
+  if (getHiddenAdultSourceKeys(state) === getHiddenAdultSourceKeys(previous)) {
+    return;
+  }
+  dataCache.clear();
+  const contentData = useHomeStore
+    .getState()
+    .contentData.filter((item) => !api.isAdultSourceHidden(item.source))
+    .map(withInitialPlayability);
+  useHomeStore.setState({ contentData });
+  useHomeStore.getState().probePlayability(contentData);
+});
 
 export default useHomeStore;

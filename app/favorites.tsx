@@ -3,6 +3,7 @@ import { View, StyleSheet } from "react-native";
 import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
 import useFavoritesStore from "@/stores/favoritesStore";
+import { useSettingsStore } from "@/stores/settingsStore";
 import { Favorite } from "@/services/storage";
 import VideoCard from "@/components/VideoCard";
 import { api } from "@/services/api";
@@ -20,9 +21,12 @@ export default function FavoritesScreen() {
   const commonStyles = getCommonResponsiveStyles(responsiveConfig);
   const { deviceType, spacing } = responsiveConfig;
 
+  // 成人内容开关变化后重新取一次(成人源的收藏由 favoritesStore 按开关过滤)
+  const showAdultContent = useSettingsStore((state) => state.showAdultContent);
+
   useEffect(() => {
     fetchFavorites();
-  }, [fetchFavorites]);
+  }, [fetchFavorites, showAdultContent]);
 
   const renderItem = ({ item }: { item: Favorite & { key: string }; index: number }) => {
     const [source, id] = item.key.split("+");

@@ -33,7 +33,7 @@ export default function SearchScreen() {
   const searchSeqRef = useRef(0);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const { showModal: showRemoteModal, lastMessage, targetPage, clearMessage } = useRemoteControlStore();
-  const { remoteInputEnabled } = useSettingsStore();
+  const { remoteInputEnabled, showAdultContent } = useSettingsStore();
   const router = useRouter();
 
   // 响应式布局配置
@@ -51,6 +51,11 @@ export default function SearchScreen() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastMessage, targetPage]);
+
+  // 成人内容开关关闭后,已经显示出来的结果里不能留着成人源的条目(新的搜索由 api 层过滤)
+  useEffect(() => {
+    setResults((current) => current.filter((item) => !api.isAdultSourceHidden(item.source)));
+  }, [showAdultContent]);
 
   // useEffect(() => {
   //   // Focus the text input when the screen loads

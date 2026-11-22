@@ -9,6 +9,7 @@ import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
 import { api, ApiSite, SearchResult } from "@/services/api";
 import { useApiConfig, getApiConfigErrorMessage } from "@/hooks/useApiConfig";
+import { useSettingsStore } from "@/stores/settingsStore";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import { Search } from "lucide-react-native";
@@ -36,6 +37,8 @@ export default function SourceSearchScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const apiConfigStatus = useApiConfig();
+  // 成人内容开关变化后重新加载源列表(api 层按开关过滤),不留已隐藏源的分类和视频
+  const showAdultContent = useSettingsStore((state) => state.showAdultContent);
   const responsiveConfig = useResponsiveLayout();
   const commonStyles = getCommonResponsiveStyles(responsiveConfig);
   const { deviceType, spacing } = responsiveConfig;
@@ -106,6 +109,12 @@ export default function SourceSearchScreen() {
         setSources(nextSources);
         if (nextSources[0]) {
           await loadCategories(nextSources[0]);
+        } else {
+          // 没有可用的源(例如只剩被隐藏的成人源):清掉之前选中的源及其内容
+          setSelectedSource(null);
+          setSelectedCategory(null);
+          setCategories([]);
+          setVideos([]);
         }
       } catch {
         if (!cancelled) {
@@ -122,7 +131,7 @@ export default function SourceSearchScreen() {
     return () => {
       cancelled = true;
     };
-  }, [apiConfigStatus.isConfigured, apiConfigStatus.needsConfiguration, loadCategories]);
+  }, [apiConfigStatus.isConfigured, apiConfigStatus.needsConfiguration, loadCategories, showAdultContent]);
 
   const handleCategorySelect = (category: SourceCategory) => {
     if (!selectedSource || category.id === selectedCategory?.id) return;

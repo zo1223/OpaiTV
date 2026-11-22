@@ -4,7 +4,12 @@ import { api, ServerConfig } from "@/services/api";
 import { storageConfig } from "@/services/storageConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Logger from "@/utils/Logger";
-import { fetchVideoSourceSubscription, VideoSourceSubscriptionSource } from "@/services/videoSourceSubscription";
+import {
+  addManualVideoSource,
+  fetchVideoSourceSubscription,
+  isManualVideoSource,
+  VideoSourceSubscriptionSource,
+} from "@/services/videoSourceSubscription";
 import { normalizeApiBaseUrl } from "@/services/settingsNormalization";
 
 const logger = Logger.withTag('SettingsStore');
@@ -14,6 +19,8 @@ interface SettingsState {
   videoSourceSubscriptionUrl: string;
   subscribedVideoSources: VideoSourceSubscriptionSource[];
   autoSkipAdsEnabled: boolean;
+  /** 成人内容(18+)开关,默认关闭;关闭时成人源及其内容在所有取数入口被过滤(见 services/api) */
+  showAdultContent: boolean;
   m3uUrl: string;
   remoteInputEnabled: boolean;
   videoSource: {
@@ -30,6 +37,9 @@ interface SettingsState {
   setApiBaseUrl: (url: string) => void;
   setVideoSourceSubscriptionUrl: (url: string) => void;
   setAutoSkipAdsEnabled: (enabled: boolean) => void;
+  setShowAdultContent: (enabled: boolean) => Promise<void>;
+  addVideoSource: (url: string, adult: boolean) => Promise<void>;
+  removeVideoSource: (key: string) => Promise<void>;
   setM3uUrl: (url: string) => void;
   setRemoteInputEnabled: (enabled: boolean) => void;
   saveSettings: () => Promise<void>;
@@ -45,6 +55,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   videoSourceSubscriptionUrl: "",
   subscribedVideoSources: [],
   autoSkipAdsEnabled: true,
+  showAdultContent: false,
   m3uUrl: "",
   liveStreamSources: [],
   remoteInputEnabled: false,
@@ -61,6 +72,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     // must already point at the saved address and the config must already count as loading:
     // otherwise the startup login check sees no server and gives up (or is skipped).
     api.setSubscribedVideoSources(settings.subscribedVideoSources || []);
+    // 只有明确保存过 true 才算开启:缺失或损坏的值一律按关闭处理
+    api.setShowAdultContent(settings.showAdultContent === true);
     if (settings.apiBaseUrl) {
       api.setBaseUrl(settings.apiBaseUrl);
     }
@@ -70,6 +83,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       videoSourceSubscriptionUrl: settings.videoSourceSubscriptionUrl,
       subscribedVideoSources: settings.subscribedVideoSources || [],
       autoSkipAdsEnabled: settings.autoSkipAdsEnabled !== false,
+      showAdultContent: settings.showAdultContent === true,
       m3uUrl: settings.m3uUrl,
       remoteInputEnabled: settings.remoteInputEnabled || false,
       videoSource: settings.videoSource || {
@@ -106,6 +120,26 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setApiBaseUrl: (url) => set({ apiBaseUrl: url }),
   setVideoSourceSubscriptionUrl: (url) => set({ videoSourceSubscriptionUrl: url }),
   setAutoSkipAdsEnabled: (enabled) => set({ autoSkipAdsEnabled: enabled }),
+  // 成人内容开关立即生效并保存,不等"保存设置":关掉之后不能因为忘了点保存而继续显示。
+  // 先让取数层生效,再通知订阅者(首页据此清掉已加载的成人条目),最后落盘。
+  setShowAdultContent: async (enabled) => {
+    api.setShowAdultContent(enabled);
+    set({ showAdultContent: enabled });
+    await SettingsManager.save({ showAdultContent: enabled });
+  },
+  // 一键添加:校验通过即保存并生效,不需要再点"保存设置"
+  addVideoSource: async (url, adult) => {
+    const subscribedVideoSources = addManualVideoSource(get().subscribedVideoSources, url, adult);
+    await SettingsManager.save({ subscribedVideoSources });
+    api.setSubscribedVideoSources(subscribedVideoSources);
+    set({ subscribedVideoSources });
+  },
+  removeVideoSource: async (key) => {
+    const subscribedVideoSources = get().subscribedVideoSources.filter((source) => source.key !== key);
+    await SettingsManager.save({ subscribedVideoSources });
+    api.setSubscribedVideoSources(subscribedVideoSources);
+    set({ subscribedVideoSources });
+  },
   setM3uUrl: (url) => set({ m3uUrl: url }),
   setRemoteInputEnabled: (enabled) => set({ remoteInputEnabled: enabled }),
   setVideoSource: (config) => set({ videoSource: config }),
@@ -116,11 +150,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const processedVideoSourceSubscriptionUrl = videoSourceSubscriptionUrl.trim();
     let subscribedVideoSources = get().subscribedVideoSources;
 
+    // 订阅链接被清空或更换时只替换订阅下发的源,一键添加的源保留
     if (!processedVideoSourceSubscriptionUrl) {
-      subscribedVideoSources = [];
+      subscribedVideoSources = subscribedVideoSources.filter(isManualVideoSource);
     } else if (processedVideoSourceSubscriptionUrl !== currentSettings.videoSourceSubscriptionUrl) {
       const config = await fetchVideoSourceSubscription(processedVideoSourceSubscriptionUrl);
-      subscribedVideoSources = config.sources;
+      // 拉取订阅期间也可能刚添加了源,所以在拉取之后再读一次
+      const manualSources = get().subscribedVideoSources.filter(isManualVideoSource);
+      subscribedVideoSources = [
+        ...config.sources.filter((source) => !manualSources.some((manual) => manual.key === source.key)),
+        ...manualSources,
+      ];
     }
 
     const processedApiBaseUrl = normalizeApiBaseUrl(apiBaseUrl);

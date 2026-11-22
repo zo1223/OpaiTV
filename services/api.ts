@@ -96,6 +96,7 @@ export interface ApiSite {
   api: string;
   name: string;
   detail?: string;
+  adult?: boolean;
 }
 
 export interface ServerConfig {
@@ -341,6 +342,8 @@ const fetchDoubanSubjects = async (
 export class API {
   public baseURL: string = "";
   private subscribedVideoSources: VideoSourceSubscriptionSource[] = [];
+  // 成人内容开关(设置页),默认关闭:标记为 adult 的源对所有取数入口不可见
+  private showAdultContent = false;
 
   constructor(baseURL?: string) {
     if (baseURL) {
@@ -356,8 +359,34 @@ export class API {
     this.subscribedVideoSources = sources;
   }
 
+  public setShowAdultContent(enabled: boolean) {
+    this.showAdultContent = enabled;
+  }
+
+  /** 该源是成人源且成人内容开关关闭。播放记录、收藏等按源 key 保存的数据用它过滤 */
+  public isAdultSourceHidden(sourceKey: string) {
+    return !this.showAdultContent && this.subscribedVideoSources.some((source) => source.adult && source.key === sourceKey);
+  }
+
+  // 是否处于订阅模式仍按全部源判断:成人源被隐藏不应让请求改走后端
   private hasSubscribedVideoSources() {
     return this.subscribedVideoSources.length > 0;
+  }
+
+  // 所有取数入口(源列表、首页、搜索、分类浏览、详情)只能用这份列表,不直接用 subscribedVideoSources
+  private getVisibleVideoSources() {
+    return this.showAdultContent
+      ? this.subscribedVideoSources
+      : this.subscribedVideoSources.filter((source) => !source.adult);
+  }
+
+  // 请求在途时开关可能被关掉(或该源刚被标记为成人源):结果落地前按当前状态再确认一次
+  private async unlessHidden<T>(sourceKey: string, request: Promise<T>): Promise<T> {
+    const result = await request;
+    if (this.isAdultSourceHidden(sourceKey)) {
+      throw new Error("VIDEO_SOURCE_NOT_FOUND");
+    }
+    return result;
   }
 
   private async _fetch(url: string, options: RequestInit = {}): Promise<Response> {
@@ -497,11 +526,13 @@ export class API {
       }
 
       const settledResults = await Promise.allSettled(
-        this.subscribedVideoSources.map((source) =>
+        this.getVisibleVideoSources().map((source) =>
           withSourceTimeout((signal) => fetchAppleCmsHomePage(source, type, tag, pageStart, pageSize, signal))
         )
       );
-      const sourceResults = settledResults.map((result) => (result.status === "fulfilled" ? result.value : []));
+      const sourceResults = settledResults.map((result) =>
+        result.status === "fulfilled" ? result.value.filter((item) => !this.isAdultSourceHidden(item.source)) : []
+      );
       const list = mixSourceResults(sourceResults, pageSize, getVideoDedupeKey);
       return { code: 0, message: "", list };
     }
@@ -514,11 +545,13 @@ export class API {
   async searchVideos(query: string): Promise<{ results: SearchResult[] }> {
     if (this.hasSubscribedVideoSources()) {
       const settledResults = await Promise.allSettled(
-        this.subscribedVideoSources.map((source) =>
+        this.getVisibleVideoSources().map((source) =>
           withSourceTimeout((signal) => searchAppleCmsSource(source, query, signal))
         )
       );
-      const results = settledResults.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+      const results = settledResults
+        .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
+        .filter((item) => !this.isAdultSourceHidden(item.source));
       return { results };
     }
 
@@ -529,16 +562,14 @@ export class API {
 
   async searchVideo(query: string, resourceId: string, signal?: AbortSignal, id?: string): Promise<{ results: SearchResult[] }> {
     if (this.hasSubscribedVideoSources()) {
-      const source = findVideoSource({ sources: this.subscribedVideoSources }, resourceId);
+      const source = findVideoSource({ sources: this.getVisibleVideoSources() }, resourceId);
       if (!source) {
         return { results: [] };
       }
-      if (id) {
-        const results = await getAppleCmsSourceResult(source, id, signal);
-        return { results };
-      }
-      const results = await searchAppleCmsSource(source, query, signal);
-      return { results: results.filter((item) => titleMatchesQuery(item.title, query)) };
+      const results = id
+        ? await getAppleCmsSourceResult(source, id, signal)
+        : (await searchAppleCmsSource(source, query, signal)).filter((item) => titleMatchesQuery(item.title, query));
+      return { results: this.isAdultSourceHidden(source.key) ? [] : results };
     }
 
     const url = `/api/search/one?q=${encodeURIComponent(query)}&resourceId=${encodeURIComponent(resourceId)}`;
@@ -549,7 +580,7 @@ export class API {
 
   async getResources(signal?: AbortSignal): Promise<ApiSite[]> {
     if (this.hasSubscribedVideoSources()) {
-      return videoSourceConfigToApiSites({ sources: this.subscribedVideoSources });
+      return videoSourceConfigToApiSites({ sources: this.getVisibleVideoSources() });
     }
 
     const url = `/api/search/resources`;
@@ -559,11 +590,11 @@ export class API {
 
   async getSourceCategories(source: string, signal?: AbortSignal): Promise<VideoSourceCategory[]> {
     if (this.hasSubscribedVideoSources()) {
-      const subscribedSource = findVideoSource({ sources: this.subscribedVideoSources }, source);
+      const subscribedSource = findVideoSource({ sources: this.getVisibleVideoSources() }, source);
       if (!subscribedSource) {
         throw new Error("VIDEO_SOURCE_NOT_FOUND");
       }
-      return fetchAppleCmsCategories(subscribedSource, signal);
+      return this.unlessHidden(source, fetchAppleCmsCategories(subscribedSource, signal));
     }
 
     const response = await this._fetch(`/api/source-search/categories?source=${encodeURIComponent(source)}`, { signal });
@@ -579,11 +610,11 @@ export class API {
     signal?: AbortSignal
   ): Promise<VideoSourceCategoryVideosResponse> {
     if (this.hasSubscribedVideoSources()) {
-      const subscribedSource = findVideoSource({ sources: this.subscribedVideoSources }, source);
+      const subscribedSource = findVideoSource({ sources: this.getVisibleVideoSources() }, source);
       if (!subscribedSource) {
         throw new Error("VIDEO_SOURCE_NOT_FOUND");
       }
-      return fetchAppleCmsCategoryVideos(subscribedSource, categoryId, page, pageSize, signal);
+      return this.unlessHidden(source, fetchAppleCmsCategoryVideos(subscribedSource, categoryId, page, pageSize, signal));
     }
 
     const response = await this._fetch(
@@ -595,11 +626,11 @@ export class API {
 
   async getVideoDetail(source: string, id: string): Promise<VideoDetail> {
     if (this.hasSubscribedVideoSources()) {
-      const subscribedSource = findVideoSource({ sources: this.subscribedVideoSources }, source);
+      const subscribedSource = findVideoSource({ sources: this.getVisibleVideoSources() }, source);
       if (!subscribedSource) {
         throw new Error("VIDEO_SOURCE_NOT_FOUND");
       }
-      return getAppleCmsDetail(subscribedSource, id);
+      return this.unlessHidden(source, getAppleCmsDetail(subscribedSource, id));
     }
 
     const url = `/api/detail?source=${source}&id=${id}`;
