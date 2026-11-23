@@ -280,4 +280,99 @@ describe("settingsStore", () => {
       expect(useSettingsStore.getState().subscribedVideoSources).toEqual([fresh, manual]);
     });
   });
+
+  describe("syncing video sources between devices", () => {
+    const { api } = jest.requireMock("@/services/api");
+    const { fetchVideoSourceSubscription } = jest.requireMock("@/services/videoSourceSubscription");
+    const { encodeVideoSourceSyncLink } = jest.requireActual("@/services/videoSourceSync");
+    const subscribed = { key: "demo", name: "Demo", api: "https://demo.example/vod" };
+    const manual = { key: "custom_my.example", name: "my.example", api: "https://my.example/api.php/provide/vod" };
+    const adult = { key: "adult", name: "成人源", api: "https://adult.example/vod", adult: true };
+    // 另一台设备导出的全部源:订阅来的、手动加的、成人源
+    const link = encodeVideoSourceSyncLink([subscribed, manual, adult]);
+    const imported = (source: object) => ({ ...source, imported: true });
+
+    it("imports every source of a sync link in one step: saved and live without saving the settings", async () => {
+      const result = await useSettingsStore.getState().importVideoSources(link);
+
+      const expected = [imported(subscribed), imported(manual), imported(adult)];
+      expect(result).toEqual({ total: 3, added: 3, updated: 0, unchanged: 0, adultCount: 1 });
+      expect(useSettingsStore.getState().subscribedVideoSources).toEqual(expected);
+      expect(SettingsManager.save).toHaveBeenCalledWith({ subscribedVideoSources: expected });
+      expect(api.setSubscribedVideoSources).toHaveBeenLastCalledWith(expected);
+      // 18+ 开关不因导入而改变
+      expect(api.setShowAdultContent).not.toHaveBeenCalled();
+      expect(useSettingsStore.getState().showAdultContent).toBe(false);
+    });
+
+    it("exports what it imported: the link of the receiving device equals the original", async () => {
+      await useSettingsStore.getState().importVideoSources(link);
+
+      expect(encodeVideoSourceSyncLink(useSettingsStore.getState().subscribedVideoSources)).toBe(link);
+    });
+
+    it("recognises a sync link pasted into the add-source box", async () => {
+      useSettingsStore.setState({ subscribedVideoSources: [subscribed] } as any);
+
+      await useSettingsStore.getState().addVideoSource(`  ${link}\n`, false);
+
+      // 已有的源不重复添加
+      expect(useSettingsStore.getState().subscribedVideoSources).toEqual([subscribed, imported(manual), imported(adult)]);
+    });
+
+    it("does not add anything twice when the same link is imported again", async () => {
+      await useSettingsStore.getState().importVideoSources(link);
+      const first = useSettingsStore.getState().subscribedVideoSources;
+
+      const result = await useSettingsStore.getState().importVideoSources(link);
+
+      expect(result).toMatchObject({ added: 0, updated: 0, unchanged: 3 });
+      expect(useSettingsStore.getState().subscribedVideoSources).toEqual(first);
+    });
+
+    it("rejects a broken link without changing anything", async () => {
+      useSettingsStore.setState({ subscribedVideoSources: [subscribed] } as any);
+
+      await expect(useSettingsStore.getState().importVideoSources(link.slice(0, -10))).rejects.toThrow(
+        "INVALID_VIDEO_SOURCE_SYNC_LINK"
+      );
+      await expect(useSettingsStore.getState().addVideoSource("opaitv-sync://z1/", false)).rejects.toThrow(
+        "INVALID_VIDEO_SOURCE_SYNC_LINK"
+      );
+
+      expect(useSettingsStore.getState().subscribedVideoSources).toEqual([subscribed]);
+      expect(SettingsManager.save).not.toHaveBeenCalled();
+      expect(api.setSubscribedVideoSources).not.toHaveBeenCalled();
+    });
+
+    it("keeps imported sources when the settings are saved without a subscription link", async () => {
+      (SettingsManager.get as jest.Mock).mockResolvedValue(baseSettings);
+      await useSettingsStore.getState().importVideoSources(link);
+      const sources = useSettingsStore.getState().subscribedVideoSources;
+
+      // 这台设备没有订阅链接:保存其他设置时不能把刚导入的源当成"订阅下发的源"清掉
+      await useSettingsStore.getState().saveSettings();
+
+      expect(SettingsManager.save).toHaveBeenLastCalledWith(expect.objectContaining({ subscribedVideoSources: sources }));
+      expect(useSettingsStore.getState().subscribedVideoSources).toEqual(sources);
+    });
+
+    it("keeps imported sources when the subscription link is replaced", async () => {
+      const fresh = { key: "fresh", name: "Fresh", api: "https://fresh.example/vod" };
+      (SettingsManager.get as jest.Mock).mockResolvedValue({ ...baseSettings, videoSourceSubscriptionUrl: "https://sub.example/a" });
+      (fetchVideoSourceSubscription as jest.Mock).mockResolvedValue({ sources: [fresh, { ...manual, name: "订阅里的同 key 源" }] });
+      useSettingsStore.setState({ subscribedVideoSources: [{ key: "old", name: "Old", api: "https://old.example/vod" }] } as any);
+      await useSettingsStore.getState().importVideoSources(link);
+      useSettingsStore.setState({ videoSourceSubscriptionUrl: "https://sub.example/b" } as any);
+
+      await useSettingsStore.getState().saveSettings();
+
+      expect(useSettingsStore.getState().subscribedVideoSources).toEqual([
+        fresh,
+        imported(subscribed),
+        imported(manual),
+        imported(adult),
+      ]);
+    });
+  });
 });

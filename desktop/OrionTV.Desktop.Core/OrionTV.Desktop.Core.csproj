@@ -11,4 +11,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- 同步视频源的二维码（纯托管实现，只用到矩阵生成） -->
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+  </ItemGroup>
+
 </Project>

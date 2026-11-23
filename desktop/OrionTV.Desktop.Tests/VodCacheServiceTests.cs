@@ -351,6 +351,234 @@ public sealed class VodCacheServiceTests
     }
 
     [Fact]
+    public async Task DecryptMergeStitchesAesSegmentsWhoseTimestampsRestartIntoOneFullLengthFile()
+    {
+        // 用户反馈（2026-11-22）：下载后解密合并的文件只显示 17 秒总时长，但能一直播下去。
+        // 原因：分片时间戳各自重新起算，原样拼接后播放器只能读到最后一段连续区间的时长。
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-decrypt-timeline-" + Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(root, "restart-entry");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var firstKey = Enumerable.Range(1, 16).Select(i => (byte)i).ToArray();
+            var secondKey = Enumerable.Range(101, 16).Select(i => (byte)i).ToArray();
+            var explicitIv = Enumerable.Range(0, 16).Select(i => (byte)(0xA0 + i)).ToArray();
+            await File.WriteAllBytesAsync(Path.Combine(dir, "asset_000.key"), firstKey);
+            await File.WriteAllBytesAsync(Path.Combine(dir, "asset_001.key"), secondKey);
+
+            // 5 个分片各 6 秒，每片的时间戳都从头起算；前 3 片用媒体序号做 IV，换密钥后 2 片用清单声明的 IV。
+            const int mediaSequence = 7;
+            var plains = Enumerable.Range(1, 5).Select(RestartingTsSegment).ToArray();
+            for (var index = 0; index < plains.Length; index++)
+            {
+                var sequenceIv = new byte[16];
+                sequenceIv[15] = (byte)(mediaSequence + index);
+                var cipher = index < 3
+                    ? EncryptAes128Cbc(plains[index], firstKey, sequenceIv)
+                    : EncryptAes128Cbc(plains[index], secondKey, explicitIv);
+                Assert.NotEqual(plains[index], cipher.AsSpan(0, plains[index].Length).ToArray());
+                await File.WriteAllBytesAsync(Path.Combine(dir, $"segment_{index:D5}.ts"), cipher);
+            }
+
+            await File.WriteAllTextAsync(
+                Path.Combine(dir, "offline.m3u8"),
+                "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n" +
+                $"#EXT-X-MEDIA-SEQUENCE:{mediaSequence}\n" +
+                "#EXT-X-KEY:METHOD=AES-128,URI=\"asset_000.key\"\n" +
+                "#EXTINF:6.0,\nsegment_00000.ts\n" +
+                "#EXTINF:6.0,\nsegment_00001.ts\n" +
+                "#EXTINF:6.0,\nsegment_00002.ts\n" +
+                "#EXT-X-DISCONTINUITY\n" +
+                $"#EXT-X-KEY:METHOD=AES-128,URI=\"asset_001.key\",IV=0x{Convert.ToHexString(explicitIv)}\n" +
+                "#EXTINF:6.0,\nsegment_00003.ts\n" +
+                "#EXTINF:6.0,\nsegment_00004.ts\n" +
+                "#EXT-X-ENDLIST\n");
+            await File.WriteAllTextAsync(
+                Path.Combine(dir, "cache.json"),
+                JsonSerializer.Serialize(new
+                {
+                    Title = "Restart Decrypt Episode",
+                    SourceUrl = "http://example/restart.m3u8",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    IsComplete = true,
+                    CompletedSegments = plains.Length,
+                    TotalSegments = plains.Length,
+                    MergedSegments = 0,
+                    MergedFileName = (string?)null,
+                    MergeSupported = false,
+                }));
+
+            // 修复前的结果就是明文分片原样拼接：播放器只能读到 6 秒。
+            Assert.Equal(6.0, TsFixture.ProbedDurationSeconds(TsFixture.Concat(plains)), 3);
+
+            using var service = new VodCacheService();
+            var mergedPath = await service.DecryptAndMergeAsync(dir);
+            var merged = await File.ReadAllBytesAsync(mergedPath);
+
+            // 与“同样内容、时间戳连续”的分片逐字节相同：每一片都完整解密、没有漏片/错序，只有时间戳被接续。
+            Assert.Equal(ContinuousTsSegments(5), merged);
+            Assert.Equal(30.0, TsFixture.ProbedDurationSeconds(merged), 3);
+            TsFixture.AssertMonotonic(merged);
+
+            Assert.Empty(Directory.EnumerateFiles(dir, "segment_*"));
+            using var document = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(dir, "cache.json")));
+            Assert.True(document.RootElement.GetProperty("IsComplete").GetBoolean());
+            Assert.Equal(5, document.RootElement.GetProperty("MergedSegments").GetInt32());
+            Assert.Equal(
+                plains.Select(plain => plain.LongLength),
+                document.RootElement.GetProperty("MergedSegmentLengths").EnumerateArray().Select(item => item.GetInt64()));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task DecryptMergeRefusesNonTransportStreamPlaintextAndKeepsTheCachePlayable()
+    {
+        // 解出来不是 MPEG-TS（fMP4 分片、密钥不对的乱码）时不能拼成 merged.ts，更不能随后把原始分片删掉。
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-decrypt-nonts-" + Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(root, "fmp4-entry");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var key = Enumerable.Range(1, 16).Select(i => (byte)i).ToArray();
+            await File.WriteAllBytesAsync(Path.Combine(dir, "asset_000.key"), key);
+
+            var fragment = Enumerable.Range(0, 4096).Select(i => (byte)(i % 251)).ToArray();
+            "\0\0\0\u0018styp"u8.CopyTo(fragment);
+            var plains = new[] { RestartingTsSegment(1), fragment, RestartingTsSegment(3) };
+            var ciphers = new byte[plains.Length][];
+            for (var index = 0; index < plains.Length; index++)
+            {
+                var iv = new byte[16];
+                iv[15] = (byte)index;
+                ciphers[index] = EncryptAes128Cbc(plains[index], key, iv);
+                await File.WriteAllBytesAsync(Path.Combine(dir, $"segment_{index:D5}.ts"), ciphers[index]);
+            }
+
+            await File.WriteAllTextAsync(
+                Path.Combine(dir, "offline.m3u8"),
+                "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n" +
+                "#EXT-X-KEY:METHOD=AES-128,URI=\"asset_000.key\"\n" +
+                "#EXTINF:6.0,\nsegment_00000.ts\n" +
+                "#EXTINF:6.0,\nsegment_00001.ts\n" +
+                "#EXTINF:6.0,\nsegment_00002.ts\n" +
+                "#EXT-X-ENDLIST\n");
+            var metadata = JsonSerializer.Serialize(new
+            {
+                Title = "Fmp4 Episode",
+                SourceUrl = "http://example/fmp4.m3u8",
+                CreatedAt = DateTimeOffset.UtcNow,
+                IsComplete = true,
+                CompletedSegments = plains.Length,
+                TotalSegments = plains.Length,
+                MergedSegments = 0,
+                MergedFileName = (string?)null,
+                MergeSupported = false,
+            });
+            await File.WriteAllTextAsync(Path.Combine(dir, "cache.json"), metadata);
+
+            using var service = new VodCacheService();
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() => service.DecryptAndMergeAsync(dir));
+            Assert.Contains("DECRYPTED_SEGMENT_NOT_MPEGTS segment_00001.ts", error.Message);
+
+            // 原缓存原封不动：分片、密钥、清单、元数据都在，没有留下成品或半成品。
+            for (var index = 0; index < ciphers.Length; index++)
+            {
+                Assert.Equal(ciphers[index], await File.ReadAllBytesAsync(Path.Combine(dir, $"segment_{index:D5}.ts")));
+            }
+
+            Assert.Equal(key, await File.ReadAllBytesAsync(Path.Combine(dir, "asset_000.key")));
+            Assert.Equal(metadata, await File.ReadAllTextAsync(Path.Combine(dir, "cache.json")));
+            Assert.Empty(Directory.EnumerateFiles(dir, "merged.ts*"));
+            Assert.True(service.CanDecryptMerge(dir));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadMergeStitchesSegmentsWhoseTimestampsRestart()
+    {
+        // 未加密的源走“边下边合并”，同样不能把时间戳各自起算的分片原样拼接。
+        await using var upstream = new FakeHlsServer(segmentBody: RestartingTsSegment);
+        using var service = new VodCacheService();
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-timeline-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var session = await service.StartAsync(upstream.PlaylistUrl, "Restart Episode", root, 15);
+            Assert.NotNull(session);
+            await session!.DownloadTask.WaitAsync(TimeSpan.FromSeconds(15));
+            await service.CloseAsync(session, deleteFiles: false, continueDownload: false);
+
+            Assert.True(session.Progress.IsComplete);
+            var merged = await File.ReadAllBytesAsync(session.MergedFilePath);
+            Assert.Equal(ContinuousTsSegments(3), merged);
+            Assert.Equal(18.0, TsFixture.ProbedDurationSeconds(merged), 3);
+            Assert.Empty(Directory.EnumerateFiles(session.Directory, "segment_*.*"));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task ResumedDownloadKeepsMergedTimelineContinuousAcrossTheResumePoint()
+    {
+        // 第 2 片三次都拿到错误页：首次下载只合并了第 1 片；续传在新的服务实例里进行，时间轴状态只能从 merged.ts 恢复。
+        await using var upstream = new FakeHlsServer(
+            secondSegmentBadResponses: 3,
+            badSegmentBody: "<html><body><h1>403 Forbidden</h1></body></html>",
+            segmentBody: RestartingTsSegment);
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-timeline-resume-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string directory;
+            using (var service = new VodCacheService())
+            {
+                var session = await service.StartAsync(upstream.PlaylistUrl, "Restart Resume Episode", root, 15);
+                Assert.NotNull(session);
+                await session!.DownloadTask.WaitAsync(TimeSpan.FromSeconds(15));
+                await service.CloseAsync(session, deleteFiles: false, continueDownload: false);
+
+                Assert.False(session.Progress.IsComplete);
+                Assert.Equal(ContinuousTsSegments(1), await File.ReadAllBytesAsync(session.MergedFilePath));
+                directory = session.Directory;
+            }
+
+            using var resumedService = new VodCacheService();
+            var resumed = await resumedService.StartAsync(upstream.PlaylistUrl, "Restart Resume Episode", root, 15);
+            Assert.NotNull(resumed);
+            Assert.Equal(directory, resumed!.Directory);
+            await resumed.DownloadTask.WaitAsync(TimeSpan.FromSeconds(15));
+            await resumedService.CloseAsync(resumed, deleteFiles: false, continueDownload: false);
+
+            Assert.True(resumed.Progress.IsComplete);
+            var merged = await File.ReadAllBytesAsync(resumed.MergedFilePath);
+            Assert.Equal(ContinuousTsSegments(3), merged);
+            Assert.Equal(18.0, TsFixture.ProbedDurationSeconds(merged), 3);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    /// <summary>真实结构的 TS 分片（6 秒），每片的时间戳都从同一个起点重新起算。</summary>
+    private static byte[] RestartingTsSegment(int number) =>
+        TsFixture.Segment(TsFixture.FirstTimestamp, seed: number);
+
+    /// <summary>与 <see cref="RestartingTsSegment"/> 内容相同、但时间戳前后相接的分片拼接结果。</summary>
+    private static byte[] ContinuousTsSegments(int count) =>
+        TsFixture.Concat(Enumerable.Range(1, count).Select(number =>
+            TsFixture.Segment(TsFixture.FirstTimestamp + ((number - 1) * 6 * TsFixture.Second), seed: number)));
+
+    [Fact]
     public async Task BatchDecryptContinuesAfterFailureAndLeavesOnlyFailedEntryForRetry()
     {
         var root = Path.Combine(Path.GetTempPath(), "orion-vod-cache-batch-decrypt-" + Guid.NewGuid().ToString("N"));
@@ -457,10 +685,11 @@ public sealed class VodCacheServiceTests
             await File.WriteAllBytesAsync(Path.Combine(directory, "asset_000.key"), key);
         }
 
+        // 解密合并只接受 MPEG-TS 明文，所以夹具也按 188 字节包对齐同步字节。
         var plains = new[]
         {
-            Enumerable.Repeat((byte)0x31, segmentSize).ToArray(),
-            Enumerable.Repeat((byte)0x42, segmentSize + 16).ToArray(),
+            FakeTsSegment(0x31, segmentSize),
+            FakeTsSegment(0x42, segmentSize + 16),
         };
         for (var index = 0; index < plains.Length; index++)
         {
@@ -1034,6 +1263,7 @@ public sealed class VodCacheServiceTests
         private readonly bool _stallSecondSegmentBodyOnce;
         private readonly int _secondSegmentBadResponses;
         private readonly byte[] _badSegmentBody;
+        private readonly Func<int, byte[]>? _segmentBody;
         private readonly ConcurrentDictionary<string, int> _requestCounts = new(StringComparer.Ordinal);
         private int _playlistFailuresRemaining;
         private int _activeSegmentRequests;
@@ -1045,8 +1275,10 @@ public sealed class VodCacheServiceTests
             bool delayAllSegments = false,
             bool stallSecondSegmentBodyOnce = false,
             int secondSegmentBadResponses = 0,
-            string badSegmentBody = "")
+            string badSegmentBody = "",
+            Func<int, byte[]>? segmentBody = null)
         {
+            _segmentBody = segmentBody;
             _secondSegmentBadResponses = secondSegmentBadResponses;
             _badSegmentBody = Encoding.UTF8.GetBytes(badSegmentBody);
             _delayThirdSegment = delayThirdSegment;
@@ -1150,7 +1382,8 @@ public sealed class VodCacheServiceTests
                         {
                             await Task.Delay(800);
                         }
-                        body = FakeTsSegment(path.Contains('1') ? 1 : path.Contains('2') ? 2 : 3);
+                        var segmentNumber = path.Contains('1') ? 1 : path.Contains('2') ? 2 : 3;
+                        body = _segmentBody?.Invoke(segmentNumber) ?? FakeTsSegment(segmentNumber);
                         type = "video/mp2t";
                         if (requestNumber <= _secondSegmentBadResponses && path.Contains("seg2", StringComparison.Ordinal))
                         {

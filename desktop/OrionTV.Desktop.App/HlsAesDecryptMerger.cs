@@ -7,7 +7,7 @@ namespace OrionTV.Desktop.App;
 
 /// <summary>
 /// 将已下载完成的 AES-128 HLS 缓存解密并合并为单个 merged.ts。
-/// 通用流程：读 offline.m3u8 → 取 key/IV → 逐片 AES-CBC 解密 → 拼成单文件。
+/// 通用流程：读 offline.m3u8 → 取 key/IV → 逐片 AES-CBC 解密 → 接到同一条时间轴上 → 拼成单文件。
 /// </summary>
 internal static class HlsAesDecryptMerger
 {
@@ -201,14 +201,17 @@ internal static class HlsAesDecryptMerger
 
         var total = plan.Segments.Count;
         var lengths = new long[total];
-        await using (var output = new FileStream(
-                         tempPath,
-                         FileMode.Create,
-                         FileAccess.Write,
-                         FileShare.Read,
-                         64 * 1024,
-                         FileOptions.Asynchronous | FileOptions.SequentialScan))
+        // 分片之间时间戳可能重新起算（#EXT-X-DISCONTINUITY、逐片切片）；原样拼接后播放器只能读到一小段时长。
+        var timeline = new MpegTsTimelineStitcher();
+        try
         {
+            await using var output = new FileStream(
+                tempPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.Read,
+                64 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
             for (var index = 0; index < total; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -225,12 +228,26 @@ internal static class HlsAesDecryptMerger
                     plain = DecryptAes128Cbc(cipher, segment.Key, segment.Iv);
                 }
 
+                // 解密结果必须是 MPEG-TS 才能拼成 merged.ts：密钥不对解出的乱码、fMP4 分片（需要 init 段）
+                // 一旦拼进去，成品无法播放，而原始分片随后会被清理。这里中止，保留原缓存（仍可按清单播放）。
+                if (!LooksLikeMergeableTs(plain))
+                {
+                    throw new InvalidDataException($"DECRYPTED_SEGMENT_NOT_MPEGTS {segment.FileName} bytes={plain.Length}");
+                }
+
+                timeline.Restamp(plain);
                 await output.WriteAsync(plain, cancellationToken).ConfigureAwait(false);
                 lengths[index] = plain.LongLength;
                 progress?.Report((index + 1) / (double)total);
             }
 
             await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // 半成品不留在缓存目录里。
+            TryDeleteFile(tempPath);
+            throw;
         }
 
         if (File.Exists(mergedPath))
@@ -239,8 +256,22 @@ internal static class HlsAesDecryptMerger
         }
 
         File.Move(tempPath, mergedPath);
+        if (timeline.Discontinuities > 0)
+        {
+            VodCacheLog.Info(
+                $"decrypt-merge-timeline dir={directory} segs={total} discontinuities={timeline.Discontinuities}");
+        }
+
         return (mergedPath, lengths);
     }
+
+    /// <summary>
+    /// 明文分片是否可以拼进 merged.ts。不足以判断的极短分片（凑不满探测所需的包数）放行，
+    /// 其余必须能找到按包长对齐的 TS 同步字节（允许头部带少量伪装数据）。
+    /// </summary>
+    private static bool LooksLikeMergeableTs(ReadOnlySpan<byte> plain) =>
+        plain.Length < MpegTsTimelineStitcher.MinProbeBytes
+        || MpegTsTimelineStitcher.TryFindFraming(plain, out _, out _);
 
     internal static byte[] DecryptAes128Cbc(byte[] cipher, byte[] key, byte[] iv)
     {

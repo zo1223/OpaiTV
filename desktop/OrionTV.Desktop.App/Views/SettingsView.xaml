@@ -81,7 +81,7 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <TextBox x:Name="AddSourceBox" Grid.Column="0" Margin="0,0,8,0"
-                                     Tag="粘贴源订阅链接，或单个源接口地址（JSON / XML 自动识别）"
+                                     Tag="粘贴源订阅链接、单个源接口地址（JSON / XML 自动识别），或其他设备导出的同步链接"
                                      KeyDown="AddSourceBox_KeyDown" />
                             <Button x:Name="AddSourceButton" Grid.Column="1" Content="添加" Width="74" Height="40"
                                     Style="{StaticResource SecondaryButtonStyle}" Click="AddSourceButton_Click" />
@@ -90,6 +90,54 @@
                                   Foreground="{StaticResource TextBrush}" FontSize="13" Margin="0,10,0,0" />
                         <TextBlock x:Name="AddSourceStatus" Foreground="{StaticResource MutedTextBrush}"
                                    FontSize="12" Margin="0,8,0,0" TextWrapping="Wrap" />
+
+                        <!-- 多端同步：导出当前全部视频源的同步链接和二维码（数据就在链接里，不经过服务器）。
+                             导入不需要单独入口：把其他设备导出的同步链接粘贴到上面的输入框即可 -->
+                        <DockPanel Margin="0,12,0,0">
+                            <Button x:Name="SyncExportButton" DockPanel.Dock="Right" Content="同步视频源" Width="112" Height="36"
+                                    Margin="12,0,0,0" Style="{StaticResource SecondaryButtonStyle}" Click="SyncExportButton_Click" />
+                            <TextBlock Text="多端同步：导出全部视频源的链接和二维码，在另一台设备上粘贴链接或扫码即可一次性导入。"
+                                       Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap"
+                                       VerticalAlignment="Center" />
+                        </DockPanel>
+                        <Border x:Name="SyncExportPanel" Visibility="Collapsed" Background="{StaticResource InputBrush}"
+                                BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1" CornerRadius="8"
+                                Padding="14" Margin="0,10,0,0">
+                            <StackPanel>
+                                <TextBlock x:Name="SyncExportSummary" Foreground="{StaticResource TextBrush}" FontSize="13"
+                                           TextWrapping="Wrap" />
+                                <StackPanel x:Name="SyncExportContent">
+                                    <!-- 二维码按整数倍放大（见 ShowSyncQr），四周空白边已包含在图里 -->
+                                    <Border Background="White" HorizontalAlignment="Center" Margin="0,12,0,0">
+                                        <Image x:Name="SyncQrCodeImage" Stretch="None" SnapsToDevicePixels="True"
+                                               RenderOptions.BitmapScalingMode="NearestNeighbor" />
+                                    </Border>
+                                    <StackPanel x:Name="SyncQrPager" Orientation="Horizontal" HorizontalAlignment="Center"
+                                                Margin="0,10,0,0" Visibility="Collapsed">
+                                        <Button Content="上一张" Width="74" Height="30" FontSize="12"
+                                                Style="{StaticResource SecondaryButtonStyle}" Click="SyncQrPrevButton_Click" />
+                                        <Button x:Name="SyncQrPauseButton" Content="暂停" Width="88" Height="30" FontSize="12"
+                                                Margin="8,0" Style="{StaticResource SecondaryButtonStyle}" Click="SyncQrPauseButton_Click" />
+                                        <Button Content="下一张" Width="74" Height="30" FontSize="12"
+                                                Style="{StaticResource SecondaryButtonStyle}" Click="SyncQrNextButton_Click" />
+                                    </StackPanel>
+                                    <TextBlock x:Name="SyncQrPageText" Foreground="{StaticResource MutedTextBrush}" FontSize="12"
+                                               TextWrapping="Wrap" TextAlignment="Center" Margin="0,8,0,0" />
+                                    <Grid Margin="0,12,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="SyncLinkBox" Grid.Column="0" Margin="0,0,8,0" IsReadOnly="True"
+                                                 GotKeyboardFocus="SyncLinkBox_GotKeyboardFocus" />
+                                        <Button Grid.Column="1" Content="复制链接" Width="96" Height="40"
+                                                Style="{StaticResource SecondaryButtonStyle}" Click="SyncCopyButton_Click" />
+                                    </Grid>
+                                </StackPanel>
+                                <TextBlock x:Name="SyncExportStatus" Foreground="{StaticResource PrimaryBrush}" FontSize="12"
+                                           TextWrapping="Wrap" Margin="0,8,0,0" />
+                            </StackPanel>
+                        </Border>
                         <TextBlock x:Name="SourceSummaryText" Foreground="{StaticResource MutedTextBrush}"
                                    FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap" />
                         <ItemsControl x:Name="ExtraSourcesList" Margin="0,10,0,0">

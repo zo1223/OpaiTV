@@ -4,6 +4,7 @@ import useAuthStore from "../authStore";
 import { useSettingsStore } from "../settingsStore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { api } from "@/services/api";
+import { encodeVideoSourceSyncLink } from "@/services/videoSourceSync";
 
 jest.mock("@react-native-async-storage/async-storage", () => ({
   getItem: jest.fn(),
@@ -176,6 +177,39 @@ describe("adult content in the stores", () => {
     await useSettingsStore.getState().setShowAdultContent(true);
     await useFavoritesStore.getState().fetchFavorites();
     expect(useFavoritesStore.getState().favorites.map((favorite) => favorite.key)).toEqual(["normal+1", "adult+2"]);
+  });
+
+  it("keeps adult sources imported through a sync link hidden while the toggle is off", async () => {
+    // 另一台设备导出的链接(成人标记原样带上)
+    const link = encodeVideoSourceSyncLink([normal, adult]);
+    setSources([]);
+
+    const result = await useSettingsStore.getState().importVideoSources(link);
+
+    expect(result).toMatchObject({ total: 2, added: 2, adultCount: 1 });
+    expect(JSON.parse(stored.mytv_settings).subscribedVideoSources).toEqual([
+      { ...normal, imported: true },
+      { ...adult, imported: true },
+    ]);
+    // 开关关着:导入的成人源照样不显示;打开后才出现
+    expect((await api.getResources()).map((site) => site.key)).toEqual(["normal"]);
+    expect(api.isAdultSourceHidden("adult")).toBe(true);
+    expect(useSettingsStore.getState().showAdultContent).toBe(false);
+
+    await useSettingsStore.getState().setShowAdultContent(true);
+    expect((await api.getResources()).map((site) => site.key)).toEqual(["normal", "adult"]);
+  });
+
+  it("exports adult sources with their mark even while the toggle is off", async () => {
+    const exported = encodeVideoSourceSyncLink(useSettingsStore.getState().subscribedVideoSources);
+    setSources([]);
+
+    await useSettingsStore.getState().importVideoSources(exported);
+
+    expect(useSettingsStore.getState().subscribedVideoSources.map(({ key, adult: isAdult }) => [key, isAdult])).toEqual([
+      ["normal", undefined],
+      ["adult", true],
+    ]);
   });
 
   it("persists the toggle under the app settings key", async () => {

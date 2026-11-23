@@ -99,6 +99,23 @@ public class VodSourceHealthProbeTests
     }
 
     [Fact]
+    public async Task Probe_display_label_shows_clarity_next_to_latency_and_throughput()
+    {
+        var decoder = new StubDecodeProbe(_ => new(MediaDecodeProbeStatus.Decoded, "ok"));
+        var withResolution = new VodSourceHealthProbe(
+            (_, _, _) => Task.FromResult(Validated() with { Resolution = "1920x1080" }),
+            decoder);
+        var withoutResolution = new VodSourceHealthProbe((_, _, _) => Task.FromResult(Validated()), decoder);
+        var source = Result(["u1", "u2", "u3", "u4", "u5"], ["第1集", "第2集", "第3集", "第4集", "第5集"]);
+
+        var labelled = await withResolution.ProbeAsync(source, CancellationToken.None);
+        var plain = await withoutResolution.ProbeAsync(source, CancellationToken.None);
+
+        Assert.Equal("可播 · 3/3 · 1080p · 100ms · 4.0Mbps", labelled.DisplayLabel);
+        Assert.Equal("可播 · 3/3 · 100ms · 4.0Mbps", plain.DisplayLabel);
+    }
+
+    [Fact]
     public async Task Playable_source_resolver_keeps_only_fully_playable_routes_and_caches_result()
     {
         var candidates = new[]

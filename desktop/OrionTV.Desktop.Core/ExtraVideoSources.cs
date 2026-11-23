@@ -296,7 +296,15 @@ public static partial class OneClickVideoSources
     /// <param name="Added">新增的源数量。</param>
     /// <param name="Updated">地址已存在、只更新了成人标记的源数量。</param>
     /// <param name="FromSubscription">粘贴的地址被识别为订阅配置（导入其中全部源），否则是单个源接口。</param>
-    public sealed record Result(IReadOnlyList<VideoSource> ExtraSources, int Added, int Updated, bool FromSubscription = false);
+    /// <param name="FromSync">粘贴的是其他设备导出的同步链接（导入其中全部源）。</param>
+    /// <param name="Unchanged">同步链接里已存在且内容相同、被跳过的源数量。</param>
+    public sealed record Result(
+        IReadOnlyList<VideoSource> ExtraSources,
+        int Added,
+        int Updated,
+        bool FromSubscription = false,
+        bool FromSync = false,
+        int Unchanged = 0);
 
     // 主机必须是域名、IP 或带端口的主机名：ftp://…、javascript:… 以及随手输入的一段文字都不会被当成地址存下来。
     [GeneratedRegex(@"^https?://((?:[a-z0-9-]+\.)*[a-z0-9-]+)(:[0-9]{1,5})?(?:[/?#]\S*)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
@@ -361,6 +369,86 @@ public static partial class OneClickVideoSources
             subscriptionSources,
             incoming.Select(source => adult ? source with { Adult = true } : source),
             keepExistingMark: true) with { FromSubscription = true };
+
+    /// <summary>
+    /// 导入同步链接里的全部源（对齐 RN 端 mergeSyncedVideoSources），不产生重复：
+    /// 接口地址已存在于另一个 key 下的跳过（只补上成人标记）；key 已存在的用链接里的内容覆盖；其余新增。
+    /// 成人标记只增不减：链接里标了成人的照样标记，本机已标记的不会被这次导入取消；adult 为 true 时全部标记为成人源。
+    /// 要改动的源属于主订阅时，在额外源里写一份同 key 的记录覆盖它。
+    /// </summary>
+    public static Result ImportSync(
+        IReadOnlyList<VideoSource> extraSources,
+        IReadOnlyList<VideoSource> subscriptionSources,
+        IEnumerable<VideoSource> incoming,
+        bool adult)
+    {
+        var extras = extraSources.ToList();
+        var added = 0;
+        var updated = 0;
+        var unchanged = 0;
+
+        // 写入额外源：已有同 key 的额外源就地替换，否则追加（合并时覆盖同 key 的订阅源）
+        void Put(VideoSource source)
+        {
+            var index = extras.FindIndex(existing => SameKey(existing.Key, source.Key));
+            if (index >= 0)
+            {
+                extras[index] = source;
+            }
+            else
+            {
+                extras.Add(source);
+            }
+        }
+
+        foreach (var item in incoming)
+        {
+            if (string.IsNullOrWhiteSpace(item.Api) || string.IsNullOrWhiteSpace(item.Name))
+            {
+                continue;
+            }
+
+            var key = string.IsNullOrWhiteSpace(item.Key) ? ExtraVideoSourcesStore.SlugKey(item.Name) : item.Key.Trim();
+            var markAdult = adult || item.Adult;
+            // 当前实际生效的源：同 key 时额外源覆盖订阅源
+            var effective = VideoSourceMerger.Merge(subscriptionSources, extras);
+
+            var sameApi = effective.FirstOrDefault(existing => SameApi(existing, item) && !SameKey(existing.Key, key));
+            if (sameApi is not null)
+            {
+                if (markAdult && !sameApi.Adult)
+                {
+                    Put(sameApi with { Adult = true });
+                    updated++;
+                }
+                else
+                {
+                    unchanged++;
+                }
+
+                continue;
+            }
+
+            var current = effective.FirstOrDefault(existing => SameKey(existing.Key, key));
+            var merged = item with { Key = current?.Key ?? key, Adult = markAdult || current?.Adult == true };
+            if (current is null)
+            {
+                extras.Add(merged);
+                added++;
+            }
+            else if (SameContent(current, merged))
+            {
+                unchanged++;
+            }
+            else
+            {
+                Put(merged);
+                updated++;
+            }
+        }
+
+        return new Result(extras, added, updated, FromSync: true, Unchanged: unchanged);
+    }
 
     public static IReadOnlyList<VideoSource> Remove(IReadOnlyList<VideoSource> extraSources, string key) =>
         extraSources.Where(source => !SameKey(source.Key, key)).ToList();
@@ -429,6 +517,20 @@ public static partial class OneClickVideoSources
 
     private static bool SameApi(VideoSource left, VideoSource right) =>
         string.Equals(left.Api.Trim().TrimEnd('/'), right.Api.Trim().TrimEnd('/'), StringComparison.Ordinal);
+
+    // record 自带的相等比较对 Options 只比引用，这里按内容比较
+    private static bool SameContent(VideoSource left, VideoSource right) =>
+        string.Equals(left.Name.Trim(), right.Name.Trim(), StringComparison.Ordinal)
+        && SameApi(left, right)
+        && string.Equals(left.Detail?.Trim().TrimEnd('/') ?? "", right.Detail?.Trim().TrimEnd('/') ?? "", StringComparison.Ordinal)
+        && string.Equals(VideoSourceProtocols.Normalize(left.Protocol), VideoSourceProtocols.Normalize(right.Protocol), StringComparison.Ordinal)
+        && string.Equals(left.Dialect?.Trim() ?? "", right.Dialect?.Trim() ?? "", StringComparison.Ordinal)
+        && left.Adult == right.Adult
+        && (left.Options?.Count ?? 0) == (right.Options?.Count ?? 0)
+        && (left.Options ?? new Dictionary<string, string>()).All(option =>
+            right.Options is not null
+            && right.Options.TryGetValue(option.Key, out var value)
+            && string.Equals(value, option.Value, StringComparison.Ordinal));
 }
 
 /// <summary>生成给 Claude Code / Codex 的视频源任务提示词（仅 AppleCMS / 类 CMS）。</summary>

@@ -120,9 +120,22 @@ public sealed class AppServices : IDisposable
     /// <summary>
     /// 一键加源：粘贴源订阅链接或单个源接口地址，校验通过即写入 extra_sources.json 并生效。
     /// 地址返回的是订阅配置（api_site）时导入其中全部源，否则按单个源接口添加。
+    /// 粘贴的是其他设备导出的同步链接（opaitv-sync://…）时，直接导入链接里的全部源，不联网。
     /// </summary>
     public async Task<OneClickVideoSources.Result> AddVideoSourceAsync(string input, bool adult)
     {
+        if (VideoSourceSyncLink.IsSyncLink(input))
+        {
+            // 链接无效时这里抛出异常，不会动现有的源
+            var incoming = VideoSourceSyncLink.Decode(input);
+            var imported = OneClickVideoSources.ImportSync(
+                ExtraVideoSourcesStore.LoadForUpdate(), _subscriptionSources, incoming, adult);
+            ExtraVideoSourcesStore.Save(imported.ExtraSources);
+            _extraSources = imported.ExtraSources;
+            RebuildSources();
+            return imported;
+        }
+
         var url = OneClickVideoSources.NormalizeUrl(input);
 
         IReadOnlyList<VideoSource>? subscription = null;
@@ -146,6 +159,19 @@ public sealed class AppServices : IDisposable
         RebuildSources();
         return result;
     }
+
+    /// <summary>
+    /// 导出当前全部视频源（订阅 + 额外源）的同步链接，供另一台设备粘贴或扫码导入。
+    /// 成人内容开关关闭时也包含成人源（带成人标记）：对方设备导入后仍由它自己的开关决定是否显示。
+    /// 没有任何源时抛出 <see cref="VideoSourceSyncLink.EmptyError"/>。
+    /// </summary>
+    public string ExportVideoSourceSyncLink() => VideoSourceSyncLink.Encode(_allSources);
+
+    /// <summary>可导出的全部源数量（含被隐藏的成人源）。</summary>
+    public int ExportableSourceCount => _allSources.Count;
+
+    /// <summary>可导出的源里的成人源数量。</summary>
+    public int ExportableAdultSourceCount => _allSources.Count(source => source.Adult);
 
     /// <summary>从 extra_sources.json 删除一个额外源并立即生效。</summary>
     public void RemoveExtraSource(string key)

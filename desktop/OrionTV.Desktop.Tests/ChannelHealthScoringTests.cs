@@ -107,6 +107,73 @@ public class ChannelHealthScoringTests
         Assert.Equal("网页线路", ChannelHealthDisplay.MetricsLabelOf(result));
     }
 
+    [Theory]
+    [InlineData("3840x2160", "4K")]
+    [InlineData("1920x1080", "1080p")]
+    [InlineData("1280x720", "720p")]
+    [InlineData("854x480", "480p")]
+    [InlineData("640x360", "360p")]
+    [InlineData("7680x4320", "4K")]
+    [InlineData("2560x1440", "1080p")]
+    [InlineData("1920x800", "720p")]
+    [InlineData("960x540", "480p")]
+    [InlineData("426x240", "360p")]
+    [InlineData("1920X1080", "1080p")]
+    public void ClarityLabelOf_maps_resolution_to_friendly_tier(string resolution, string expected)
+    {
+        Assert.Equal(expected, ChannelHealthDisplay.ClarityLabelOf(resolution));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("1080")]
+    [InlineData("abcxdef")]
+    [InlineData("0x0")]
+    [InlineData("1920x-1080")]
+    public void ClarityLabelOf_returns_null_when_resolution_is_missing_or_unparseable(string? resolution)
+    {
+        Assert.Null(ChannelHealthDisplay.ClarityLabelOf(resolution));
+    }
+
+    [Fact]
+    public void MetricsLabelOf_shows_clarity_before_latency_and_throughput()
+    {
+        var result = new ChannelHealthResult(
+            ChannelHealth.Good, 90, "5.2 Mbps · 1920x1080", ThroughputMbps: 5.2, TtfbMs: 123, Resolution: "1920x1080");
+
+        Assert.Equal("1080p · 123ms · 5.2Mbps", ChannelHealthDisplay.MetricsLabelOf(result));
+    }
+
+    [Fact]
+    public void MetricsLabelOf_omits_clarity_without_placeholder_when_resolution_is_unknown()
+    {
+        var unparseable = new ChannelHealthResult(
+            ChannelHealth.Good, 90, "", ThroughputMbps: 5.2, TtfbMs: 123, Resolution: "auto");
+
+        Assert.Equal("123ms · 5.2Mbps", ChannelHealthDisplay.MetricsLabelOf(unparseable));
+    }
+
+    [Fact]
+    public void MetricsLabelOf_does_not_add_clarity_to_failure_reason()
+    {
+        var result = ChannelHealthResult.Unsupported("网页线路", ttfbMs: 35) with { Resolution = "1920x1080" };
+
+        Assert.Equal("网页线路", ChannelHealthDisplay.MetricsLabelOf(result));
+    }
+
+    [Fact]
+    public async Task ProbeAsync_resolution_from_master_playlist_is_shown_as_clarity()
+    {
+        var probe = new ChannelHealthProbe(new HttpClient(new VariantRecordingHandler()));
+
+        var result = await probe.ProbeAsync("https://video.example/master.m3u8", CancellationToken.None);
+
+        Assert.Equal("640x360", result.Resolution);
+        Assert.StartsWith("360p · ", ChannelHealthDisplay.MetricsLabelOf(result));
+    }
+
     [Fact]
     public void SummaryOf_reports_average_probe_metrics()
     {

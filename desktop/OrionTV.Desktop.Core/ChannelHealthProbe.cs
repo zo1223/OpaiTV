@@ -194,7 +194,12 @@ public static class ChannelHealthDisplay
             return result.Detail;
         }
 
-        var parts = new List<string>(2);
+        var parts = new List<string>(3);
+        if (ClarityLabelOf(result.Resolution) is { } clarity)
+        {
+            parts.Add(clarity);
+        }
+
         if (result.TtfbMs > 0)
         {
             parts.Add($"{result.TtfbMs}ms");
@@ -206,6 +211,37 @@ public static class ChannelHealthDisplay
         }
 
         return parts.Count > 0 ? string.Join(" · ", parts) : "未测速";
+    }
+
+    /// <summary>
+    /// 把清单里的 RESOLUTION=WxH（如 1920x1080）转成友好清晰度标签（4K/1080p/720p/480p/360p），
+    /// 按高度归档；拿不到或无法解析时返回 null（调用方不显示清晰度）。
+    /// </summary>
+    public static string? ClarityLabelOf(string? resolution)
+    {
+        if (string.IsNullOrWhiteSpace(resolution))
+        {
+            return null;
+        }
+
+        var parts = resolution.Trim().Split('x', 'X', '×');
+        if (parts.Length != 2
+            || !int.TryParse(parts[0].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var width)
+            || !int.TryParse(parts[1].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var height)
+            || width <= 0
+            || height <= 0)
+        {
+            return null;
+        }
+
+        return height switch
+        {
+            >= 2160 => "4K",
+            >= 1080 => "1080p",
+            >= 720 => "720p",
+            >= 480 => "480p",
+            _ => "360p",
+        };
     }
 
     public static string SummaryOf(IEnumerable<ChannelHealthResult> results)

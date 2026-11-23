@@ -22,6 +22,10 @@ public partial class SettingsView : UserControl, INavigationAware
     private bool _loaded;
     private bool _addSourceBusy;
     private bool _adultToggleSaveFailed;
+    // 同步视频源：二维码里的文本（一张，或自动轮播的多张分片）
+    private IReadOnlyList<string> _syncQrPayloads = [];
+    private int _syncQrIndex;
+    private readonly System.Windows.Threading.DispatcherTimer _syncQrTimer = new() { Interval = TimeSpan.FromSeconds(1.5) };
 
     public SettingsView(IAppHost host)
     {
@@ -29,6 +33,8 @@ public partial class SettingsView : UserControl, INavigationAware
         _host = host;
         AdditionalLiveSourcesList.ItemsSource = _additionalLiveSources;
         Header.BackRequested += (_, _) => _host.GoBack();
+        _syncQrTimer.Tick += (_, _) => ShowSyncQr(_syncQrIndex + 1);
+        Unloaded += (_, _) => _syncQrTimer.Stop();
     }
 
     public void OnNavigatedTo(object? parameter)
@@ -46,6 +52,7 @@ public partial class SettingsView : UserControl, INavigationAware
         AddSourceBox.Text = "";
         AddSourceAdultCheck.IsChecked = false;
         AddSourceStatus.Text = "";
+        HideSyncExport();
         RenderVideoSourceState();
         VodCacheDirectoryBox.Text = VodCacheSettings.ResolveDirectory(settings.VodCacheDirectory);
         VodCacheStatusText.Text = "";
@@ -498,6 +505,22 @@ public partial class SettingsView : UserControl, INavigationAware
             var result = await _host.Services.AddVideoSourceAsync(AddSourceBox.Text, adult);
             AddSourceBox.Text = "";
             AddSourceAdultCheck.IsChecked = false;
+            if (result.FromSync)
+            {
+                var details = new[]
+                {
+                    result.Added > 0 ? $"新增 {result.Added} 个" : "",
+                    result.Updated > 0 ? $"更新 {result.Updated} 个" : "",
+                    result.Unchanged > 0 ? $"{result.Unchanged} 个已存在" : "",
+                }.Where(text => text.Length > 0);
+                var hidden = _host.Services.HiddenAdultSourceCount;
+                SetAddSourceStatus(
+                    $"已识别为同步链接：导入了其中 {result.Added + result.Updated + result.Unchanged} 个视频源（{string.Join("，", details)}）"
+                    + (hidden > 0 ? $"。成人内容开关已关闭，{hidden} 个成人源暂不显示" : ""),
+                    isError: false);
+                return;
+            }
+
             var kind = result.FromSubscription ? "已识别为订阅链接：" : "已按单个源接口处理：";
             var summary = kind + (result.Added > 0
                 ? $"添加了 {result.Added} 个源" + (result.Updated > 0 ? $"，另有 {result.Updated} 个已存在的源更新了成人标记" : "")
@@ -507,6 +530,18 @@ public partial class SettingsView : UserControl, INavigationAware
             SetAddSourceStatus(
                 adult && !_host.Services.Settings.ShowAdultContent ? summary + "。成人内容开关已关闭，成人源暂不显示" : summary,
                 isError: false);
+        }
+        catch (InvalidOperationException exception) when (exception.Message == VideoSourceSyncLink.IncompleteLinkError)
+        {
+            SetAddSourceStatus("这是分片二维码里的一张，不是完整链接。请在导出的设备上点“复制链接”，粘贴完整的同步链接", isError: true);
+        }
+        catch (InvalidOperationException exception) when (exception.Message == VideoSourceSyncLink.UnsupportedLinkError)
+        {
+            SetAddSourceStatus("这个同步链接来自更新的版本，请先升级 OpaiTV 再导入", isError: true);
+        }
+        catch (InvalidOperationException exception) when (exception.Message == VideoSourceSyncLink.InvalidLinkError)
+        {
+            SetAddSourceStatus("同步链接无效或不完整，请重新复制完整的链接", isError: true);
         }
         catch (InvalidOperationException exception) when (exception.Message == OneClickVideoSources.InvalidUrlError)
         {
@@ -545,6 +580,144 @@ public partial class SettingsView : UserControl, INavigationAware
         RenderVideoSourceState();
     }
 
+    // 同步视频源：展开/收起导出面板（同步链接 + 二维码）
+    private void SyncExportButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (SyncExportPanel.Visibility == Visibility.Visible)
+        {
+            HideSyncExport();
+            return;
+        }
+
+        SyncExportPanel.Visibility = Visibility.Visible;
+        SyncExportButton.Content = "收起";
+        RenderSyncExport();
+    }
+
+    private void HideSyncExport()
+    {
+        _syncQrTimer.Stop();
+        _syncQrPayloads = [];
+        SyncExportPanel.Visibility = Visibility.Collapsed;
+        SyncExportButton.Content = "同步视频源";
+        SyncQrCodeImage.Source = null;
+        SyncLinkBox.Text = "";
+        SyncExportStatus.Text = "";
+    }
+
+    /// <summary>
+    /// 按当前全部视频源（订阅 + 额外源，含被隐藏的成人源）生成同步链接和二维码。
+    /// 链接太长、一张二维码放不下时拆成多张分片码自动轮播，手机扫码端会拼回完整链接。
+    /// </summary>
+    private void RenderSyncExport()
+    {
+        _syncQrTimer.Stop();
+        SyncExportStatus.Text = "";
+        string link;
+        try
+        {
+            link = _host.Services.ExportVideoSourceSyncLink();
+        }
+        catch (InvalidOperationException)
+        {
+            _syncQrPayloads = [];
+            SyncExportContent.Visibility = Visibility.Collapsed;
+            SyncExportSummary.Text = "当前没有可导出的视频源，请先保存订阅链接或添加视频源。";
+            return;
+        }
+
+        var services = _host.Services;
+        var adultCount = services.ExportableAdultSourceCount;
+        SyncExportSummary.Text = $"共 {services.ExportableSourceCount} 个视频源"
+            + (adultCount > 0 ? $"（含 {adultCount} 个成人源，导入后仍受对方设备的成人内容开关控制）" : "")
+            + $"，同步链接共 {link.Length} 个字符。在另一台设备的“一键加源 / 添加视频源”里粘贴链接，或用手机版“扫码导入”扫描二维码。";
+        SyncExportContent.Visibility = Visibility.Visible;
+        SyncLinkBox.Text = link;
+        _syncQrPayloads = VideoSourceSyncLink.BuildQrPayloads(link);
+        SyncQrPager.Visibility = _syncQrPayloads.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+        SyncQrPauseButton.Content = "暂停";
+        if (_syncQrPayloads.Count > 1)
+        {
+            _syncQrTimer.Start();
+        }
+
+        ShowSyncQr(0);
+    }
+
+    private void ShowSyncQr(int index)
+    {
+        var count = _syncQrPayloads.Count;
+        if (count == 0)
+        {
+            return;
+        }
+
+        _syncQrIndex = ((index % count) + count) % count;
+        try
+        {
+            // 按整数倍放大：每个模块都是同样大小的方块，边缘不发虚
+            var qr = VideoSourceSyncQr.Render(_syncQrPayloads[_syncQrIndex]);
+            var scaled = qr.Scale(Math.Clamp(420 / qr.Size, 2, 8));
+            var bitmap = System.Windows.Media.Imaging.BitmapSource.Create(
+                scaled.Size, scaled.Size, 96, 96, System.Windows.Media.PixelFormats.Gray8, null, scaled.Pixels, scaled.Size);
+            bitmap.Freeze();
+            SyncQrCodeImage.Source = bitmap;
+            SyncQrPageText.Text = count > 1
+                ? $"第 {_syncQrIndex + 1} / {count} 张 · {(_syncQrTimer.IsEnabled ? "自动轮播中" : "已暂停")}，源较多时二维码分成多张，用手机对准直到全部扫完"
+                : "用手机版“扫码导入”扫描这个二维码";
+        }
+        catch
+        {
+            _syncQrTimer.Stop();
+            SyncQrCodeImage.Source = null;
+            SyncQrPageText.Text = "二维码生成失败，请改用“复制链接”";
+        }
+    }
+
+    private void SyncQrPrevButton_Click(object sender, RoutedEventArgs e) => StepSyncQr(-1);
+
+    private void SyncQrNextButton_Click(object sender, RoutedEventArgs e) => StepSyncQr(1);
+
+    // 手动翻页时停止轮播，停在选中的那一张
+    private void StepSyncQr(int delta)
+    {
+        _syncQrTimer.Stop();
+        SyncQrPauseButton.Content = "继续轮播";
+        ShowSyncQr(_syncQrIndex + delta);
+    }
+
+    private void SyncQrPauseButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_syncQrTimer.IsEnabled)
+        {
+            _syncQrTimer.Stop();
+            SyncQrPauseButton.Content = "继续轮播";
+        }
+        else
+        {
+            _syncQrTimer.Start();
+            SyncQrPauseButton.Content = "暂停";
+        }
+
+        ShowSyncQr(_syncQrIndex);
+    }
+
+    private void SyncLinkBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => SyncLinkBox.SelectAll();
+
+    private void SyncCopyButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Clipboard.SetDataObject(SyncLinkBox.Text, true);
+            SyncExportStatus.Text = "同步链接已复制";
+        }
+        catch
+        {
+            // 剪贴板被其他程序占用时会抛出异常
+            SyncExportStatus.Text = "复制失败，请点一下链接框全选后按 Ctrl+C";
+        }
+    }
+
     private void SetAddSourceStatus(string text, bool isError)
     {
         AddSourceStatus.Foreground = (System.Windows.Media.Brush)FindResource(isError ? "DangerBrush" : "PrimaryBrush");
@@ -569,6 +742,12 @@ public partial class SettingsView : UserControl, INavigationAware
         SourceSummaryText.Text = $"当前共 {services.Sources.Count} 个视频源"
             + (hidden > 0 ? $"，另有 {hidden} 个成人源已隐藏（成人内容开关已关闭）" : "");
         ExtraSourcesList.ItemsSource = services.VisibleExtraSources;
+        if (SyncExportPanel.Visibility == Visibility.Visible)
+        {
+            // 源有增删或改了成人标记：已展开的同步链接和二维码跟着更新
+            RenderSyncExport();
+        }
+
         UpdateSubHint();
     }
 

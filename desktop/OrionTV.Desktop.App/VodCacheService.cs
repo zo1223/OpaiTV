@@ -86,6 +86,8 @@ public sealed class VodCacheSession
     internal object LifecycleGate { get; } = new();
     internal object MergeStateGate { get; } = new();
     internal List<long> MergedSegmentLengths { get; } = [];
+    /// <summary>merged.ts 的时间轴状态：分片时间戳不连续时在合并处接成一条连续时间轴。</summary>
+    internal MpegTsTimelineStitcher MergeTimeline { get; } = new();
     internal bool KeepFilesOnServiceDispose { get; set; }
     internal bool Detached { get; set; }
     internal bool MergeSupported { get; set; } = true;
@@ -160,8 +162,6 @@ public sealed class VodCacheService : IDisposable
     private const int MaxConcurrentSegmentDownloadsPerSession = 4;
     private const int MaxConcurrentSegmentDownloadsTotal = 8;
     private const int MpegTsProbeBytes = 64 * 1024;
-    private const int MpegTsProbePackets = 4;
-    private static readonly int[] MpegTsPacketSizes = [188, 192, 204];
 
     private readonly ConcurrentDictionary<string, VodCacheSession> _sessions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _decryptMergeGates = new(StringComparer.OrdinalIgnoreCase);
@@ -1131,7 +1131,7 @@ public sealed class VodCacheService : IDisposable
                 true));
             session.MarkReady();
             VodCacheLog.Info(
-                $"complete id={session.Id} title={session.Title} segs={completedSegments}/{session.Segments.Count} merged={session.MergedSegments} bytes={downloadedBytes}");
+                $"complete id={session.Id} title={session.Title} segs={completedSegments}/{session.Segments.Count} merged={session.MergedSegments} discontinuities={session.MergeTimeline.Discontinuities} bytes={downloadedBytes}");
 
             RemoveDetachedSession(session);
         }
@@ -1231,7 +1231,9 @@ public sealed class VodCacheService : IDisposable
 
     /// <summary>
     /// 把 segment_[merged..upTo) 追加到 merged.ts。
-    /// MPEG-TS 可直接二进制拼接；加密分片/非 TS 会在 CanMergeSegments 中禁用。
+    /// MPEG-TS 可按包拼接，但分片之间时间戳可能重新起算（插播、换片源、逐片切片），
+    /// 所以追加前先把每一片接到同一条时间轴上，否则播放器只能读到最后一段连续区间的时长。
+    /// 加密分片/非 TS 会在 CanMergeSegments 中禁用。
     /// </summary>
     private static async Task AppendSegmentsToMergedAsync(
         VodCacheSession session,
@@ -1246,6 +1248,7 @@ public sealed class VodCacheService : IDisposable
         upToExclusive = Math.Min(upToExclusive, session.Segments.Count);
         int firstUnmerged;
         long committedLength;
+        long lastMergedLength;
         lock (session.MergeStateGate)
         {
             firstUnmerged = Math.Min(session.MergedSegments, session.MergedSegmentLengths.Count);
@@ -1257,11 +1260,25 @@ public sealed class VodCacheService : IDisposable
             }
             session.MergedSegments = firstUnmerged;
             committedLength = session.MergedSegmentLengths.Sum();
+            lastMergedLength = firstUnmerged > 0 ? session.MergedSegmentLengths[firstUnmerged - 1] : 0;
         }
 
         if (upToExclusive <= firstUnmerged)
         {
             return;
+        }
+
+        var timeline = session.MergeTimeline;
+        if (timeline.SegmentCount != firstUnmerged)
+        {
+            // 续传或上次追加中断后，内存里的时间轴状态与 merged.ts 对不上：从已合并的最后一片恢复。
+            var lastMerged = await ReadMergedSegmentAsync(
+                    session.MergedFilePath,
+                    committedLength - lastMergedLength,
+                    lastMergedLength,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            timeline.Resume(firstUnmerged, lastMerged);
         }
 
         await using var output = new FileStream(
@@ -1290,16 +1307,31 @@ public sealed class VodCacheService : IDisposable
                 break;
             }
 
-            await using var input = new FileStream(
-                segment.FullPath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite,
-                64 * 1024,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-            await input.CopyToAsync(output, 64 * 1024, cancellationToken).ConfigureAwait(false);
+            long segmentLength;
+            await using (var input = new FileStream(
+                             segment.FullPath,
+                             FileMode.Open,
+                             FileAccess.Read,
+                             FileShare.ReadWrite,
+                             64 * 1024,
+                             FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                segmentLength = input.Length;
+                if (segmentLength <= MpegTsTimelineStitcher.MaxSegmentBytes)
+                {
+                    var bytes = new byte[segmentLength];
+                    await input.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
+                    timeline.Restamp(bytes);
+                    await output.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    // 超大的单个分片不读进内存，按原样拷贝。
+                    await input.CopyToAsync(output, 64 * 1024, cancellationToken).ConfigureAwait(false);
+                    timeline.Skip();
+                }
+            }
 
-            var segmentLength = new FileInfo(segment.FullPath).Length;
             segment.Length = segmentLength;
             lock (session.MergeStateGate)
             {
@@ -1309,6 +1341,36 @@ public sealed class VodCacheService : IDisposable
         }
 
         await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>读出 merged.ts 中的一个已合并分片；读不到（文件缺失/被截断/分片过大）时返回空。</summary>
+    private static async Task<byte[]> ReadMergedSegmentAsync(
+        string mergedFilePath,
+        long offset,
+        long length,
+        CancellationToken cancellationToken)
+    {
+        if (offset < 0 || length <= 0 || length > MpegTsTimelineStitcher.MaxSegmentBytes || !File.Exists(mergedFilePath))
+        {
+            return [];
+        }
+
+        await using var input = new FileStream(
+            mergedFilePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            64 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        if (input.Length < offset + length)
+        {
+            return [];
+        }
+
+        input.Position = offset;
+        var bytes = new byte[length];
+        await input.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
+        return bytes;
     }
 
     private void ScheduleSegmentDownloads(
@@ -1906,28 +1968,8 @@ public sealed class VodCacheService : IDisposable
     /// 只有 MPEG-TS 才能二进制拼接。允许分片头部带少量伪装数据（如假图片头），
     /// 只要求探测窗口内能找到连续若干个按包长（188/192/204）对齐的同步字节 0x47。
     /// </summary>
-    internal static bool LooksLikeMpegTs(ReadOnlySpan<byte> data)
-    {
-        foreach (var packetSize in MpegTsPacketSizes)
-        {
-            var lastStart = data.Length - ((MpegTsProbePackets - 1) * packetSize) - 1;
-            for (var start = 0; start <= lastStart; start++)
-            {
-                var packets = 0;
-                while (packets < MpegTsProbePackets && data[start + (packets * packetSize)] == 0x47)
-                {
-                    packets++;
-                }
-
-                if (packets == MpegTsProbePackets)
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
+    internal static bool LooksLikeMpegTs(ReadOnlySpan<byte> data) =>
+        MpegTsTimelineStitcher.TryFindFraming(data, out _, out _);
 
     private async Task<HttpResponseMessage> SendWithTimeoutAsync(
         HttpRequestMessage request,

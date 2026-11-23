@@ -29,7 +29,14 @@
           }
         }
       ],
-      "expo-router"
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "允许 $(PRODUCT_NAME) 使用相机扫描二维码,用于导入其他设备导出的视频源",
+          "recordAudioAndroid": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

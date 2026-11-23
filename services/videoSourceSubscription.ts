@@ -15,6 +15,8 @@ export interface VideoSourceSubscriptionSource {
   detail?: string;
   /** 成人(18+)源:设置里的"成人内容"开关关闭时,该源及其内容整体隐藏 */
   adult?: boolean;
+  /** 通过同步链接/扫码导入的源(见 services/videoSourceSync):和一键添加的源一样,订阅链接被清空或更换时保留 */
+  imported?: boolean;
 }
 
 export interface VideoSourceSubscriptionConfig {
@@ -164,10 +166,11 @@ export const normalizeVideoSourceConfig = (rawConfig: any): VideoSourceSubscript
 
 // 一键添加的源:key 带固定前缀,用来和订阅下发的源区分(存储格式不变)。
 // 保存设置时订阅链接被清空或更换,只替换订阅下发的源,这些源保留。
+// 同步链接/扫码导入的源要保持原来的 key(两台设备上一致),所以用 imported 标记来区分,同样保留。
 const MANUAL_SOURCE_KEY_PREFIX = "custom_";
 
-export const isManualVideoSource = (source: Pick<VideoSourceSubscriptionSource, "key">) =>
-  source.key.startsWith(MANUAL_SOURCE_KEY_PREFIX);
+export const isManualVideoSource = (source: Pick<VideoSourceSubscriptionSource, "key" | "imported">) =>
+  source.key.startsWith(MANUAL_SOURCE_KEY_PREFIX) || source.imported === true;
 
 /**
  * 一键添加视频源:返回加入新源后的列表。地址不是可用的 http(s) 地址时抛出 INVALID_VIDEO_SOURCE_URL。

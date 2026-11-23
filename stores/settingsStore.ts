@@ -10,6 +10,12 @@ import {
   isManualVideoSource,
   VideoSourceSubscriptionSource,
 } from "@/services/videoSourceSubscription";
+import {
+  decodeVideoSourceSyncLink,
+  isVideoSourceSyncLink,
+  mergeSyncedVideoSources,
+  VideoSourceSyncMergeResult,
+} from "@/services/videoSourceSync";
 import { normalizeApiBaseUrl } from "@/services/settingsNormalization";
 
 const logger = Logger.withTag('SettingsStore');
@@ -39,6 +45,8 @@ interface SettingsState {
   setAutoSkipAdsEnabled: (enabled: boolean) => void;
   setShowAdultContent: (enabled: boolean) => Promise<void>;
   addVideoSource: (url: string, adult: boolean) => Promise<void>;
+  /** 导入同步链接(粘贴或扫码得到)里的全部视频源;markAllAdult 为 true 时全部标记为成人源 */
+  importVideoSources: (link: string, markAllAdult?: boolean) => Promise<Omit<VideoSourceSyncMergeResult, "sources">>;
   removeVideoSource: (key: string) => Promise<void>;
   setM3uUrl: (url: string) => void;
   setRemoteInputEnabled: (enabled: boolean) => void;
@@ -129,10 +137,28 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
   // 一键添加:校验通过即保存并生效,不需要再点"保存设置"
   addVideoSource: async (url, adult) => {
+    // 粘贴的是同步链接:导入其中全部源
+    if (isVideoSourceSyncLink(url)) {
+      await get().importVideoSources(url, adult);
+      return;
+    }
     const subscribedVideoSources = addManualVideoSource(get().subscribedVideoSources, url, adult);
     await SettingsManager.save({ subscribedVideoSources });
     api.setSubscribedVideoSources(subscribedVideoSources);
     set({ subscribedVideoSources });
+  },
+  // 同步导入:和一键添加一样立即保存并生效。成人源照常导入,显示与否仍由成人内容开关决定(过滤逻辑在 services/api)
+  importVideoSources: async (link, markAllAdult = false) => {
+    const incoming = decodeVideoSourceSyncLink(link);
+    const { sources: subscribedVideoSources, ...summary } = mergeSyncedVideoSources(
+      get().subscribedVideoSources,
+      incoming,
+      markAllAdult
+    );
+    await SettingsManager.save({ subscribedVideoSources });
+    api.setSubscribedVideoSources(subscribedVideoSources);
+    set({ subscribedVideoSources });
+    return summary;
   },
   removeVideoSource: async (key) => {
     const subscribedVideoSources = get().subscribedVideoSources.filter((source) => source.key !== key);
