@@ -138,21 +138,75 @@ jobs:
 
       - name: Ensure the iOS platform is installed for the selected Xcode
         run: |
-          # The macos-15 image keeps the iOS platform only for its newest Xcode
-          # versions (actions/runner-images#12541, #13392). With an older Xcode
-          # selected, xcodebuild refuses the "Any iOS Device" destination with
-          # "iOS 18.x is not installed" until that platform is downloaded.
-          # The download comes from Apple's public CDN and needs no Apple ID.
-          report="$RUNNER_TEMP/ios-destinations.txt"
+          # The macos-15 image ships Xcode 16.0-16.2 without their iOS platform,
+          # which is the iOS simulator runtime of the same version as the
+          # iphoneos SDK (actions/runner-images#12541, #13392). xcodebuild needs
+          # it even for a device build: without it the archive fails minutes
+          # in, at SplashScreen.storyboard, with "iOS 18.2 Platform Not
+          # Installed". The download comes from Apple's public CDN and needs no
+          # Apple ID.
+          #
+          # The runtime list decides whether the platform is installed. The
+          # destination list cannot: this step used to rely on it and passed
+          # within seconds on runners where the archive then failed for the
+          # missing platform, so only its "is not installed" error is trusted.
+          # Anything short of a listed runtime leads to a download, and the step
+          # passes only once that runtime is listed.
+          work="$RUNNER_TEMP/ios-platform"
+          mkdir -p "$work"
+          runtimes_report="$work/simctl-runtimes.txt"
+          destinations_report="$work/xcodebuild-destinations.txt"
+          download_log="$work/xcodebuild-download-platform.log"
 
-          # Prints "ready", "missing" or "unknown" for the generic iOS device
-          # destination, as xcodebuild itself sees it.
-          ios_platform_state() {
+          xcode_version="$(xcodebuild -version | sed -n '1s/^Xcode //p')"
+          # Xcode asks for the platform of its own iphoneos SDK (iOS 18.2 for
+          # Xcode 16.2), so that is the version to look for and to download.
+          sdk_version="$(xcodebuild -version -sdk iphoneos SDKVersion | head -n 1 | tr -d '[:space:]' || true)"
+          case "$sdk_version" in
+            "" | *[!0-9.]*)
+              echo "::error::Xcode $xcode_version reports no usable iphoneos SDK version ('$sdk_version'), so the iOS platform to install is unknown."
+              exit 1
+              ;;
+          esac
+          echo "Xcode $xcode_version builds with the iOS $sdk_version SDK and needs the iOS $sdk_version platform."
+
+          # Matches the runtime of that version in `xcrun simctl list runtimes`,
+          # by name ("iOS 18.2 (18.2 - 22C150) - ...") or by identifier
+          # ("...SimRuntime.iOS-18-2"), but not iOS 18.20 or 18.25.
+          runtime_pattern="(^iOS ${sdk_version//./[.]}|SimRuntime[.]iOS-${sdk_version//./-})([^0-9]|\$)"
+
+          # Prints "present", "absent" or "unknown": does CoreSimulator list a
+          # usable iOS runtime of the SDK version?
+          ios_runtime_state() {
+            local try matches
+            for try in 1 2 3; do
+              if xcrun simctl list runtimes > "$runtimes_report" 2>&1; then
+                matches="$(grep -E "$runtime_pattern" "$runtimes_report" | grep -v 'unavailable' || true)"
+                if [ -n "$matches" ]; then
+                  echo present
+                else
+                  echo absent
+                fi
+                return 0
+              fi
+              # CoreSimulator can need a moment, above all after a restart.
+              if [ "$try" -lt 3 ]; then
+                sleep 5
+              fi
+            done
+            echo unknown
+          }
+
+          # Prints "missing" when xcodebuild itself reports the generic iOS
+          # device destination as not installed, "listed" when it lists it
+          # without an error and "unknown" otherwise. "listed" proves nothing
+          # about the platform (see above).
+          ios_destination_state() {
             local device_lines
-            xcodebuild -showdestinations -workspace "$IOS_WORKSPACE" -scheme "$IOS_SCHEME" > "$report" 2>&1 || true
-            device_lines="$(grep -E 'platform:iOS,.*name:Any iOS Device' "$report" || true)"
+            xcodebuild -showdestinations -workspace "$IOS_WORKSPACE" -scheme "$IOS_SCHEME" > "$destinations_report" 2>&1 || true
+            device_lines="$(grep -E 'platform:iOS,.*name:Any iOS Device' "$destinations_report" || true)"
             if [ -n "$device_lines" ] && grep -qv 'error:' <<< "$device_lines"; then
-              echo ready
+              echo listed
             elif grep -q 'is not installed' <<< "$device_lines"; then
               echo missing
             else
@@ -160,42 +214,66 @@ jobs:
             fi
           }
 
-          show_report() {
-            echo "::group::xcodebuild -showdestinations"
-            cat "$report"
+          # Sets $state to "ready", "missing" or "unknown".
+          check_ios_platform() {
+            runtime_state="$(ios_runtime_state)"
+            destination_state="$(ios_destination_state)"
+            if [ "$destination_state" = "missing" ] || [ "$runtime_state" = "absent" ]; then
+              state=missing
+            elif [ "$runtime_state" = "present" ]; then
+              state=ready
+            else
+              state=unknown
+            fi
+            echo "iOS $sdk_version simulator runtime: $runtime_state. Generic iOS device destination: $destination_state. iOS $sdk_version platform: $state."
+          }
+
+          show_runtimes() {
+            echo "::group::xcrun simctl list runtimes"
+            cat "$runtimes_report" 2> /dev/null || true
             echo "::endgroup::"
           }
 
-          state="$(ios_platform_state)"
-          echo "Generic iOS device destination: $state"
+          show_diagnostics() {
+            show_runtimes
+            echo "::group::xcrun simctl runtime list"
+            xcrun simctl runtime list 2>&1 || true
+            echo "::endgroup::"
+            echo "::group::xcrun simctl runtime match list"
+            xcrun simctl runtime match list 2>&1 || true
+            echo "::endgroup::"
+            echo "::group::xcodebuild -showdestinations"
+            cat "$destinations_report" 2> /dev/null || true
+            echo "::endgroup::"
+            echo "::group::df -h /"
+            df -h / || true
+            echo "::endgroup::"
+          }
 
+          check_ios_platform
           if [ "$state" = "ready" ]; then
-            exit 0
-          fi
-          if [ "$state" = "unknown" ]; then
-            show_report
-            echo "::warning::Could not tell from 'xcodebuild -showdestinations' whether the iOS platform is installed; continuing. If the archive step fails with 'iOS ... is not installed', see the 'Ensure the iOS platform is installed' step in build-ios.yml."
+            show_runtimes
             exit 0
           fi
 
-          xcode_version="$(xcodebuild -version | sed -n '1s/^Xcode //p')"
-          sdk_version="$(xcodebuild -version -sdk iphoneos SDKVersion)"
-          if [ -z "$sdk_version" ]; then
-            echo "::error::Xcode $xcode_version reports no iphoneos SDK version, so the iOS platform to download is unknown."
-            exit 1
+          show_diagnostics
+          if [ "$state" = "unknown" ]; then
+            echo "Could not tell whether the iOS $sdk_version platform is installed, so it is downloaded instead of assumed (several GB, this takes a few minutes)."
+          else
+            echo "Xcode $xcode_version has no iOS $sdk_version platform on this runner image; downloading it (several GB, this takes a few minutes)."
           fi
-          echo "Xcode $xcode_version has no iOS $sdk_version platform on this runner image; downloading it (several GB, this takes a few minutes)."
-          df -h /
 
           downloaded=no
+          failure=""
           for attempt in 1 2 3; do
             # Waking CoreSimulator first avoids the intermittent "Unable to
             # connect to simulator" failure (actions/runner-images#13459).
             xcrun simctl list > /dev/null 2>&1 || true
 
-            # -buildVersion pins the platform that matches the selected SDK. It
-            # needs Xcode 16.1+; Xcode 16.0 picks its own platform by default.
-            # The last attempt also falls back to that default.
+            # -buildVersion pins the platform to the SDK version. It needs Xcode
+            # 16.1+; Xcode 16.0 picks its own platform by default. The last
+            # attempt also falls back to that default; whatever it installs
+            # still has to pass the check below.
             args=(-downloadPlatform iOS)
             case "$xcode_version" in
               16.0*) ;;
@@ -207,34 +285,61 @@ jobs:
             esac
 
             echo "Attempt $attempt of 3: xcodebuild ${args[*]}"
-            if xcodebuild "${args[@]}"; then
+            # PIPESTATUS rather than the status of the pipeline, so that a
+            # failed download counts as failed with or without pipefail.
+            set +e
+            xcodebuild "${args[@]}" 2>&1 | tee "$download_log"
+            download_status="${PIPESTATUS[0]}"
+            set -e
+            if [ "$download_status" -eq 0 ]; then
               downloaded=yes
               break
             fi
-            echo "::warning::Downloading the iOS platform failed (attempt $attempt of 3)."
+            # The last line xcodebuild printed says why; "%" is escaped for the
+            # workflow command.
+            last_line="$(tr '\r' '\n' < "$download_log" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c 1-300 | sed 's/%/%25/g' || true)"
+            failure="exit code $download_status: ${last_line:-xcodebuild printed nothing}"
+            echo "::warning::Downloading the iOS $sdk_version platform failed (attempt $attempt of 3, $failure)"
+
+            # xcodebuild can fail and still leave the platform installed.
+            if [ "$(ios_runtime_state)" = "present" ]; then
+              echo "The iOS $sdk_version simulator runtime is listed despite the failed command; not retrying."
+              break
+            fi
             if [ "$attempt" -lt 3 ]; then
               sudo pkill -9 -f CoreSimulator || true
               sleep 20
             fi
           done
-          df -h /
 
-          if [ "$downloaded" != "yes" ]; then
-            echo "::error::Could not download the iOS $sdk_version platform for Xcode $xcode_version after 3 attempts. Without it xcodebuild cannot build for iOS devices. Re-run the job; if it keeps failing, see the 'Select Xcode' step in build-ios.yml."
-            exit 1
+          # A runtime that was just installed can take a moment to be listed.
+          check_ios_platform
+          for recheck in 1 2 3 4 5; do
+            if [ "$state" = "ready" ] || [ "$downloaded" != "yes" ]; then
+              break
+            fi
+            echo "Not ready yet; checking again in 10 seconds (recheck $recheck of 5)."
+            sleep 10
+            check_ios_platform
+          done
+
+          if [ "$state" = "ready" ]; then
+            show_runtimes
+            echo "The iOS $sdk_version platform is installed for Xcode $xcode_version."
+            exit 0
           fi
 
-          state="$(ios_platform_state)"
-          echo "Generic iOS device destination after the download: $state"
-          if [ "$state" = "missing" ]; then
-            show_report
-            echo "::error::The iOS platform was downloaded, but Xcode $xcode_version still reports the generic iOS device destination as not installed."
-            exit 1
+          show_diagnostics
+          if [ "$downloaded" != "yes" ] && [ "$runtime_state" != "present" ]; then
+            echo "::error::Could not download the iOS $sdk_version platform for Xcode $xcode_version: xcodebuild -downloadPlatform failed $attempt times (last failure: $failure). Without that platform xcodebuild cannot build for iOS devices. Re-run the job; if it keeps failing, check the runtime lists and the free disk space printed above, and the 'Select Xcode' step in build-ios.yml."
+          elif [ "$runtime_state" = "absent" ]; then
+            echo "::error::xcodebuild -downloadPlatform reported success, but no usable iOS $sdk_version simulator runtime is listed, so what it installed does not match the iOS $sdk_version SDK of Xcode $xcode_version (see 'xcrun simctl list runtimes' above)."
+          elif [ "$runtime_state" = "unknown" ]; then
+            echo "::error::xcodebuild -downloadPlatform reported success, but 'xcrun simctl list runtimes' keeps failing, so the iOS $sdk_version platform could not be verified (see its output above)."
+          else
+            echo "::error::The iOS $sdk_version simulator runtime is listed, but Xcode $xcode_version still reports the generic iOS device destination as not installed (see 'xcodebuild -showdestinations' above)."
           fi
-          if [ "$state" = "unknown" ]; then
-            show_report
-            echo "::warning::Could not confirm from 'xcodebuild -showdestinations' that the iOS platform is usable after the download; continuing."
-          fi
+          exit 1
 
       - name: Build unsigned archive
         env:
