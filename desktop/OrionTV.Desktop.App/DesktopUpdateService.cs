@@ -49,6 +49,7 @@ public sealed partial class DesktopUpdateService : IDisposable
     private readonly bool _ownsHttpClient;
     private readonly string _updateDirectory;
     private readonly string _lastCheckFile;
+    private readonly string _knownUpdateFile;
 
     public DesktopUpdateService(HttpClient? httpClient = null, string? updateDirectory = null)
     {
@@ -58,6 +59,7 @@ public sealed partial class DesktopUpdateService : IDisposable
             ? DefaultUpdateDirectory
             : Path.GetFullPath(updateDirectory);
         _lastCheckFile = Path.Combine(_updateDirectory, "last-check-utc.txt");
+        _knownUpdateFile = Path.Combine(_updateDirectory, "known-update-version.txt");
         if (!_http.DefaultRequestHeaders.UserAgent.Any())
         {
             _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("OpaiTV-Desktop", CurrentVersionText));
@@ -71,6 +73,57 @@ public sealed partial class DesktopUpdateService : IDisposable
     public static string CurrentVersionText => FormatVersion(CurrentVersion);
 
     public DesktopUpdateInfo? AvailableUpdate { get; private set; }
+
+    /// <summary>
+    /// 设置入口上的“更新小红点”是否显示：最近一次检查发现了比当前版本新的正式版。
+    /// </summary>
+    public bool HasUpdateBadge => AvailableUpdate is not null;
+
+    /// <summary>
+    /// 一次更新检查成功完成后触发（无论有没有新版本）；界面据此刷新小红点。可能不在 UI 线程。
+    /// </summary>
+    public event Action? AvailableUpdateChanged;
+
+    /// <summary>
+    /// 版本号比较：<paramref name="candidate"/> 是否比 <paramref name="current"/> 新。
+    /// 按数字逐段比较（1.3.9 小于 1.3.10），允许 v 前缀，缺的段按 0 算（1.3 等于 1.3.0）；
+    /// 任一方不是合法版本号时返回 false。
+    /// </summary>
+    public static bool IsNewerVersion(string? candidate, string? current) =>
+        TryParseLooseVersion(candidate, out var candidateVersion)
+        && TryParseLooseVersion(current, out var currentVersion)
+        && candidateVersion > currentVersion;
+
+    private static bool TryParseLooseVersion(string? value, out Version version)
+    {
+        version = new Version();
+        var match = LooseVersionRegex().Match((value ?? "").Trim());
+        if (!match.Success || !Version.TryParse(match.Groups["version"].Value, out var parsed))
+        {
+            return false;
+        }
+
+        version = NormalizeVersion(parsed);
+        return true;
+    }
+
+    /// <summary>
+    /// 上一次检查是否已经发现过比当前版本新的版本。自动检查有 12 小时间隔，间隔内重启时
+    /// <see cref="AvailableUpdate"/> 是空的；据此判断要不要在启动时静默再查一次，把小红点恢复出来。
+    /// 更新装完之后记下的版本不再比当前版本新，自然失效。
+    /// </summary>
+    public bool HasKnownNewerVersion()
+    {
+        try
+        {
+            return File.Exists(_knownUpdateFile)
+                && IsNewerVersion(File.ReadAllText(_knownUpdateFile).Trim(), CurrentVersionText);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     public bool IsAutomaticCheckDue()
     {
@@ -106,6 +159,8 @@ public sealed partial class DesktopUpdateService : IDisposable
         var json = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
         AvailableUpdate = SelectUpdateFromJson(json, CurrentVersion);
         RecordSuccessfulCheck();
+        RecordKnownUpdate(AvailableUpdate);
+        AvailableUpdateChanged?.Invoke();
         return AvailableUpdate;
     }
 
@@ -709,6 +764,25 @@ public sealed partial class DesktopUpdateService : IDisposable
         }
     }
 
+    private void RecordKnownUpdate(DesktopUpdateInfo? update)
+    {
+        try
+        {
+            if (update is null)
+            {
+                File.Delete(_knownUpdateFile);
+                return;
+            }
+
+            Directory.CreateDirectory(_updateDirectory);
+            File.WriteAllText(_knownUpdateFile, update.VersionText);
+        }
+        catch
+        {
+            // 记不下来只影响下次启动时小红点是否提前出现，不影响本次检查结果。
+        }
+    }
+
     private static string? FindStagedAppRoot(string staging)
     {
         if (File.Exists(Path.Combine(staging, AppExecutableName)))
@@ -796,6 +870,9 @@ public sealed partial class DesktopUpdateService : IDisposable
 
     [GeneratedRegex(@"^v?(?<version>\d+\.\d+\.\d+(?:\.\d+)?)$", RegexOptions.IgnoreCase)]
     private static partial Regex VersionRegex();
+
+    [GeneratedRegex(@"^v?(?<version>\d+(?:\.\d+){1,3})$", RegexOptions.IgnoreCase)]
+    private static partial Regex LooseVersionRegex();
 
     [GeneratedRegex(@"\b[0-9a-fA-F]{64}\b")]
     private static partial Regex Sha256Regex();

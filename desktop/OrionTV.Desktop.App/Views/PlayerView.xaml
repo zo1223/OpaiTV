@@ -112,6 +112,7 @@
                             <Button x:Name="MuteButton" Style="{StaticResource IconButtonStyle}" FontSize="16" Content="&#xE767;" Click="MuteButton_Click" ToolTip="静音 (M)" />
                             <Slider x:Name="VolumeSlider" Width="80" VerticalAlignment="Center" Minimum="0" Maximum="100" Value="100"
                                     ValueChanged="VolumeSlider_ValueChanged" />
+                            <Button x:Name="MiniPlayerButton" Style="{StaticResource IconButtonStyle}" FontSize="16" Content="&#xE8A7;" Click="MiniPlayerButton_Click" ToolTip="小窗播放（离开播放页，在置顶小窗口里接着播）" />
                         </StackPanel>
 
                         <Button x:Name="FullscreenButton" Grid.Column="5" Style="{StaticResource IconButtonStyle}" Content="&#xE740;" Click="FullscreenButton_Click" ToolTip="全屏 (F / 双击)" />

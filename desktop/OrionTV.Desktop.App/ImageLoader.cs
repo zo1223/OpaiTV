@@ -23,6 +23,20 @@ public static class ImageLoader
             typeof(ImageLoader),
             new PropertyMetadata(null, OnSourceUrlChanged));
 
+    /// <summary>
+    /// ImageLoader.FadeIn：图片是异步加载到的（不是缓存命中）时淡入显示。默认关闭。
+    /// </summary>
+    public static readonly DependencyProperty FadeInProperty =
+        DependencyProperty.RegisterAttached(
+            "FadeIn",
+            typeof(bool),
+            typeof(ImageLoader),
+            new PropertyMetadata(false));
+
+    public static void SetFadeIn(DependencyObject element, bool value) => element.SetValue(FadeInProperty, value);
+
+    public static bool GetFadeIn(DependencyObject element) => (bool)element.GetValue(FadeInProperty);
+
     public static void SetSourceUrl(DependencyObject element, string? value) => element.SetValue(SourceUrlProperty, value);
 
     public static string? GetSourceUrl(DependencyObject element) => (string?)element.GetValue(SourceUrlProperty);
@@ -67,6 +81,11 @@ public static class ImageLoader
 
                 Cache[url] = bitmap;
                 image.Source = bitmap;
+                if (GetFadeIn(image))
+                {
+                    // 只有刚下载到的图片淡入；缓存命中时上面已直接显示，不闪。
+                    Motion.FadeIn(image, 180);
+                }
             }
         }
         catch

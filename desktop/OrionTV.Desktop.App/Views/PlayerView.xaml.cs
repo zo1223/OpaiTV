@@ -137,6 +137,10 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
     /// <summary>当前播放内容所属的源 key（成人内容开关关闭时据此关闭正在播放的成人源）。</summary>
     internal string CurrentSourceKey => _sourceKey;
+
+    /// <summary>当前播放内容的分类信息（成人内容开关关闭时据此关闭正在播放的成人分类内容，并随观看记录保存）。</summary>
+    internal string? CurrentCategory => _category;
+    private string? _category;
     private string _sourceName = "";
     private string? _playbackSourceKey;
     private string _poster = "";
@@ -214,6 +218,7 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         _title = request.Title;
         _id = request.Id;
         _sourceKey = request.Source;
+        _category = request.Category;
         _sourceName = request.SourceName;
         _playbackSourceKey = request.PlaybackSourceKey;
         _poster = request.Poster;
@@ -1470,6 +1475,7 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         SaveRecord();
 
         _sourceKey = candidate.Source.Source;
+        _category = AdultContentFilter.CategoryOf(candidate.Source) ?? _category;
         _sourceName = candidate.Source.SourceName;
         _playbackSourceKey = candidate.Source.PlaybackSourceKey;
         _id = candidate.Source.Id;
@@ -1560,6 +1566,49 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
     }
 
     private void BackButton_Click(object sender, RoutedEventArgs e) => ReturnFromPlayer();
+
+    /// <summary>
+    /// 点了“小窗播放”：参数是当前播放内容的快照（当前集与当前进度）。主窗口收到后照常离开播放页
+    /// （保存记录、停止并释放播放器），再交给迷你播放窗口从同一进度接着播。
+    /// </summary>
+    internal event Action<PlayParameter>? MiniPlayerRequested;
+
+    private void MiniPlayerButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (CreateMiniPlayerHandoff() is { } handoff)
+        {
+            MiniPlayerRequested?.Invoke(handoff);
+        }
+    }
+
+    /// <summary>只有在线地址（LibVLC 播放）能交给迷你窗口；本地文件走内嵌 mpv，不接，返回 null。</summary>
+    private PlayParameter? CreateMiniPlayerHandoff()
+    {
+        if (_controller is null
+            || _usingLocalEngine
+            || _episodeIndex < 0
+            || _episodeIndex >= _episodes.Count
+            || !MiniPlayerSession.CanHandOff(_episodes[_episodeIndex]))
+        {
+            return null;
+        }
+
+        // 进度取法与“返回详情续播”一致：还没起播成功时沿用原定的续播位置，不交出 0
+        return new PlayParameter(
+            _title,
+            _sourceKey,
+            _sourceName,
+            _id,
+            _episodes.ToList(),
+            _episodeIndex,
+            CurrentResumeContext().PositionMs,
+            [],
+            _poster,
+            _playbackSourceKey,
+            _episodeLabels.ToList(),
+            Resume: null,
+            Category: _category);
+    }
 
     private void ReturnFromPlayer()
     {
@@ -1973,7 +2022,8 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
                 LocalEpisodes: isLocal ? _episodes.ToArray() : null,
                 PlaybackSourceKey: _playbackSourceKey,
                 EpisodeLabel: episodeLabel,
-                EpisodeNumber: episodeNumber));
+                EpisodeNumber: episodeNumber,
+                Category: _category));
             if (_playbackConfirmed
                 && !string.IsNullOrWhiteSpace(_historySource)
                 && !string.IsNullOrWhiteSpace(_historyId)

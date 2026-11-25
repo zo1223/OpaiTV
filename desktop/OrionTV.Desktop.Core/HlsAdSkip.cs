@@ -7,13 +7,19 @@ namespace OrionTV.Desktop.Core;
 public sealed record AdRange(double StartMs, double EndMs);
 
 /// <summary>
-/// 跳广告检测。两种安全信号：
+/// 跳广告检测，三级逐级回落（见 <see cref="DetectAsync"/>）：
 /// 1) 显式广告标记 #EXT-X-CUE-OUT / #EXT-X-CUE-IN（移植自安卓 services/m3u8.ts，可靠）。
-/// 2) 异源段启发式：广告段来自与正片不同的 CDN 时，将这些连续段识别为广告（带保护阈值，避免误伤）。
-/// 对单 host、无标记的源不会误判；对烧录进画面的广告无法处理（播放列表层面无信号）。
+/// 2) 片头片尾黑场 + 静音段（<see cref="BlackSilenceAdDetector"/>，按分片字节率近似，不解码）。
+/// 3) 异源段启发式：广告段来自与正片不同的 CDN 时，将这些连续段识别为广告（带保护阈值，避免误伤）。
+/// 对单 host、无标记、片头片尾也没有黑场静音的源不会误判；烧录进正片中段的广告无法处理。
 /// </summary>
-public sealed partial class HlsAdSkip(HttpClient httpClient)
+public sealed partial class HlsAdSkip(HttpClient httpClient, ISegmentProbe? segmentProbe = null)
 {
+    private readonly ISegmentProbe _segmentProbe = segmentProbe ?? new HttpSegmentProbe(httpClient);
+
+    /// <summary>第二级（黑场 + 静音探测）的限时；超时算这一级失败，降到异源段启发式。</summary>
+    public TimeSpan BlackSilenceTimeout { get; init; } = TimeSpan.FromSeconds(8);
+
     // 异源段总占比超过该比例则视为无法可靠区分正片/广告，放弃跳过。
     private const double MaxForeignFraction = 0.5;
 
@@ -153,27 +159,94 @@ public sealed partial class HlsAdSkip(HttpClient httpClient)
 
     public async Task<IReadOnlyList<AdRange>> GetAdRangesAsync(string url, CancellationToken cancellationToken = default)
     {
+        return (await DetectAsync(url, cancellationToken).ConfigureAwait(false)).Ranges;
+    }
+
+    /// <summary>
+    /// 多级识别，逐级回落：CUE 标记 → 片头片尾黑场 + 静音段 → 异源段启发式。
+    /// 某一级没结果或失败就降到下一级；全部失败返回空区间（正常播放），任何情况下都不抛异常。
+    /// </summary>
+    public async Task<AdDetectionResult> DetectAsync(string url, CancellationToken cancellationToken = default)
+    {
+        var attempts = new List<AdTierAttempt>();
         if (string.IsNullOrWhiteSpace(url) || !M3u8UrlRegex().IsMatch(url.Trim()))
         {
-            return [];
+            return AdDetectionResult.Empty();
         }
 
+        string mediaUrl;
+        string playlist;
         try
         {
-            var (mediaUrl, playlist) = await FetchResolvingMasterAsync(url, cancellationToken).ConfigureAwait(false);
-
-            var markerRanges = ParseAdRanges(playlist);
-            if (markerRanges.Count > 0)
-            {
-                return markerRanges;
-            }
-
-            return ParseForeignHostAdRanges(playlist, mediaUrl);
+            (mediaUrl, playlist) = await FetchResolvingMasterAsync(url, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
-            return [];
+            return AdDetectionResult.Empty();
         }
+
+        // 第一级：显式 CUE 标记。
+        try
+        {
+            var markerRanges = ParseAdRanges(playlist);
+            if (markerRanges.Count > 0)
+            {
+                attempts.Add(new AdTierAttempt(AdDetectionTier.Cue, AdTierOutcome.Hit));
+                return new AdDetectionResult(markerRanges, AdDetectionTier.Cue, attempts);
+            }
+
+            attempts.Add(new AdTierAttempt(AdDetectionTier.Cue, AdTierOutcome.Miss, "没有 CUE 标记"));
+        }
+        catch (Exception ex)
+        {
+            attempts.Add(new AdTierAttempt(AdDetectionTier.Cue, AdTierOutcome.Error, ex.Message));
+        }
+
+        // 第二级：片头片尾黑场 + 静音段（要联网探测分片，单独限时）。
+        try
+        {
+            using var tierCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            tierCts.CancelAfter(BlackSilenceTimeout);
+            var outcome = await BlackSilenceAdDetector
+                .DetectAsync(playlist, mediaUrl, _segmentProbe, tierCts.Token)
+                .ConfigureAwait(false);
+            attempts.Add(new AdTierAttempt(AdDetectionTier.BlackSilence, outcome.Result, outcome.Detail));
+            if (outcome.Result == AdTierOutcome.Hit && outcome.Ranges.Count > 0)
+            {
+                return new AdDetectionResult(outcome.Ranges, AdDetectionTier.BlackSilence, attempts);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return AdDetectionResult.Empty(attempts);
+        }
+        catch (OperationCanceledException)
+        {
+            attempts.Add(new AdTierAttempt(AdDetectionTier.BlackSilence, AdTierOutcome.Error, "探测超时"));
+        }
+        catch (Exception ex)
+        {
+            attempts.Add(new AdTierAttempt(AdDetectionTier.BlackSilence, AdTierOutcome.Error, ex.Message));
+        }
+
+        // 第三级：异源段启发式。
+        try
+        {
+            var foreignRanges = ParseForeignHostAdRanges(playlist, mediaUrl);
+            if (foreignRanges.Count > 0)
+            {
+                attempts.Add(new AdTierAttempt(AdDetectionTier.ForeignHost, AdTierOutcome.Hit));
+                return new AdDetectionResult(foreignRanges, AdDetectionTier.ForeignHost, attempts);
+            }
+
+            attempts.Add(new AdTierAttempt(AdDetectionTier.ForeignHost, AdTierOutcome.Miss, "没有异源段"));
+        }
+        catch (Exception ex)
+        {
+            attempts.Add(new AdTierAttempt(AdDetectionTier.ForeignHost, AdTierOutcome.Error, ex.Message));
+        }
+
+        return AdDetectionResult.Empty(attempts);
     }
 
     private async Task<(string Url, string Playlist)> FetchResolvingMasterAsync(string url, CancellationToken cancellationToken)

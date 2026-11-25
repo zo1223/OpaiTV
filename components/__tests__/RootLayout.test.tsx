@@ -3,6 +3,7 @@ import React from "react";
 import renderer, { act } from "react-test-renderer";
 
 import RootLayout from "../../app/_layout";
+import { Stack } from "expo-router";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { SettingsManager } from "@/services/storage";
 import { api } from "@/services/api";
@@ -54,6 +55,9 @@ jest.mock("react-native-safe-area-context", () => ({
 }));
 jest.mock("@/components/LoginModal", () => ({ __esModule: true, default: () => null }));
 jest.mock("@/components/UpdateModal", () => ({ UpdateModal: () => null }));
+jest.mock("@/components/FavoritesDrawer", () => ({ FavoritesDrawer: () => null }));
+jest.mock("@/components/PlayRecordUndoBar", () => ({ PlayRecordUndoBar: () => null }));
+jest.mock("@/components/MiniPlayerBar", () => ({ MiniPlayerBar: () => null }));
 
 jest.mock("@/utils/Logger", () => ({
   __esModule: true,
@@ -110,6 +114,15 @@ describe("RootLayout login check", () => {
   afterEach(() => {
     act(() => tree.unmount());
     jest.restoreAllMocks();
+  });
+
+  it("uses a short fade for page transitions on every screen", async () => {
+    await startApp("");
+
+    expect(tree.root.findByType(Stack as any).props.screenOptions).toEqual({
+      animation: "fade",
+      animationDuration: 200,
+    });
   });
 
   it("checks the login status once the saved API address has been loaded", async () => {

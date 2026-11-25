@@ -10,7 +10,10 @@ import { Search, Settings, LogOut, Heart } from "lucide-react-native";
 import { StyledButton } from "@/components/StyledButton";
 import useHomeStore, { RowItem, Category } from "@/stores/homeStore";
 import useAuthStore from "@/stores/authStore";
+import useFavoritesStore from "@/stores/favoritesStore";
+import { UpdateBadge } from "@/components/UpdateBadge";
 import CustomScrollView from "@/components/CustomScrollView";
+import { HomeHeroBanner, useHeroBannerItems } from "@/components/HomeHeroBanner";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
@@ -48,7 +51,11 @@ export default function HomeScreen() {
     clearError,
   } = useHomeStore();
   const { isLoggedIn, logout } = useAuthStore();
+  const openFavoritesDrawer = useFavoritesStore((state) => state.openDrawer);
   const apiConfigStatus = useApiConfig();
+  // 首页大横幅:只在手机和平板上启用(TV 不启用,行为不变);数据是推荐结果 + 当前已加载的首页条目,不发新请求
+  const heroEnabled = deviceType !== "tv";
+  const heroItems = useHeroBannerItems(contentData, heroEnabled);
 
   useFocusEffect(
     useCallback(() => {
@@ -185,8 +192,8 @@ export default function HomeScreen() {
       totalEpisodes={item.totalEpisodes}
       playabilityStatus={item.playabilityStatus}
       playableSourceCount={item.playableSourceCount}
+      reason={item.reason}
       api={api}
-      onRecordDeleted={fetchInitialData}
     />
   );
 
@@ -216,7 +223,12 @@ export default function HomeScreen() {
           </Pressable>
         </View>
         <View style={dynamicStyles.rightHeaderButtons}>
-          <StyledButton style={dynamicStyles.iconButton} onPress={() => router.push("/favorites")} variant="ghost">
+          {/* 触屏设备滑出收藏面板;遥控器操作的 TV 仍进收藏页(面板里的行内按钮没有做焦点走位) */}
+          <StyledButton
+            style={dynamicStyles.iconButton}
+            onPress={() => (Platform.isTV ? router.push("/favorites") : openFavoritesDrawer())}
+            variant="ghost"
+          >
             <Heart color={colorScheme === "dark" ? "white" : "black"} size={24} />
           </StyledButton>
           <StyledButton
@@ -227,7 +239,10 @@ export default function HomeScreen() {
             <Search color={colorScheme === "dark" ? "white" : "black"} size={24} />
           </StyledButton>
           <StyledButton style={dynamicStyles.iconButton} onPress={() => router.push("/settings")} variant="ghost">
-            <Settings color={colorScheme === "dark" ? "white" : "black"} size={24} />
+            <View>
+              <Settings color={colorScheme === "dark" ? "white" : "black"} size={24} />
+              <UpdateBadge />
+            </View>
           </StyledButton>
           {isLoggedIn && (
             <StyledButton style={dynamicStyles.iconButton} onPress={logout} variant="ghost">
@@ -373,8 +388,19 @@ export default function HomeScreen() {
             error={error}
             onEndReached={loadMoreData}
             loadMoreThreshold={LOAD_MORE_THRESHOLD}
-            emptyMessage={selectedCategory?.tags ? "请选择一个子分类" : "该分类下暂无内容"}
+            emptyMessage={
+              selectedCategory?.type === "recommend"
+                ? "看过或收藏一些内容后，这里会出现推荐（只在本机计算，不上传观看记录）"
+                : selectedCategory?.tags
+                ? "请选择一个子分类"
+                : "该分类下暂无内容"
+            }
             ListFooterComponent={renderFooter}
+            ListHeaderComponent={
+              heroEnabled && heroItems.length > 0 ? (
+                <HomeHeroBanner items={heroItems} height={deviceType === "tablet" ? 240 : 200} />
+              ) : null
+            }
           />
         </Animated.View>
       )}

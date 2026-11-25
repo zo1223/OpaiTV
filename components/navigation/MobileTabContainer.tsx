@@ -5,6 +5,8 @@ import { Home, Search, Heart, Settings, Tv } from 'lucide-react-native';
 import { Colors } from '@/constants/Colors';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
 import { DeviceUtils } from '@/utils/DeviceUtils';
+import useFavoritesStore from '@/stores/favoritesStore';
+import { UpdateBadge } from '@/components/UpdateBadge';
 
 interface TabItem {
   key: string;
@@ -35,7 +37,14 @@ const MobileTabContainer: React.FC<MobileTabContainerProps> = ({ children }) => 
     deviceType !== 'mobile' || tab.key !== 'live'
   );
   
+  const openFavoritesDrawer = useFavoritesStore((state) => state.openDrawer);
+
   const handleTabPress = (route: string) => {
+    // 收藏入口滑出侧边面板;已经在收藏页时不再叠一层
+    if (route === '/favorites' && pathname !== '/favorites') {
+      openFavoritesDrawer();
+      return;
+    }
     if (route === '/') {
       router.push('/');
     } else {
@@ -68,14 +77,18 @@ const MobileTabContainer: React.FC<MobileTabContainerProps> = ({ children }) => 
             <TouchableOpacity
               key={tab.key}
               style={[dynamicStyles.tab, isActive && dynamicStyles.activeTab]}
+              testID={`mobile-tab-${tab.key}`}
               onPress={() => handleTabPress(tab.route)}
               activeOpacity={0.7}
             >
-              <IconComponent
-                size={20}
-                color={isActive ? Colors.dark.primary : '#888'}
-                strokeWidth={isActive ? 2.5 : 2}
-              />
+              <View>
+                <IconComponent
+                  size={20}
+                  color={isActive ? Colors.dark.primary : '#888'}
+                  strokeWidth={isActive ? 2.5 : 2}
+                />
+                {tab.key === 'settings' && <UpdateBadge />}
+              </View>
               <Text style={[
                 dynamicStyles.tabLabel,
                 isActive && dynamicStyles.activeTabLabel

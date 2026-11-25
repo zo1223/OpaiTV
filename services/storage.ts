@@ -52,6 +52,14 @@ export interface AppSettings {
   danmakuOpacity?: number;
   danmakuSpeed?: string;
   danmakuFontSize?: string;
+  /** 片源模式(稳定/影视/全量/关闭),按源 key;缺失的源按全量。见 services/sourceMode */
+  sourceModes?: Record<string, string>;
+  /** 首页“为你推荐”开关,默认开(缺失按开);推荐只在本机计算 */
+  recommendationsEnabled?: boolean;
+  /** 播放代理模式:system | forced | direct;缺失按 system。见 services/playbackProxy */
+  playbackProxyMode?: string;
+  /** 强制代理使用的中转地址 */
+  playbackProxyUrl?: string;
 }
 
 export interface LoginCredentials {

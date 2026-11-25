@@ -197,7 +197,10 @@ public sealed record FavoriteItem(
     int TotalEpisodes,
     string SearchTitle,
     string Year,
-    long SaveTime = 0);
+    long SaveTime = 0,
+    // 收藏时条目的分类名 + 题材标签（AdultContentFilter.CategoryOf）；成人内容开关关闭时据此按分类过滤。
+    // 旧版本保存的收藏没有这个字段，无法按分类判断。
+    string? Category = null);
 
 /// <summary>本地观看记录（对齐安卓 PlayRecord）。</summary>
 public sealed record PlayRecordItem(
@@ -214,7 +217,10 @@ public sealed record PlayRecordItem(
     IReadOnlyList<string>? LocalEpisodes = null,
     string? PlaybackSourceKey = null,
     string? EpisodeLabel = null,
-    int? EpisodeNumber = null);
+    int? EpisodeNumber = null,
+    // 播放时条目的分类名 + 题材标签（AdultContentFilter.CategoryOf）；成人内容开关关闭时据此按分类过滤。
+    // 旧版本保存的记录没有这个字段，无法按分类判断。
+    string? Category = null);
 
 public static class PlaybackResumePolicy
 {
@@ -352,7 +358,11 @@ public static class PlaybackMediaOptions
     public const string AndroidLikeUserAgent =
         "Mozilla/5.0 (Linux; Android 13; Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
-    public static IReadOnlyList<string> ForUri(Uri uri, int networkCachingMs = 1500)
+    /// <summary>按当前的播放代理模式（<see cref="PlaybackProxyRuntime"/>）生成选项；每次起播现读一次。</summary>
+    public static IReadOnlyList<string> ForUri(Uri uri, int networkCachingMs = 1500) =>
+        ForUri(uri, networkCachingMs, PlaybackProxyRuntime.Current());
+
+    public static IReadOnlyList<string> ForUri(Uri uri, int networkCachingMs, PlaybackProxyDecision proxy)
     {
         if (uri.IsFile)
         {
@@ -371,6 +381,8 @@ public static class PlaybackMediaOptions
             options.Insert(1, $":http-referrer={referrer}");
         }
 
+        // 强制代理时追加 :http-proxy；系统代理、直连以及本机回环地址不追加，选项与原来完全一致。
+        options.AddRange(proxy.LibVlcOptionsFor(uri));
         return options;
     }
 

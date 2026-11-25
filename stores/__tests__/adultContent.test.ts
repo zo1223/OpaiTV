@@ -1,6 +1,8 @@
 import useHomeStore from "../homeStore";
 import useFavoritesStore from "../favoritesStore";
 import useAuthStore from "../authStore";
+import useDetailStore from "../detailStore";
+import usePlayerStore from "../playerStore";
 import { useSettingsStore } from "../settingsStore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { api } from "@/services/api";
@@ -218,5 +220,161 @@ describe("adult content in the stores", () => {
 
     await useSettingsStore.getState().setShowAdultContent(false);
     expect(JSON.parse(stored.mytv_settings).showAdultContent).toBe(false);
+  });
+
+  // ---- 按分类过滤:源本身没有成人标记,条目的分类是成人分类 ----
+  describe("adult categories on sources that are not marked adult", () => {
+    const favorite = (title: string, typeName?: string) => ({
+      title,
+      source_name: "Normal",
+      cover: "",
+      total_episodes: 1,
+      search_title: "",
+      year: "",
+      ...(typeName ? { type_name: typeName } : {}),
+    });
+
+    beforeEach(() => {
+      // 没有任何成人源:只剩分类这一条过滤依据
+      setSources([normal]);
+      stored.mytv_play_records = JSON.stringify({
+        "normal+1": { ...record("Normal Movie", 10), type_name: "剧情片" },
+        "normal+2": { ...record("Late Night", 20), type_name: "伦理片" },
+        // 片名带“伦理”,分类正常:不能被拦
+        "normal+3": { ...record("伦理学讲座", 30), type_name: "纪录片,人文" },
+        // 旧记录没有分类:无法判断,保持显示
+        "normal+4": record("Legacy", 40),
+        "normal+5": { ...record("Tagged", 50), type_name: "剧情片,剧情,情色" },
+      });
+      stored.mytv_favorites = JSON.stringify({
+        "normal+1": favorite("Normal Movie", "爱情片"),
+        "normal+2": favorite("Late Night", "港台三级"),
+        "normal+3": favorite("伦理学讲座", "纪录片"),
+        "normal+4": favorite("Legacy"),
+        "normal+5": favorite("Bonus", "福利"),
+      });
+    });
+
+    it("leaves adult-category records out of continue-watching while the toggle is off", async () => {
+      await useHomeStore.getState().refreshPlayRecords();
+
+      expect(homeTitles()).toEqual(["Legacy", "伦理学讲座", "Normal Movie"]);
+      // 记录本身不删除
+      expect(Object.keys(JSON.parse(stored.mytv_play_records))).toHaveLength(5);
+    });
+
+    it("shows them in continue-watching when the toggle is on", async () => {
+      await useSettingsStore.getState().setShowAdultContent(true);
+
+      await useHomeStore.getState().refreshPlayRecords();
+
+      expect(homeTitles()).toEqual(["Tagged", "Legacy", "伦理学讲座", "Late Night", "Normal Movie"]);
+    });
+
+    it("hides the watch history category when only adult-category records exist", async () => {
+      stored.mytv_play_records = JSON.stringify({ "normal+2": { ...record("Late Night", 20), type_name: "伦理片" } });
+
+      await useHomeStore.getState().refreshPlayRecords();
+
+      expect(useHomeStore.getState().categories.some((category) => category.type === "record")).toBe(false);
+    });
+
+    it("removes adult-category items from the home screen as soon as the toggle is turned off, with no adult source at all", async () => {
+      await useSettingsStore.getState().setShowAdultContent(true);
+      await useHomeStore.getState().refreshPlayRecords();
+      expect(homeTitles()).toContain("Late Night");
+
+      await useSettingsStore.getState().setShowAdultContent(false);
+
+      expect(homeTitles()).toEqual(["Legacy", "伦理学讲座", "Normal Movie"]);
+    });
+
+    it("does not serve a home category from the cache filled under the other toggle state, with no adult source at all", async () => {
+      const category = { title: "Movies", type: "movie" as const, tag: "adult-category-cache" };
+      const item = (id: string, typeName: string) => ({
+        id,
+        title: id,
+        poster: "",
+        year: "",
+        source: "normal",
+        source_name: "Normal",
+        type_name: typeName,
+      });
+      const getDoubanData = jest
+        .spyOn(api, "getDoubanData")
+        .mockImplementation(async (_type, _tag, _size, start = 0) => ({
+          code: 0,
+          message: "",
+          // 取数层本身按开关过滤;这里模拟它的结果
+          list: (start > 0 ? [] : [item("n", "剧情片"), item("a", "伦理片")]).filter((entry) => !api.isAdultItemHidden(entry)),
+        }));
+
+      await useSettingsStore.getState().setShowAdultContent(true);
+      useHomeStore.setState({ selectedCategory: category, contentData: [], pageStart: 0, hasMore: true });
+      await useHomeStore.getState().fetchInitialData();
+      expect(homeTitles()).toEqual(["n", "a"]);
+
+      await useSettingsStore.getState().setShowAdultContent(false);
+      expect(homeTitles()).toEqual(["n"]);
+      await useHomeStore.getState().fetchInitialData();
+      expect(homeTitles()).toEqual(["n"]);
+
+      await useSettingsStore.getState().setShowAdultContent(true);
+      await useHomeStore.getState().fetchInitialData();
+      expect(homeTitles()).toEqual(["n", "a"]);
+      expect(getDoubanData).toHaveBeenCalledTimes(3);
+    });
+
+    it("leaves adult-category favorites out of the favorites list while the toggle is off, and keeps them stored", async () => {
+      await useFavoritesStore.getState().fetchFavorites();
+      expect(useFavoritesStore.getState().favorites.map((item) => item.title)).toEqual(["Normal Movie", "伦理学讲座", "Legacy"]);
+
+      await useSettingsStore.getState().setShowAdultContent(true);
+      await useFavoritesStore.getState().fetchFavorites();
+      expect(useFavoritesStore.getState().favorites.map((item) => item.title)).toEqual([
+        "Normal Movie",
+        "Late Night",
+        "伦理学讲座",
+        "Legacy",
+        "Bonus",
+      ]);
+      expect(Object.keys(JSON.parse(stored.mytv_favorites))).toHaveLength(5);
+    });
+
+    it("stores the category with a new favorite and a new play record, so they can be filtered later", async () => {
+      const detail = {
+        id: 9,
+        title: "Late Night 2",
+        poster: "",
+        episodes: ["https://video.example/a.m3u8"],
+        source: "normal",
+        source_name: "Normal",
+        year: "2026",
+        type_name: "伦理片",
+        class: "剧情,伦理",
+      };
+      useDetailStore.setState({ detail: detail as any, q: "Late Night 2" });
+
+      await useDetailStore.getState().toggleFavorite();
+      expect(JSON.parse(stored.mytv_favorites)["normal+9"]).toMatchObject({ title: "Late Night 2", type_name: "伦理片,剧情,伦理" });
+
+      usePlayerStore.setState({
+        status: { isLoaded: true, positionMillis: 5000, durationMillis: 100000 } as any,
+        episodes: [{ url: "https://video.example/a.m3u8", title: "1" }] as any,
+        currentEpisodeIndex: 0,
+      });
+      usePlayerStore.getState()._savePlayRecord({}, { immediate: true });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(JSON.parse(stored.mytv_play_records)["normal+9"]).toMatchObject({ title: "Late Night 2", type_name: "伦理片,剧情,伦理" });
+
+      // 存下来的分类让它们在开关关闭时不显示
+      await useFavoritesStore.getState().fetchFavorites();
+      expect(useFavoritesStore.getState().favorites.map((item) => item.title)).not.toContain("Late Night 2");
+      await useHomeStore.getState().refreshPlayRecords();
+      expect(homeTitles()).not.toContain("Late Night 2");
+
+      useDetailStore.setState({ detail: null as any });
+    });
   });
 });

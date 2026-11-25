@@ -35,6 +35,30 @@ public partial class SettingsView : UserControl, INavigationAware
         Header.BackRequested += (_, _) => _host.GoBack();
         _syncQrTimer.Tick += (_, _) => ShowSyncQr(_syncQrIndex + 1);
         Unloaded += (_, _) => _syncQrTimer.Stop();
+        // 更新小红点对应的状态：后台检查（启动时）发现新版本后，已经打开过的设置页也要显示“下载并安装”。
+        Loaded += (_, _) =>
+        {
+            _host.Services.Updates.AvailableUpdateChanged -= OnAvailableUpdateChanged;
+            _host.Services.Updates.AvailableUpdateChanged += OnAvailableUpdateChanged;
+            SyncAvailableUpdate();
+        };
+        Unloaded += (_, _) => _host.Services.Updates.AvailableUpdateChanged -= OnAvailableUpdateChanged;
+    }
+
+    // 更新检查在后台线程完成
+    private void OnAvailableUpdateChanged() => Dispatcher.BeginInvoke(SyncAvailableUpdate);
+
+    private void SyncAvailableUpdate()
+    {
+        // 本页自己发起的检查 / 下载进行中时不插手，由发起方渲染结果。
+        var latest = _host.Services.Updates.AvailableUpdate;
+        if (_updateBusy || ReferenceEquals(_availableUpdate, latest))
+        {
+            return;
+        }
+
+        _availableUpdate = latest;
+        RenderUpdateState();
     }
 
     public void OnNavigatedTo(object? parameter)
@@ -49,7 +73,11 @@ public partial class SettingsView : UserControl, INavigationAware
         M3uBox.Text = settings.M3uUrl;
         AutoSkipToggle.IsChecked = settings.AutoSkipAds;
         AdultContentToggle.IsChecked = settings.ShowAdultContent;
+        RecommendToggle.IsChecked = settings.PersonalizedRecommendations;
+        TmdbKeyBox.Password = settings.TmdbApiKey;
+        TmdbKeyStatus.Text = TmdbStatusText(settings.TmdbApiKey);
         ShowDanmakuSettings(settings);
+        ShowPlaybackProxySettings(settings);
         AddSourceBox.Text = "";
         AddSourceAdultCheck.IsChecked = false;
         AddSourceStatus.Text = "";
@@ -473,6 +501,102 @@ public partial class SettingsView : UserControl, INavigationAware
     private bool _danmakuSaveFailed;
     private bool _danmakuServerInvalid;
 
+    private static string TmdbStatusText(string? key) =>
+        string.IsNullOrWhiteSpace(key) ? "未填写：不启用，不会向 TMDB 发任何请求。" : "已保存在本机，下次打开详情页生效。";
+
+    // TMDB Key：改了立即保存（只写本机 settings.json），不随“保存设置”提交
+    private void TmdbKeyBox_PasswordChanged(object sender, RoutedEventArgs e)
+    {
+        var key = TmdbKeyBox.Password.Trim();
+        if (!_loaded || key == _host.Services.Settings.TmdbApiKey)
+        {
+            return;
+        }
+
+        try
+        {
+            _host.Services.SetTmdbApiKey(key);
+            TmdbKeyStatus.Text = TmdbStatusText(key);
+        }
+        catch
+        {
+            TmdbKeyStatus.Text = "本次已生效，但写入设置文件失败，重启后可能恢复原状";
+        }
+    }
+
+    private void TmdbKeyClearButton_Click(object sender, RoutedEventArgs e) => TmdbKeyBox.Password = "";
+
+    // 个性化推荐开关：立即生效并保存
+    private void RecommendToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_loaded)
+        {
+            return;
+        }
+
+        try
+        {
+            _host.Services.SetPersonalizedRecommendations(RecommendToggle.IsChecked == true);
+            RecommendStatus.Text = "首页显示“为你推荐”。" + LocalRecommender.PrivacyNote;
+        }
+        catch
+        {
+            RecommendStatus.Text = "本次已生效，但写入设置文件失败，重启后可能恢复原状";
+        }
+    }
+
+    /// <summary>片源模式列表：每个当前可见的片源一行，名称 + 四档下拉框。</summary>
+    private void RenderSourceModes()
+    {
+        SourceModesPanel.Children.Clear();
+        foreach (var source in _host.Services.Sources)
+        {
+            var combo = new ComboBox { Width = 190, Tag = source.Key, VerticalAlignment = VerticalAlignment.Center };
+            foreach (var mode in SourceModes.All)
+            {
+                combo.Items.Add(new ComboBoxItem
+                {
+                    Content = $"{SourceModes.Label(mode)} · {SourceModes.Describe(mode)}",
+                    Tag = mode,
+                });
+            }
+
+            combo.SelectedIndex = SourceModes.All.ToList().IndexOf(_host.Services.SourceModeOf(source.Key));
+            combo.SelectionChanged += SourceModeCombo_SelectionChanged;
+            DockPanel.SetDock(combo, Dock.Right);
+            var row = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
+            row.Children.Add(combo);
+            row.Children.Add(new TextBlock
+            {
+                Text = source.Name,
+                FontSize = 13,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Foreground = (System.Windows.Media.Brush)FindResource("TextBrush"),
+            });
+            SourceModesPanel.Children.Add(row);
+        }
+    }
+
+    private void SourceModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox { Tag: string key, SelectedItem: ComboBoxItem { Tag: SourceMode mode } })
+        {
+            return;
+        }
+
+        try
+        {
+            _host.Services.SetSourceMode(key, mode);
+            SourceModeStatus.Visibility = Visibility.Collapsed;
+        }
+        catch
+        {
+            SourceModeStatus.Text = "片源模式本次已生效，但写入设置文件失败，重启后可能恢复原状";
+            SourceModeStatus.Visibility = Visibility.Visible;
+        }
+    }
+
     private void AdultContentToggle_Changed(object sender, RoutedEventArgs e)
     {
         if (!_loaded)
@@ -598,6 +722,68 @@ public partial class SettingsView : UserControl, INavigationAware
         else if (ReferenceEquals(sender, DanmakuFontSizeBox))
         {
             SaveDanmakuSettings(fontSize: SelectedTag(DanmakuFontSizeBox));
+        }
+    }
+
+    // 播放代理（系统代理 / 强制代理 / 直连）：改了立即保存，下一次播放生效，不需要再点“保存设置”
+    private void ShowPlaybackProxySettings(DesktopSettings settings)
+    {
+        var mode = PlaybackProxyModes.Normalize(settings.PlaybackProxyMode);
+        PlaybackProxyModeBox.SelectedItem = PlaybackProxyModeBox.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag as string, mode, StringComparison.Ordinal));
+        PlaybackProxyUrlBox.Text = settings.PlaybackProxyUrl ?? "";
+        PlaybackProxyStatus.Text = "当前：" + DescribePlaybackProxy(settings);
+    }
+
+    private static string DescribePlaybackProxy(DesktopSettings settings)
+    {
+        var decision = PlaybackProxyDecision.From(settings);
+        return decision.Mode switch
+        {
+            PlaybackProxyModes.ForcedProxy when decision.ProxyUri is not null =>
+                $"强制代理，播放请求走 {PlaybackProxyAddress.Describe(decision.ProxyUri)}",
+            PlaybackProxyModes.Direct => "直连，播放请求不走代理",
+            _ => "系统代理，播放请求跟随系统代理设置",
+        };
+    }
+
+    private void PlaybackProxyModeBox_SelectionChanged(object sender, SelectionChangedEventArgs e) => CommitPlaybackProxy();
+
+    private void PlaybackProxyUrlBox_LostFocus(object sender, RoutedEventArgs e) => CommitPlaybackProxy();
+
+    private void PlaybackProxyUrlBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            CommitPlaybackProxy();
+        }
+    }
+
+    private void CommitPlaybackProxy()
+    {
+        if (!_loaded)
+        {
+            return;
+        }
+
+        var mode = (PlaybackProxyModeBox.SelectedItem as ComboBoxItem)?.Tag as string;
+        try
+        {
+            if (!_host.Services.SetPlaybackProxy(mode, PlaybackProxyUrlBox.Text))
+            {
+                // 选了强制代理但地址填得不对：不保存，说清楚现在实际按什么播放
+                PlaybackProxyStatus.Text =
+                    $"强制代理还没有生效：{PlaybackProxyAddress.FormatHint}。目前仍是{DescribePlaybackProxy(_host.Services.Settings)}。";
+                return;
+            }
+
+            PlaybackProxyStatus.Text = $"已保存，下一次播放生效：{DescribePlaybackProxy(_host.Services.Settings)}。";
+        }
+        catch
+        {
+            PlaybackProxyStatus.Text = "本次已生效，但写入设置文件失败，重启后可能恢复原状";
         }
     }
 
@@ -925,6 +1111,7 @@ public partial class SettingsView : UserControl, INavigationAware
         SourceSummaryText.Text = $"当前共 {services.Sources.Count} 个视频源"
             + (hidden > 0 ? $"，另有 {hidden} 个成人源已隐藏（成人内容开关已关闭）" : "");
         ExtraSourcesList.ItemsSource = services.VisibleExtraSources;
+        RenderSourceModes();
         if (SyncExportPanel.Visibility == Visibility.Visible)
         {
             // 源有增删或改了成人标记：已展开的同步链接和二维码跟着更新

@@ -188,6 +188,10 @@ public sealed class VodCacheService : IDisposable
             AllowAutoRedirect = true,
             AutomaticDecompression = DecompressionMethods.All,
             ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
+            // 播放代理模式（系统代理 / 强制代理 / 直连）：每个请求现读当前设置，切换后下一次播放生效。
+            // 系统代理模式下与 HttpClient 默认行为相同。
+            UseProxy = true,
+            Proxy = new PlaybackWebProxy(static () => PlaybackProxyRuntime.Current()),
         };
         // 单次请求超时由 SendWithTimeoutAsync 控制；这里保持无限，避免长整集下载被全局超时打断。
         _http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };

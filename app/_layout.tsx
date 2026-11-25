@@ -14,8 +14,12 @@ import LoginModal from "@/components/LoginModal";
 import useAuthStore from "@/stores/authStore";
 import { useUpdateStore, initUpdateStore } from "@/stores/updateStore";
 import { UpdateModal } from "@/components/UpdateModal";
+import { FavoritesDrawer } from "@/components/FavoritesDrawer";
+import { PlayRecordUndoBar } from "@/components/PlayRecordUndoBar";
+import { MiniPlayerBar } from "@/components/MiniPlayerBar";
 import { UPDATE_CONFIG } from "@/constants/UpdateConfig";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
+import { STACK_SCREEN_TRANSITION } from "@/utils/motion";
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('RootLayout');
@@ -88,7 +92,8 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
         <View style={styles.container}>
-          <Stack>
+          {/* 页面切换统一用短的淡入淡出;各页面在切换开始时就已挂载,不会推迟起播 */}
+          <Stack screenOptions={STACK_SCREEN_TRANSITION}>
             <Stack.Screen name="index" options={{ headerShown: false }} />
             <Stack.Screen name="detail" options={{ headerShown: false }} />
             {Platform.OS !== "web" && <Stack.Screen name="play" options={{ headerShown: false }} />}
@@ -99,6 +104,9 @@ export default function RootLayout() {
             <Stack.Screen name="+not-found" />
           </Stack>
         </View>
+        <MiniPlayerBar />
+        <PlayRecordUndoBar />
+        <FavoritesDrawer />
         <Toast />
         <LoginModal />
         <UpdateModal />

@@ -1,16 +1,15 @@
 import React, { useState, useEffect, useCallback, useRef, forwardRef } from "react";
-import { View, Text, Image, StyleSheet, Pressable, TouchableOpacity, Alert, Animated, Platform } from "react-native";
+import { resolveDirectPlayParams } from "@/services/directPlay";
+import { View, Text, Image, StyleSheet, Pressable, TouchableOpacity, Animated, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { Star, Play } from "lucide-react-native";
-import { PlayRecordManager } from "@/services/storage";
+import { usePlayRecordUndoStore } from "@/stores/playRecordUndoStore";
 import { API } from "@/services/api";
 import { ThemedText } from "@/components/ThemedText";
 import { Colors } from "@/constants/Colors";
-import Logger from '@/utils/Logger';
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import type { PlayabilityStatus } from "@/stores/homeStore";
 
-const logger = Logger.withTag('VideoCardTV');
 
 interface VideoCardProps extends React.ComponentProps<typeof TouchableOpacity> {
   id: string;
@@ -28,6 +27,8 @@ interface VideoCardProps extends React.ComponentProps<typeof TouchableOpacity> {
   totalEpisodes?: number; // 总集数
   onFocus?: () => void;
   onRecordDeleted?: () => void; // 添加回调属性
+  reason?: string;
+  directPlay?: boolean;
   api: API;
 }
 
@@ -48,6 +49,8 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       api,
       playabilityStatus,
       playableSourceCount,
+      reason,
+      directPlay,
       playTime = 0,
     }: VideoCardProps,
     ref
@@ -76,6 +79,11 @@ const VideoCard = forwardRef<View, VideoCardProps>(
         router.push({
           pathname: "/play",
           params: { source, id, episodeIndex: episodeIndex - 1, title, position: playTime * 1000 },
+        });
+      } else if (directPlay && source !== "douban") {
+        // 搜索结果:直接起播,不先进详情页
+        void resolveDirectPlayParams(source, id, title).then((params) => {
+          router.push({ pathname: "/play", params: { ...params } });
         });
       } else {
         router.push({
@@ -119,35 +127,9 @@ const VideoCard = forwardRef<View, VideoCardProps>(
 
       longPressTriggered.current = true;
 
-      // Show confirmation dialog to delete play record
-      Alert.alert("删除观看记录", `确定要删除"${title}"的观看记录吗？`, [
-        {
-          text: "取消",
-          style: "cancel",
-        },
-        {
-          text: "删除",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              // Delete from local storage
-              await PlayRecordManager.remove(source, id);
-
-              // Call the onRecordDeleted callback
-              if (onRecordDeleted) {
-                onRecordDeleted();
-              }
-              // 如果没有回调函数，则使用导航刷新作为备选方案
-              else if (router.canGoBack()) {
-                router.replace("/");
-              }
-            } catch (error) {
-              logger.info("Failed to delete play record:", error);
-              Alert.alert("错误", "删除观看记录失败，请重试");
-            }
-          },
-        },
-      ]);
+      // 不再弹确认框:记录先从列表隐藏,底部出现"撤销"提示条,撤销窗口结束后才真正删除
+      usePlayRecordUndoStore.getState().requestDelete({ source, id, title });
+      onRecordDeleted?.();
     };
 
     // 是否是继续观看的视频
@@ -223,6 +205,11 @@ const VideoCard = forwardRef<View, VideoCardProps>(
           </View>
           <View style={styles.infoContainer}>
             <ThemedText numberOfLines={1}>{title}</ThemedText>
+            {reason ? (
+              <ThemedText numberOfLines={1} style={{ fontSize: 13, lineHeight: 18, color: "#8fb8ff" }}>
+                {reason}
+              </ThemedText>
+            ) : null}
             {isContinueWatching && (
               <View style={styles.infoRow}>
                 <ThemedText style={styles.continueLabel}>

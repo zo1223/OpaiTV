@@ -1,11 +1,14 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, Image, ScrollView, ActivityIndicator } from "react-native";
+import React, { useCallback, useContext, useEffect, useRef, useState } from "react";
+import { View, Text, StyleSheet, Image, ScrollView, ActivityIndicator, TouchableOpacity } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
+import { SafeAreaInsetsContext } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
 import { StyledButton } from "@/components/StyledButton";
 import VideoLoadingAnimation from "@/components/VideoLoadingAnimation";
 import useDetailStore from "@/stores/detailStore";
+import { mergeTmdbMetadata } from "@/services/tmdb";
 import { FontAwesome } from "@expo/vector-icons";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
@@ -19,6 +22,17 @@ import {
   probeChannels,
 } from "@/services/channelHealth";
 import { getSearchResultSourceKey } from "@/services/videoSourceSubscription";
+import { resolveDirectPlayParams } from "@/services/directPlay";
+import { Colors } from "@/constants/Colors";
+
+// 沉浸式详情页主按钮要播的那一集:有观看记录时接着上次那一集和进度,否则第一集
+interface PrimaryPlayTarget {
+  episodeIndex: number;
+  position?: number;
+  resumed: boolean;
+}
+
+const FIRST_EPISODE: PrimaryPlayTarget = { episodeIndex: 0, resumed: false };
 
 export default function DetailScreen() {
   const { q, source, id } = useLocalSearchParams<{ q: string; source?: string; id?: string }>();
@@ -40,10 +54,37 @@ export default function DetailScreen() {
     abort,
     isFavorited,
     toggleFavorite,
+    tmdbMeta,
   } = useDetailStore();
+  // TMDB 只补空缺(海报 / 简介 / 年份)并提供评分;没填 Key 或查询失败时 tmdbMeta 为空,显示与原来完全一致
+  const view = detail ? mergeTmdbMetadata(detail, tmdbMeta) : null;
   const [health, setHealth] = useState<Record<string, ChannelHealthResult>>({});
   const [scan, setScan] = useState({ running: false, done: 0, total: 0 });
   const scanAbortRef = useRef<AbortController | null>(null);
+  // 用 context 而不是 useSafeAreaInsets():后者在没有 SafeAreaProvider 时会抛错,这里没有就按 0 处理
+  const topInset = useContext(SafeAreaInsetsContext)?.top ?? 0;
+  const [primaryTarget, setPrimaryTarget] = useState<PrimaryPlayTarget>(FIRST_EPISODE);
+  const detailSource = detail?.source;
+  const detailId = detail?.id;
+  const detailTitle = detail?.title;
+
+  // 主按钮续播:读本机观看记录(与搜索结果点一下起播同一个函数),读不到或读失败按第一集
+  useEffect(() => {
+    setPrimaryTarget(FIRST_EPISODE);
+    if (detailSource === undefined || detailId === undefined) return;
+    let cancelled = false;
+    void resolveDirectPlayParams(String(detailSource), String(detailId), detailTitle ?? "").then((params) => {
+      if (cancelled) return;
+      setPrimaryTarget({
+        episodeIndex: params.episodeIndex,
+        position: params.position,
+        resumed: params.episodeIndex > 0 || params.position !== undefined,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [detailSource, detailId, detailTitle]);
 
   useEffect(() => {
     if (q) {
@@ -102,7 +143,7 @@ export default function DetailScreen() {
     }
   }, [searchResults]);
 
-  const handlePlay = (episodeIndex: number) => {
+  const handlePlay = (episodeIndex: number, position?: number) => {
     if (!detail) return;
     abort(); // Cancel any ongoing fetches
     router.push({
@@ -115,8 +156,32 @@ export default function DetailScreen() {
         source: detail.source,
         id: detail.id.toString(),
         episodeIndex: episodeIndex.toString(),
+        // 只有主按钮续播时才带进度;点集数按钮与原来一样不带
+        ...(position !== undefined ? { position: position.toString() } : {}),
       },
     });
+  };
+
+  // 主按钮:记录里的那一集在当前播放源里不存在(换了集数更少的源)时退回第一集、不带进度
+  const episodeCount = detail?.episodes.length ?? 0;
+  const primaryInRange = primaryTarget.resumed && primaryTarget.episodeIndex < episodeCount;
+  const primaryEpisodeIndex = primaryInRange ? primaryTarget.episodeIndex : 0;
+  const primaryLabel =
+    episodeCount === 0
+      ? "暂无可播放剧集"
+      : primaryInRange
+        ? `继续播放 第${primaryEpisodeIndex + 1}集`
+        : episodeCount > 1
+          ? "播放 第1集"
+          : "播放";
+  const handlePrimaryPlay = () => {
+    if (episodeCount === 0) return;
+    handlePlay(primaryEpisodeIndex, primaryInRange ? primaryTarget.position : undefined);
+  };
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    }
   };
 
   if (loading) {
@@ -174,36 +239,64 @@ export default function DetailScreen() {
       : null;
 
   const renderDetailContent = () => {
-    if (deviceType === 'mobile') {
-      // 移动端垂直布局
+    if (deviceType !== 'tv') {
+      // 手机、平板:沉浸式布局。大海报通顶,标题与简介叠在海报上,主播放按钮在海报底部,播放源与集数往下排
       return (
-        <ScrollView style={dynamicStyles.scrollContainer}>
-          {/* 海报和基本信息 */}
-          <View style={dynamicStyles.mobileTopContainer}>
-            <Image source={api.getImageSource(detail.poster)} style={dynamicStyles.mobilePoster} />
-            <View style={dynamicStyles.mobileInfoContainer}>
-              <View style={dynamicStyles.titleContainer}>
-                <ThemedText style={dynamicStyles.title} numberOfLines={2}>
-                  {detail.title}
+        <ScrollView style={dynamicStyles.scrollContainer} testID="detail-immersive">
+          <View style={dynamicStyles.hero}>
+            <Image
+              source={api.getImageSource(view?.poster ?? detail.poster)}
+              style={dynamicStyles.heroPoster}
+              resizeMode="cover"
+            />
+            {/* 上沿压暗保证返回按钮与状态栏可读,下半部渐变到页面背景色 */}
+            <LinearGradient
+              colors={["rgba(0,0,0,0.45)", "rgba(0,0,0,0)", "rgba(21,23,24,0.82)", Colors.dark.background]}
+              locations={[0, 0.3, 0.72, 1]}
+              style={StyleSheet.absoluteFill}
+              pointerEvents="none"
+            />
+            <View style={dynamicStyles.heroContent}>
+              <ThemedText style={dynamicStyles.heroTitle} numberOfLines={2}>
+                {detail.title}
+              </ThemedText>
+              <View style={dynamicStyles.metaContainer}>
+                <ThemedText style={dynamicStyles.heroMetaText}>{view?.year ?? detail.year}</ThemedText>
+                <ThemedText style={dynamicStyles.heroMetaText}>{detail.type_name}</ThemedText>
+                {view?.tmdbRating ? (
+                  <ThemedText style={dynamicStyles.heroMetaText}>{`TMDB ${view.tmdbRating.toFixed(1)}`}</ThemedText>
+                ) : null}
+              </View>
+              {view?.desc ?? detail.desc ? (
+                <ThemedText style={dynamicStyles.heroDescription} numberOfLines={4}>
+                  {view?.desc ?? detail.desc}
                 </ThemedText>
-                <StyledButton onPress={toggleFavorite} variant="ghost" style={dynamicStyles.favoriteButton}>
+              ) : null}
+              <View style={dynamicStyles.heroActions}>
+                <StyledButton
+                  testID="detail-primary-play"
+                  variant="primary"
+                  onPress={handlePrimaryPlay}
+                  disabled={episodeCount === 0}
+                  style={dynamicStyles.heroPlayButton}
+                >
+                  <FontAwesome name="play" size={16} color="#fff" />
+                  <Text style={dynamicStyles.heroPlayText}>{primaryLabel}</Text>
+                </StyledButton>
+                <StyledButton
+                  testID="detail-favorite"
+                  onPress={toggleFavorite}
+                  variant="ghost"
+                  style={dynamicStyles.heroFavoriteButton}
+                >
                   <FontAwesome
                     name={isFavorited ? "heart" : "heart-o"}
-                    size={20}
-                    color={isFavorited ? "#feff5f" : "#ccc"}
+                    size={22}
+                    color={isFavorited ? "#feff5f" : "#fff"}
                   />
                 </StyledButton>
               </View>
-              <View style={dynamicStyles.metaContainer}>
-                <ThemedText style={dynamicStyles.metaText}>{detail.year}</ThemedText>
-                <ThemedText style={dynamicStyles.metaText}>{detail.type_name}</ThemedText>
-              </View>
             </View>
-          </View>
-
-          {/* 描述 */}
-          <View style={dynamicStyles.descriptionContainer}>
-            <ThemedText style={dynamicStyles.description}>{detail.desc}</ThemedText>
           </View>
 
           {/* 播放源 */}
@@ -279,7 +372,7 @@ export default function DetailScreen() {
       return (
         <ScrollView style={dynamicStyles.scrollContainer}>
           <View style={dynamicStyles.topContainer}>
-            <Image source={api.getImageSource(detail.poster)} style={dynamicStyles.poster} />
+            <Image source={api.getImageSource(view?.poster ?? detail.poster)} style={dynamicStyles.poster} />
             <View style={dynamicStyles.infoContainer}>
               <View style={dynamicStyles.titleContainer}>
                 <ThemedText style={dynamicStyles.title} numberOfLines={1} ellipsizeMode="tail">
@@ -294,12 +387,15 @@ export default function DetailScreen() {
                 </StyledButton>
               </View>
               <View style={dynamicStyles.metaContainer}>
-                <ThemedText style={dynamicStyles.metaText}>{detail.year}</ThemedText>
+                <ThemedText style={dynamicStyles.metaText}>{view?.year ?? detail.year}</ThemedText>
                 <ThemedText style={dynamicStyles.metaText}>{detail.type_name}</ThemedText>
+                {view?.tmdbRating ? (
+                  <ThemedText style={dynamicStyles.metaText}>{`TMDB ${view.tmdbRating.toFixed(1)}`}</ThemedText>
+                ) : null}
               </View>
 
               <ScrollView style={dynamicStyles.descriptionScrollView}>
-                <ThemedText style={dynamicStyles.description}>{detail.desc}</ThemedText>
+                <ThemedText style={dynamicStyles.description}>{view?.desc ?? detail.desc}</ThemedText>
               </ScrollView>
             </View>
           </View>
@@ -386,10 +482,20 @@ export default function DetailScreen() {
     return content;
   }
 
+  // 沉浸式:不再占一行标题栏,返回按钮浮在海报左上角(避开状态栏),滚动时保持可见
   return (
     <ResponsiveNavigation>
-      <ResponsiveHeader title={detail?.title || "详情"} showBackButton />
       {content}
+      <TouchableOpacity
+        testID="detail-back"
+        accessibilityRole="button"
+        accessibilityLabel="返回"
+        onPress={handleBack}
+        activeOpacity={0.7}
+        style={[dynamicStyles.floatingBack, { top: topInset + 8 }]}
+      >
+        <FontAwesome name="chevron-left" size={16} color="#fff" />
+      </TouchableOpacity>
     </ResponsiveNavigation>
   );
 }
@@ -404,6 +510,78 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       flex: 1,
     },
     
+    // 沉浸式头部(手机、平板)
+    hero: {
+      width: '100%',
+      height: isTablet ? 480 : 440,
+      justifyContent: 'flex-end',
+      backgroundColor: '#1c1f20',
+    },
+    heroPoster: {
+      ...StyleSheet.absoluteFillObject,
+      width: '100%',
+      height: '100%',
+    },
+    heroContent: {
+      paddingHorizontal: spacing,
+      paddingBottom: spacing,
+    },
+    heroTitle: {
+      fontSize: isTablet ? 30 : 26,
+      lineHeight: isTablet ? 38 : 32,
+      fontWeight: 'bold',
+      color: '#fff',
+      marginBottom: 6,
+    },
+    heroMetaText: {
+      color: '#d6d6d6',
+      marginRight: spacing / 2,
+      fontSize: isTablet ? 14 : 13,
+    },
+    heroDescription: {
+      color: '#e2e2e2',
+      fontSize: isTablet ? 14 : 13,
+      lineHeight: isTablet ? 22 : 19,
+      marginBottom: spacing * 0.75,
+    },
+    heroActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    heroPlayButton: {
+      flex: 1,
+      minHeight: 48,
+      borderRadius: 24,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    heroPlayText: {
+      color: '#fff',
+      fontSize: 16,
+      fontWeight: 'bold',
+      marginLeft: 8,
+    },
+    heroFavoriteButton: {
+      width: 48,
+      height: 48,
+      borderRadius: 24,
+      marginLeft: spacing / 2,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: 'rgba(255,255,255,0.14)',
+    },
+    floatingBack: {
+      position: 'absolute',
+      left: 12,
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: 'rgba(0,0,0,0.45)',
+    },
+
     // 移动端专用样式
     mobileTopContainer: {
       paddingHorizontal: spacing,

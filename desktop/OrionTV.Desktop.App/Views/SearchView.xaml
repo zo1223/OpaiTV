@@ -6,6 +6,9 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -16,11 +19,37 @@
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <TextBox x:Name="SearchBox" Grid.Column="0" Tag="搜索电影、剧集…" KeyDown="SearchBox_KeyDown" />
+            <TextBox x:Name="SearchBox" Grid.Column="0" Tag="搜索电影、剧集…" KeyDown="SearchBox_KeyDown" TextChanged="SearchBox_TextChanged" />
             <Button x:Name="SearchButton" Grid.Column="1" Content="搜索" Width="84" Margin="10,0,0,0"
                     Style="{StaticResource PrimaryButtonStyle}" Click="SearchButton_Click" />
         </Grid>
 
-        <ctrl:CardGrid x:Name="Grid" Grid.Row="2" />
+        <!-- 自然语言检索命中时的提示（如：已按“阴天絮语”扩展检索：剧情 / 悬疑 / 爱情） -->
+        <TextBlock x:Name="IntentHint" Grid.Row="2" Margin="16,6,16,0" FontSize="13"
+                   Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap" Visibility="Collapsed" />
+
+        <!-- 搜索记录标签云：点词重搜，× 删除单条，右上角清空。只存本机。 -->
+        <Border x:Name="HistoryPanel" Grid.Row="3" Margin="14,10,14,0" Padding="14,10,14,4" CornerRadius="10"
+                Background="{StaticResource PanelBrush}" Visibility="Collapsed">
+            <DockPanel>
+                <DockPanel DockPanel.Dock="Top" LastChildFill="False" Margin="0,0,0,8">
+                    <TextBlock Text="搜索记录" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"
+                               Foreground="{StaticResource SoftTextBrush}" />
+                    <Button DockPanel.Dock="Right" Content="清空" Style="{StaticResource SecondaryButtonStyle}"
+                            Click="ClearHistory_Click" />
+                </DockPanel>
+                <WrapPanel x:Name="HistoryTags" />
+            </DockPanel>
+        </Border>
+
+        <!-- 逐源搜索进度：每个源一个状态标签 + 汇总。搜到一个源就先显示它的结果 -->
+        <StackPanel x:Name="ProgressPanel" Grid.Row="4" Margin="16,8,16,0" Visibility="Collapsed">
+            <TextBlock x:Name="ProgressSummary" FontSize="13" Foreground="{StaticResource SoftTextBrush}" />
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" MaxHeight="66" Margin="0,6,0,0">
+                <WrapPanel x:Name="ProgressSources" />
+            </ScrollViewer>
+        </StackPanel>
+
+        <ctrl:CardGrid x:Name="Grid" Grid.Row="5" />
     </Grid>
 </UserControl>

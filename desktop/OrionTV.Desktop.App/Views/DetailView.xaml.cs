@@ -7,9 +7,15 @@ using OrionTV.Desktop.Core;
 
 namespace OrionTV.Desktop.App.Views;
 
-public partial class DetailView : UserControl, INavigationAware, IDisposable
+public partial class DetailView : UserControl, INavigationAware, IKeyboardFocusTarget, IDisposable
 {
     private const string LocalSourceKey = "local";
+
+    // TMDB 补全：每次进入详情只查一次；结果只用来补当前显示里为空的字段，不写回收藏 / 观看记录
+    private TmdbMetadata? _tmdb;
+    private bool _tmdbLookupStarted;
+    // 键盘切换过来时内容还没加载完：加载完再把焦点放到播放按钮上
+    private bool _focusWhenReady;
 
     private readonly IAppHost _host;
     private string _title = "";
@@ -34,7 +40,169 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         InitializeComponent();
         _host = host;
         Header.BackRequested += (_, _) => _host.GoBack();
+        // 头部叠在滚动区上面：鼠标停在头部滚轮时照样滚动页面
+        Header.MouseWheel += (_, e) => PageScroll.ScrollToVerticalOffset(PageScroll.VerticalOffset - e.Delta * 0.4);
+        _host.Services.AdultVisibilityChanged += OnAdultVisibilityChangedForRelated;
     }
+
+    // ---------- 沉浸式布局：头部随滚动变实、主“播放”按钮、相关推荐 ----------
+
+    private const double DescCollapsedHeight = 110;
+    private const double HeaderSolidOffset = 160;
+
+    private void PageScroll_ScrollChanged(object sender, ScrollChangedEventArgs e) => UpdateHeaderChrome();
+
+    /// <summary>
+    /// 内容显示时头部是透明的（只留返回按钮，片名在海报上）；往下滚过海报后头部变成实底并显示片名。
+    /// 加载中 / 出错时没有海报，头部照常显示片名。
+    /// </summary>
+    private void UpdateHeaderChrome()
+    {
+        var immersive = ContentPanel.Visibility == Visibility.Visible;
+        var offset = PageScroll.VerticalOffset;
+        HeaderBackdrop.Opacity = immersive ? Math.Clamp(offset / HeaderSolidOffset, 0, 1) : 0;
+        var title = immersive && offset < HeaderSolidOffset
+            ? ""
+            : string.IsNullOrWhiteSpace(_title) ? "详情" : _title;
+        if (!string.Equals(Header.Title, title, StringComparison.Ordinal))
+        {
+            Header.Title = title;
+        }
+    }
+
+    private void DescText_MouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e) =>
+        DescText.MaxHeight = double.IsInfinity(DescText.MaxHeight) ? DescCollapsedHeight : double.PositiveInfinity;
+
+    /// <summary>
+    /// 主“播放”按钮播哪一集：带着续播位置进来的就是那一集；否则这条线路在本机有观看记录就接着那一集；
+    /// 都没有就是第一条有地址的集。没有可播的集返回 -1。
+    /// </summary>
+    private (int Index, PlaybackResumeContext? RecordResume) PrimaryPlayTarget(SearchResult result)
+    {
+        bool Playable(int index) =>
+            index >= 0 && index < result.Episodes.Count && !string.IsNullOrWhiteSpace(result.Episodes[index]);
+
+        var resumeIndex = ResumeEpisodeIndexOf(result);
+        if (Playable(resumeIndex))
+        {
+            return (resumeIndex, null);
+        }
+
+        if (!IsLocalSource(result)
+            && _host.Services.PlayRecords.Get(result.Source, result.Id) is { } record
+            && !_host.Services.IsPlayRecordPendingDeletion(result.Source, result.Id))
+        {
+            var resume = DirectPlay.ResumeFromRecord(record, result.Source, result.Id);
+            var recordIndex = resume.FindEpisodeIndex(result.EpisodeLabels, result.Episodes.Count);
+            if (Playable(recordIndex))
+            {
+                return (recordIndex, resume);
+            }
+        }
+
+        for (var index = 0; index < result.Episodes.Count; index++)
+        {
+            if (Playable(index))
+            {
+                return (index, null);
+            }
+        }
+
+        return (-1, null);
+    }
+
+    private void UpdatePlayButton(SearchResult result)
+    {
+        var (index, recordResume) = PrimaryPlayTarget(result);
+        PlayButton.IsEnabled = index >= 0;
+        if (index < 0)
+        {
+            PlayButton.Content = "暂无可播放剧集";
+            PlayButton.ToolTip = null;
+            return;
+        }
+
+        var position = index == ResumeEpisodeIndexOf(result) ? _resumeContext : recordResume;
+        var label = result.Episodes.Count > 1 ? " " + EpisodeLabelFormatter.DisplayAt(result.EpisodeLabels, index) : "";
+        PlayButton.Content = (position is not null ? "▶  继续播放" : "▶  播放") + label;
+        PlayButton.ToolTip = position is not null
+            ? $"从 {FormatResumeTime(position.StartPositionMs)} 继续播放"
+            : "播放";
+    }
+
+    private void PlayButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selected is null)
+        {
+            return;
+        }
+
+        var (index, recordResume) = PrimaryPlayTarget(_selected);
+        if (index >= 0)
+        {
+            PlayEpisode(index, recordResume);
+        }
+    }
+
+    /// <summary>
+    /// 相关推荐：只用本机的推荐候选池（首页加载过的条目），挑同系列 / 同分类的，不发任何请求。
+    /// 与首页“为你推荐”同一口径：候选先过成人过滤（成人源 / 成人分类），再去掉片源模式为“关闭”的源。
+    /// </summary>
+    private void RefreshRelated()
+    {
+        RelatedBar.Children.Clear();
+        var selected = _selected;
+        if (_disposed || selected is null)
+        {
+            RelatedPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var services = _host.Services;
+        var candidates = services.RecommendationPool.Snapshot()
+            .Where(candidate => !services.IsAdultSourceHidden(candidate.Item.Source)
+                                && !services.IsAdultCategoryHidden(candidate.Category)
+                                && services.SourceModeOf(candidate.Item.Source) != SourceMode.Off)
+            .ToList();
+        var title = string.IsNullOrWhiteSpace(_title) ? selected.Title : _title;
+        var category = AdultContentFilter.JoinCategory(TypeText.Text, AdultContentFilter.CategoryOf(selected));
+        var related = RelatedItems.Pick(title, category, candidates)
+            .Where(item => !string.Equals(item.Title.Trim(), (selected.Title ?? "").Trim(), StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (var item in related)
+        {
+            var card = new Controls.VideoCardControl { Item = item };
+            card.Click += RelatedCard_Click;
+            RelatedBar.Children.Add(card);
+        }
+
+        RelatedPanel.Visibility = related.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void RelatedCard_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Controls.VideoCardControl { Item: { } item })
+        {
+            return;
+        }
+
+        var isDouban = item.Source == "douban";
+        _host.Navigate(AppPage.Detail, new DetailParameter(
+            item.Title,
+            isDouban ? null : item.Source,
+            isDouban ? null : item.Id,
+            item.CandidateSources,
+            item.PlayableSources));
+    }
+
+    // 18+ 开关或成人源变化：相关推荐按当前状态重算
+    private void OnAdultVisibilityChangedForRelated() => Dispatcher.BeginInvoke(() =>
+    {
+        if (!_disposed)
+        {
+            RefreshRelated();
+        }
+    });
 
     public void OnNavigatedTo(object? parameter)
     {
@@ -45,6 +213,12 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         _health.Clear();
         _cacheLookup = VodCacheLookup.Empty;
         _cacheRefreshTask = null;
+        _tmdb = null;
+        _tmdbLookupStarted = false;
+        _focusWhenReady = false;
+        RatingText.Text = "";
+        RatingText.Visibility = Visibility.Collapsed;
+        PageScroll.ScrollToTop();
         EnsureDownloadListener();
         if (parameter is not DetailParameter request)
         {
@@ -203,6 +377,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         _searchResults = WithLocalSource(_remoteResults);
         MessageText.Visibility = Visibility.Collapsed;
         ContentPanel.Visibility = Visibility.Visible;
+        UpdateHeaderChrome();
 
         var preferred = _searchResults.FirstOrDefault(result =>
                 SearchResultSources.SelectionKeyOf(result) == SearchResultSources.SelectionKeyOf(selected))
@@ -344,11 +519,15 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         YearText.Text = result.Year ?? "";
         TypeText.Text = result.TypeName ?? "";
         DescText.Text = result.Description ?? "";
+        DescText.MaxHeight = DescCollapsedHeight;
         BuildEpisodes(result);
         BuildDownloadBar();
+        RefreshRelated();
         if (!IsLocalSource(result))
         {
             UpdateFavoriteIcon(_host.Services.Favorites.IsFavorited(result.Source, result.Id));
+            // 旧版本保存的收藏没有分类信息，这里补上，之后成人内容开关才能按分类过滤它
+            _host.Services.Favorites.BackfillCategory(result.Source, result.Id, AdultContentFilter.CategoryOf(result));
             _ = LoadMetaAsync(result);
             // TVBox/csp 搜索常无剧集地址，选中后再按 id 补拉
             if (result.Episodes.Count == 0)
@@ -356,6 +535,104 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
                 _ = HydrateSelectedEpisodesAsync(result);
             }
         }
+
+        // 换源后新源的空字段同样用已查到的 TMDB 数据补上；还没查过就在后台查一次（没填 Key 时什么都不做）
+        ApplyTmdbSupplement();
+        StartTmdbLookup(result);
+        if (_focusWhenReady)
+        {
+            FocusDefaultElement();
+        }
+    }
+
+    private void StartTmdbLookup(SearchResult result)
+    {
+        if (_tmdbLookupStarted || _disposed)
+        {
+            return;
+        }
+
+        var apiKey = _host.Services.Settings.TmdbApiKey;
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return;
+        }
+
+        _tmdbLookupStarted = true;
+        _ = LoadTmdbAsync(apiKey, result, _loadCts);
+    }
+
+    private async Task LoadTmdbAsync(string apiKey, SearchResult result, CancellationTokenSource? load)
+    {
+        try
+        {
+            var title = string.IsNullOrWhiteSpace(result.Title) ? _title : result.Title;
+            var token = load?.Token ?? CancellationToken.None;
+            var metadata = await _host.Services.Tmdb
+                .LookupAsync(apiKey, title, result.Year, result.TypeName, token)
+                .ConfigureAwait(true);
+            // 期间换了片子或离开了详情页：丢弃
+            if (metadata is null || _disposed || !ReferenceEquals(_loadCts, load))
+            {
+                return;
+            }
+
+            _tmdb = metadata;
+            ApplyTmdbSupplement();
+        }
+        catch
+        {
+            // TMDB 失败时静默回落到原有数据
+        }
+    }
+
+    /// <summary>用 TMDB 数据补当前显示里为空的海报 / 简介 / 年份，并显示 TMDB 评分；非空的原有内容不动。</summary>
+    private void ApplyTmdbSupplement()
+    {
+        if (_tmdb is not { } tmdb || _selected is null || _disposed)
+        {
+            return;
+        }
+
+        var merged = TmdbMerge.Apply(ImageLoader.GetSourceUrl(PosterImage), DescText.Text, YearText.Text, tmdb);
+        if (merged.PosterFilled)
+        {
+            ImageLoader.SetSourceUrl(PosterImage, merged.Poster);
+        }
+
+        if (merged.DescriptionFilled)
+        {
+            DescText.Text = merged.Description;
+        }
+
+        if (merged.YearFilled)
+        {
+            YearText.Text = merged.Year;
+        }
+
+        RatingText.Text = merged.RatingText;
+        RatingText.Visibility = string.IsNullOrEmpty(merged.RatingText) ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>键盘切换到详情页后的默认焦点：第一个可播放的集数按钮；没有剧集时落在当前播放源上。</summary>
+    public void FocusDefaultElement()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (ContentPanel.Visibility != Visibility.Visible)
+        {
+            _focusWhenReady = true;
+            return;
+        }
+
+        _focusWhenReady = false;
+        var target = EpisodeBar.Children.OfType<Button>().FirstOrDefault(button => button.IsEnabled)
+            ?? (UIElement?)_sourceChips.Values.FirstOrDefault(chip => chip.IsChecked == true)
+            ?? FavoriteButton;
+        target.Focus();
     }
 
     private async Task HydrateSelectedEpisodesAsync(SearchResult result)
@@ -426,6 +703,8 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             if (!string.IsNullOrWhiteSpace(detail.TypeName))
             {
                 TypeText.Text = detail.TypeName;
+                // 源站详情补上了分类：相关推荐按新的分类重算
+                RefreshRelated();
             }
 
             if (!string.IsNullOrWhiteSpace(detail.Description))
@@ -441,6 +720,9 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
                 ReplaceResult(_searchResults, result, updated);
                 ReplaceResult(_remoteResults, result, updated);
             }
+
+            // 源站详情补完之后仍然为空的字段，再用 TMDB 的补
+            ApplyTmdbSupplement();
         }
         catch
         {
@@ -487,6 +769,8 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             button.Click += EpisodeButton_Click;
             EpisodeBar.Children.Add(button);
         }
+
+        UpdatePlayButton(result);
     }
 
     private void BuildDownloadBar()
@@ -650,7 +934,19 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
 
     private void EpisodeButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_selected is null || sender is not Button { Tag: int index })
+        if (sender is Button { Tag: int index })
+        {
+            PlayEpisode(index, null);
+        }
+    }
+
+    /// <summary>
+    /// 点集数与主“播放”按钮共用的起播路径。<paramref name="recordResume"/> 只有主按钮按本机观看记录续播时才有值；
+    /// 带着续播位置进来的那一集仍按原有规则用 _resumeContext。
+    /// </summary>
+    private void PlayEpisode(int index, PlaybackResumeContext? recordResume)
+    {
+        if (_selected is null)
         {
             return;
         }
@@ -663,7 +959,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             return;
         }
 
-        var resume = index == ResumeEpisodeIndexOf(_selected) ? _resumeContext : null;
+        var resume = index == ResumeEpisodeIndexOf(_selected) ? _resumeContext : recordResume;
         // 备用源只供失败后返回详情时展示，不在播放器内自动换源。
         _host.Navigate(AppPage.Player, new PlayParameter(
             _selected.Title,
@@ -677,7 +973,8 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             _selected.Poster,
             _selected.PlaybackSourceKey,
             _selected.EpisodeLabels,
-            resume));
+            resume,
+            AdultContentFilter.CategoryOf(_selected)));
     }
 
     private int ResumeEpisodeIndexOf(SearchResult result) =>
@@ -1382,7 +1679,8 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             SourceName: _selected.SourceName,
             TotalEpisodes: _selected.Episodes.Count,
             SearchTitle: _title,
-            Year: _selected.Year ?? "");
+            Year: _selected.Year ?? "",
+            Category: AdultContentFilter.CategoryOf(_selected));
 
         var favorited = _host.Services.Favorites.Toggle(_selected.Source, _selected.Id, item);
         UpdateFavoriteIcon(favorited);
@@ -1401,6 +1699,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
         ContentPanel.Visibility = Visibility.Collapsed;
         MessageText.Text = message;
         MessageText.Visibility = Visibility.Visible;
+        UpdateHeaderChrome();
     }
 
     public void Dispose()
@@ -1417,6 +1716,7 @@ public partial class DetailView : UserControl, INavigationAware, IDisposable
             .ToList();
 
         _disposed = true;
+        _host.Services.AdultVisibilityChanged -= OnAdultVisibilityChangedForRelated;
         if (_listeningDownloads)
         {
             _host.Services.Downloads.Changed -= Downloads_Changed;

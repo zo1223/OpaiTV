@@ -1,0 +1,124 @@
+<UserControl x:Class="OrionTV.Desktop.App.Controls.HeroBannerControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Visibility="Collapsed"
+             Focusable="False"
+             Margin="6,0,6,12">
+    <!-- 首页大横幅：海报背景 + 标题 / 简介 + 播放 / 详情按钮 + 指示点。条目与轮播逻辑见 HeroBannerControl.xaml.cs -->
+    <Border x:Name="Root"
+            Height="260"
+            CornerRadius="12"
+            Background="{StaticResource PanelAltBrush}"
+            ClipToBounds="True"
+            SizeChanged="Root_SizeChanged"
+            MouseEnter="Root_MouseEnter"
+            MouseLeave="Root_MouseLeave">
+        <Grid>
+            <Grid x:Name="SlideLayer">
+                <!-- 背景与左侧小海报共用同一张已加载的图，不重复取图 -->
+                <Image Source="{Binding Source, ElementName=PosterImage}"
+                       Stretch="UniformToFill"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Opacity="0.45"
+                       IsHitTestVisible="False" />
+                <Rectangle IsHitTestVisible="False">
+                    <Rectangle.Fill>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                            <GradientStop Color="#F2151718" Offset="0" />
+                            <GradientStop Color="#B3151718" Offset="0.55" />
+                            <GradientStop Color="#40151718" Offset="1" />
+                        </LinearGradientBrush>
+                    </Rectangle.Fill>
+                </Rectangle>
+
+                <Grid Margin="24,22,24,22">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Width="144" Height="216" CornerRadius="8" Background="#FF25292B" ClipToBounds="True">
+                        <Image x:Name="PosterImage" Stretch="UniformToFill" />
+                    </Border>
+
+                    <Grid Grid.Column="1" Margin="22,0,96,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock x:Name="TitleText"
+                                   Grid.Row="0"
+                                   Foreground="White"
+                                   FontSize="28"
+                                   FontWeight="Bold"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="MetaText"
+                                   Grid.Row="1"
+                                   Foreground="{StaticResource PrimaryBrush}"
+                                   FontSize="13"
+                                   Margin="0,8,0,0"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="DescText"
+                                   Grid.Row="2"
+                                   Foreground="{StaticResource SoftTextBrush}"
+                                   FontSize="14"
+                                   LineHeight="22"
+                                   MaxHeight="66"
+                                   TextWrapping="Wrap"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Top"
+                                   Margin="0,10,0,0" />
+                        <StackPanel Grid.Row="3" Orientation="Horizontal">
+                            <Button x:Name="PlayButton"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    Height="42"
+                                    MinWidth="132"
+                                    Padding="20,0"
+                                    FontSize="15"
+                                    FontWeight="SemiBold"
+                                    Content="▶  播放"
+                                    ToolTip="直接播放（有观看记录时接着上次的进度）"
+                                    Click="PlayButton_Click" />
+                            <Button x:Name="DetailButton"
+                                    Style="{StaticResource SecondaryButtonStyle}"
+                                    Height="42"
+                                    MinWidth="96"
+                                    Padding="18,0"
+                                    FontSize="15"
+                                    Margin="12,0,0,0"
+                                    Content="详情"
+                                    Click="DetailButton_Click" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Grid>
+
+            <Button x:Name="PrevButton"
+                    Style="{StaticResource IconButtonStyle}"
+                    Content="&#xE76B;"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Top"
+                    Margin="0,10,54,0"
+                    ToolTip="上一张"
+                    Visibility="Collapsed"
+                    Click="PrevButton_Click" />
+            <Button x:Name="NextButton"
+                    Style="{StaticResource IconButtonStyle}"
+                    Content="&#xE76C;"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Top"
+                    Margin="0,10,10,0"
+                    ToolTip="下一张"
+                    Visibility="Collapsed"
+                    Click="NextButton_Click" />
+            <StackPanel x:Name="Dots"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Bottom"
+                        Margin="0,0,20,18" />
+        </Grid>
+    </Border>
+</UserControl>

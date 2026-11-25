@@ -1,10 +1,12 @@
 import React from "react";
 import renderer, { act } from "react-test-renderer";
-import { Alert, Image, Pressable, Text, TouchableOpacity } from "react-native";
+import { Image, Pressable, Text, TouchableOpacity } from "react-native";
 
 import VideoCardMobile from "../VideoCard.mobile";
 import VideoCardTablet from "../VideoCard.tablet";
 import VideoCardTV from "../VideoCard.tv";
+import { usePlayRecordUndoStore } from "@/stores/playRecordUndoStore";
+import { PlayRecordManager } from "@/services/storage";
 
 const mockPush = jest.fn();
 const mockReplace = jest.fn();
@@ -36,9 +38,11 @@ jest.mock("@/utils/DeviceUtils", () => ({
 
 jest.mock("@/services/storage", () => ({
   PlayRecordManager: {
+    get: jest.fn(async () => null),
     remove: jest.fn(),
   },
 }));
+jest.mock("react-native-toast-message", () => ({ __esModule: true, default: { show: jest.fn() } }));
 
 const api = {
   getImageProxyUrl: (url: string) => url,
@@ -101,24 +105,27 @@ describe("VideoCard navigation", () => {
     ["mobile", VideoCardMobile],
     ["tablet", VideoCardTablet],
   ])("%s continue-watching card still opens on the first tap after a long press", (_name, Component) => {
-    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     let tree: renderer.ReactTestRenderer;
     act(() => {
       tree = renderer.create(<Component {...baseProps} progress={0.5} episodeIndex={2} playTime={60} />);
     });
     const card = tree!.root.findByType(TouchableOpacity);
 
-    // A touch long press ends without onPress (Pressability cancels it), then the dialog is dismissed.
+    // A touch long press ends without onPress (Pressability cancels it). It no longer opens a dialog:
+    // the record becomes a pending delete that the undo bar can restore.
     act(() => {
       card.props.onLongPress();
     });
-    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(usePlayRecordUndoStore.getState().pending).toMatchObject({ key: "mtzy.me+89360", title: baseProps.title });
+    expect(PlayRecordManager.remove).not.toHaveBeenCalled();
+    act(() => {
+      usePlayRecordUndoStore.getState().undo();
+    });
 
     act(() => {
       card.props.onPress();
     });
     expect(mockPush).toHaveBeenCalledWith(expect.objectContaining({ pathname: "/play" }));
-    alertSpy.mockRestore();
   });
 
   it.each([

@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { api, SearchResult, PlayRecord } from "@/services/api";
-import { PlayRecordManager } from "@/services/storage";
+import { FavoriteManager, PlayRecordManager } from "@/services/storage";
+import { buildRecommendations } from "@/services/recommendation";
+import { loadRecommendationPool, rememberRecommendationCandidates } from "@/services/recommendationPool";
+import { isSourceOff } from "@/services/sourceMode";
+import { usePlayRecordUndoStore, playRecordKey } from "./playRecordUndoStore";
 import useAuthStore from "./authStore";
 import { useSettingsStore } from "./settingsStore";
 import { expandSearchResultPlaybackSources } from "@/services/videoSourceSubscription";
@@ -22,11 +26,13 @@ export type RowItem = (SearchResult | PlayRecord) & {
   rate?: string;
   playabilityStatus?: PlayabilityStatus;
   playableSourceCount?: number;
+  /** “为你推荐”里的推荐理由 */
+  reason?: string;
 };
 
 export interface Category {
   title: string;
-  type?: "movie" | "tv" | "record";
+  type?: "movie" | "tv" | "record" | "recommend";
   tag?: string;
   tags?: string[];
 }
@@ -52,8 +58,12 @@ const DOUBAN_MOVIE_TAGS = [
 ];
 const DOUBAN_TV_TAGS = ["热门", "美剧", "英剧", "韩剧", "日剧", "国产剧", "港剧", "日本动画", "综艺", "纪录片"];
 
+// “为你推荐”:只在本机根据观看历史与收藏计算(见 services/recommendation),设置里可关,默认开
+export const RECOMMEND_CATEGORY: Category = { title: "为你推荐", type: "recommend" };
+
 const initialCategories: Category[] = [
   { title: "观看历史", type: "record" },
+  RECOMMEND_CATEGORY,
   { title: "热门剧集", type: "tv", tag: "热门" },
   { title: "电视剧", type: "tv", tags: DOUBAN_TV_TAGS },
   {
@@ -69,7 +79,7 @@ const initialCategories: Category[] = [
 interface CacheItem {
   data: RowItem[];
   timestamp: number;
-  type: 'movie' | 'tv' | 'record';
+  type: 'movie' | 'tv' | 'record' | 'recommend';
   hasMore: boolean;
   pageStart: number;
 }
@@ -135,10 +145,71 @@ interface HomeState {
 // 内存缓存，应用生命周期内有效
 const dataCache = new Map<string, CacheItem>();
 
-// 观看历史按源 key 保存:成人内容开关关闭时,成人源的记录不进入首页(列表和"是否有历史"的判断都用它)
+// 观看历史按源 key 保存:成人内容开关关闭时,成人源与成人分类的记录不进入首页(列表和"是否有历史"的判断都用它)
 const getVisiblePlayRecords = async () => {
   const records = await PlayRecordManager.getAll();
-  return Object.fromEntries(Object.entries(records).filter(([key]) => !api.isAdultSourceHidden(key.split("+")[0])));
+  // 待撤销删除(或正在删除)的记录同样不进入首页:重新取数不能把它带回来
+  const { isHidden } = usePlayRecordUndoStore.getState();
+  return Object.fromEntries(
+    Object.entries(records).filter(
+      ([key, record]) =>
+        !isHidden(key) && !api.isAdultItemHidden({ source: key.split("+")[0], type_name: record?.type_name })
+    )
+  );
+};
+
+/**
+ * 本地推荐:输入是本机的观看记录、收藏和首页已经加载过的条目(候选池),全程不为推荐发任何请求。
+ * 成人内容照常按开关过滤;模式为“关闭”的片源不出现在推荐里。
+ */
+export const computeLocalRecommendations = async (): Promise<RowItem[]> => {
+  const [records, favorites, pool] = await Promise.all([
+    getVisiblePlayRecords().catch(() => ({} as Record<string, PlayRecord>)),
+    FavoriteManager.getAll().catch(() => ({})),
+    loadRecommendationPool(),
+  ]);
+  const modes = api.getSourceModes();
+  const usable = (item: { source?: string; type_name?: string | null; class?: string | null }) =>
+    !api.isAdultItemHidden(item) && !isSourceOff(modes, item.source);
+  const favoriteEntries = Object.entries(favorites as Record<string, any>)
+    .map(([key, favorite]) => {
+      const [source, id] = key.split("+");
+      return {
+        title: favorite?.title ?? "",
+        type_name: favorite?.type_name,
+        source,
+        id,
+        poster: favorite?.cover,
+        year: favorite?.year,
+        source_name: favorite?.source_name,
+      };
+    })
+    .filter((entry) => !api.isAdultItemHidden(entry));
+  const recommendations = buildRecommendations({
+    history: Object.values(records).map((record) => ({
+      title: record.title,
+      type_name: record.type_name,
+      save_time: record.save_time,
+    })),
+    favorites: favoriteEntries,
+    candidates: pool.filter(usable),
+  });
+  return recommendations.filter(usable).map(
+    (item) =>
+      ({
+        id: item.id,
+        source: item.source,
+        title: item.title,
+        poster: item.poster,
+        year: item.year ?? "",
+        rate: item.rate,
+        sourceName: item.source_name,
+        source_name: item.source_name ?? "",
+        type_name: item.type_name ?? undefined,
+        episodes: [],
+        reason: item.reason,
+      } as unknown as RowItem)
+  );
 };
 
 const useHomeStore = create<HomeState>((set, get) => ({
@@ -164,8 +235,8 @@ const useHomeStore = create<HomeState>((set, get) => ({
     const { selectedCategory } = get();
     const cacheKey = getCacheKey(selectedCategory);
 
-    // 最近播放不缓存，始终实时获取
-    if (selectedCategory.type === 'record') {
+    // 最近播放与本地推荐不缓存，始终实时计算
+    if (selectedCategory.type === 'record' || selectedCategory.type === 'recommend') {
       set({ loading: true, contentData: [], pageStart: 0, hasMore: true, error: null, loadingMore: false });
       await get().loadMoreData();
       return;
@@ -222,6 +293,10 @@ const useHomeStore = create<HomeState>((set, get) => ({
           .sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0));
 
         set({ contentData: rowItems, hasMore: false });
+      } else if (selectedCategory.type === "recommend") {
+        const recommended = await computeLocalRecommendations();
+        if (get()._fetchSeq !== seq) return;
+        set({ contentData: recommended, hasMore: false });
       } else if (selectedCategory.type && selectedCategory.tag) {
         const result = await api.getDoubanData(
           selectedCategory.type,
@@ -239,6 +314,22 @@ const useHomeStore = create<HomeState>((set, get) => ({
             sourceName: item.source_name,
           } as RowItem)
         );
+
+        // 首页加载过的条目记进本机的推荐候选池(只写本机存储)
+        void rememberRecommendationCandidates(
+          newItems.map((item) => ({
+            id: item.id,
+            source: item.source,
+            title: item.title,
+            poster: item.poster,
+            year: item.year,
+            rate: item.rate,
+            source_name: (item as { source_name?: string }).source_name,
+            type_name: (item as { type_name?: string }).type_name,
+            class: (item as { class?: string }).class,
+          })),
+          [selectedCategory.tag, selectedCategory.title]
+        ).catch(() => {});
 
         const cacheKey = getCacheKey(selectedCategory);
         // 固定步长推进,而不是按去重后的返回条数推进,保证订阅源页码单调不重复
@@ -457,10 +548,12 @@ const useHomeStore = create<HomeState>((set, get) => ({
 // 缓存整体作废(两个方向都要重新取),已显示的条目去掉被隐藏源的内容,豆瓣条目的"可播放源数"重新探测。
 // 取数层(api)在 store 通知订阅者之前已经切到新状态。按内容比较而不是按引用比较:
 // loadSettings 每次都会换一个新的源数组,不能因此每次打开设置页都清缓存、重新探测。
+// 开关本身也算进签名:成人分类过滤不依赖成人源,没有任何成人源时切换开关同样要立即重算。
 const getHiddenAdultSourceKeys = (state: ReturnType<typeof useSettingsStore.getState>) =>
   state.showAdultContent
-    ? ""
-    : (state.subscribedVideoSources || [])
+    ? "on"
+    : "off\u001f" +
+      (state.subscribedVideoSources || [])
         .filter((source) => source.adult)
         .map((source) => source.key)
         .join("\u001f");
@@ -472,10 +565,86 @@ useSettingsStore.subscribe((state, previous) => {
   dataCache.clear();
   const contentData = useHomeStore
     .getState()
-    .contentData.filter((item) => !api.isAdultSourceHidden(item.source))
+    .contentData.filter((item) => !api.isAdultItemHidden(item))
     .map(withInitialPlayability);
   useHomeStore.setState({ contentData });
   useHomeStore.getState().probePlayability(contentData);
+});
+
+// “为你推荐”开关:关掉后分类立即消失(正选中它时切到下一个分类),打开后回到“观看历史”之后。
+// 片源模式变化:首页缓存按旧模式取的,整体作废;已显示的条目去掉刚被关闭的源。
+const getSourceModeSignature = (state: ReturnType<typeof useSettingsStore.getState>) =>
+  Object.entries(state.sourceModes || {})
+    .map(([key, mode]) => `${key}=${mode}`)
+    .sort()
+    .join("\u001f");
+
+export const syncRecommendCategory = (enabled: boolean) => {
+  const state = useHomeStore.getState();
+  const exists = state.categories.some((category) => category.type === "recommend");
+  if (enabled && !exists) {
+    const recordIndex = state.categories.findIndex((category) => category.type === "record");
+    const categories = [...state.categories];
+    categories.splice(recordIndex + 1, 0, RECOMMEND_CATEGORY);
+    useHomeStore.setState({ categories });
+  } else if (!enabled && exists) {
+    const categories = state.categories.filter((category) => category.type !== "recommend");
+    useHomeStore.setState({ categories });
+    if (state.selectedCategory?.type === "recommend") {
+      const next = categories.find((category) => category.type !== "record") || categories[0];
+      if (next) {
+        useHomeStore.getState().selectCategory(next);
+      }
+    }
+  }
+};
+
+useSettingsStore.subscribe((state, previous) => {
+  if (state.recommendationsEnabled !== previous.recommendationsEnabled) {
+    syncRecommendCategory(state.recommendationsEnabled !== false);
+  }
+  if (getSourceModeSignature(state) !== getSourceModeSignature(previous)) {
+    dataCache.clear();
+    const modes = state.sourceModes || {};
+    const home = useHomeStore.getState();
+    // 观看历史不受片源模式影响(关闭只管搜索与首页聚合)
+    if (home.selectedCategory?.type !== "record") {
+      const contentData = home.contentData.filter((item) => !isSourceOff(modes, item.source));
+      if (contentData.length !== home.contentData.length) {
+        useHomeStore.setState({ contentData });
+      }
+    }
+  }
+});
+
+// 观看记录的"删除 + 撤销":
+// - 记录被标记为待删除时,立即从已显示的"最近播放"列表里去掉(不重新取数,避免整页闪一下);列表因此变空时刷新一次,让"最近播放"分类一起消失。
+// - 记录重新可见(撤销 / 删除失败 / 待删期间又播放过)时重新取数。
+usePlayRecordUndoStore.subscribe((state, previous) => {
+  const home = useHomeStore.getState();
+  const refresh = () => {
+    home.refreshPlayRecords().catch(() => {
+      // 与首页聚焦时的刷新一致:失败时保留现有内容
+    });
+  };
+
+  if (state.restoreSeq !== previous.restoreSeq) {
+    refresh();
+    return;
+  }
+
+  const newlyHidden = state.pending && state.pending.key !== previous.pending?.key ? state.pending.key : null;
+  if (!newlyHidden || home.selectedCategory?.type !== "record") {
+    return;
+  }
+  const contentData = home.contentData.filter((item) => playRecordKey(item.source, item.id) !== newlyHidden);
+  if (contentData.length === home.contentData.length) {
+    return;
+  }
+  useHomeStore.setState({ contentData });
+  if (contentData.length === 0) {
+    refresh();
+  }
 });
 
 export default useHomeStore;

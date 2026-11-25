@@ -16,6 +16,8 @@ interface CustomScrollViewProps {
   loadMoreThreshold?: number;
   emptyMessage?: string;
   ListFooterComponent?: React.ComponentType<any> | React.ReactElement | null;
+  /** 渲染在第一行卡片之前、随内容一起滚动(首页横幅用);列表为空时不渲染 */
+  ListHeaderComponent?: React.ReactElement | null;
 }
 
 const CustomScrollView: React.FC<CustomScrollViewProps> = ({
@@ -29,6 +31,7 @@ const CustomScrollView: React.FC<CustomScrollViewProps> = ({
   loadMoreThreshold = 200,
   emptyMessage = "暂无内容",
   ListFooterComponent,
+  ListHeaderComponent,
 }) => {
   const scrollViewRef = useRef<ScrollView>(null);
   const firstCardRef = useRef<any>(null); // <--- 新增
@@ -181,6 +184,7 @@ const CustomScrollView: React.FC<CustomScrollViewProps> = ({
       >
         {data.length > 0 ? (
           <>
+            {ListHeaderComponent ?? null}
             {rows.map((row, rowIndex) => {
               const isFullRow = row.length === effectiveColumns;
               const rowStyle = isFullRow ? dynamicStyles.fullRowContainer : dynamicStyles.partialRowContainer;

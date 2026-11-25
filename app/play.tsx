@@ -18,6 +18,7 @@ import Toast from "react-native-toast-message";
 import usePlayerStore, { selectCurrentEpisode } from "@/stores/playerStore";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { useVideoHandlers } from "@/hooks/useVideoHandlers";
+import { useMiniPlayerHandoff } from "@/hooks/useMiniPlayerHandoff";
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('PlayScreen');
@@ -131,6 +132,10 @@ export default function PlayScreen() {
 
   // 优化的动态样式 - 使用useMemo避免重复计算
   const dynamicStyles = useMemo(() => createResponsiveStyles(deviceType), [deviceType]);
+
+  // 迷你播放条交接:进入播放页时收掉迷你条,离开时把正在播的视频交给它。
+  // 必须放在下面调用 reset() 的 effect 之前(卸载时清理函数按声明顺序执行,取快照要早于 reset)
+  useMiniPlayerHandoff(deviceType);
 
   useEffect(() => {
     const perfStart = performance.now();

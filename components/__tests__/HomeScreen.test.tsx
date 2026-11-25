@@ -30,6 +30,14 @@ jest.mock("@/stores/authStore", () => ({
   default: () => ({ isLoggedIn: false, logout: jest.fn() }),
 }));
 
+jest.mock("@/stores/favoritesStore", () => ({
+  __esModule: true,
+  default: (selector: (state: { openDrawer: () => void }) => unknown) => selector({ openDrawer: jest.fn() }),
+}));
+jest.mock("@/components/UpdateBadge", () => ({ UpdateBadge: () => null }));
+// 横幅在 TV 上不启用(这里的设备类型是 tv);整体 mock 掉,免得把设置 store 等依赖带进来
+jest.mock("@/components/HomeHeroBanner", () => ({ HomeHeroBanner: () => null, useHeroBannerItems: () => [] }));
+
 jest.mock("@/hooks/useApiConfig", () => ({
   useApiConfig: () => ({ isConfigured: true, needsConfiguration: false, isValidating: false, isValid: true, error: null }),
   getApiConfigErrorMessage: () => "",

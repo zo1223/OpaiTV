@@ -1,17 +1,18 @@
-import React, { useState, useEffect, forwardRef } from "react";
-import { View, Text, Image, StyleSheet, TouchableOpacity, Alert, Animated } from "react-native";
+import React, { forwardRef } from "react";
+import { resolveDirectPlayParams } from "@/services/directPlay";
+import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { Star, Play } from "lucide-react-native";
-import { PlayRecordManager } from "@/services/storage";
+import { usePlayRecordUndoStore } from "@/stores/playRecordUndoStore";
 import { API } from "@/services/api";
 import { ThemedText } from "@/components/ThemedText";
 import { Colors } from "@/constants/Colors";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
-import { DeviceUtils } from "@/utils/DeviceUtils";
-import Logger from '@/utils/Logger';
+import { usePressScale } from "@/hooks/usePressScale";
+import { FadeInView } from "@/components/FadeInView";
+import { FadeInImage } from "@/components/FadeInImage";
 import type { PlayabilityStatus } from "@/stores/homeStore";
 
-const logger = Logger.withTag('VideoCardMobile');
 
 interface VideoCardMobileProps extends React.ComponentProps<typeof TouchableOpacity> {
   id: string;
@@ -29,6 +30,8 @@ interface VideoCardMobileProps extends React.ComponentProps<typeof TouchableOpac
   playableSourceCount?: number;
   onFocus?: () => void;
   onRecordDeleted?: () => void;
+  reason?: string;
+  directPlay?: boolean;
   api: API;
 }
 
@@ -49,19 +52,27 @@ const VideoCardMobile = forwardRef<View, VideoCardMobileProps>(
       api,
       playabilityStatus,
       playableSourceCount,
+      reason,
+      directPlay,
       playTime = 0,
     }: VideoCardMobileProps,
     ref
   ) => {
     const router = useRouter();
     const { cardWidth, cardHeight, spacing } = useResponsiveLayout();
-    const [fadeAnim] = useState(new Animated.Value(0));
+    // 按下缩小一点、松开弹回;只接 onPressIn / onPressOut,不影响点击、长按与滚动
+    const { scale, pressHandlers } = usePressScale();
 
     const handlePress = () => {
       if (progress !== undefined && episodeIndex !== undefined) {
         router.push({
           pathname: "/play",
           params: { source, id, episodeIndex: episodeIndex - 1, title, position: playTime * 1000 },
+        });
+      } else if (directPlay && source !== "douban") {
+        // 搜索结果:直接起播,不先进详情页
+        void resolveDirectPlayParams(source, id, title).then((params) => {
+          router.push({ pathname: "/play", params: { ...params } });
         });
       } else {
         router.push({
@@ -71,39 +82,14 @@ const VideoCardMobile = forwardRef<View, VideoCardMobileProps>(
       }
     };
 
-    useEffect(() => {
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: DeviceUtils.getAnimationDuration(300),
-        delay: Math.random() * 100,
-        useNativeDriver: true,
-      }).start();
-    }, [fadeAnim]);
-
     const handleLongPress = () => {
       if (progress === undefined) return;
 
       // 触摸长按松手后不会再触发 onPress,这里不能留"已长按"标记,否则对话框关闭后的第一次点击会被吞掉
 
-      Alert.alert("删除观看记录", `确定要删除"${title}"的观看记录吗？`, [
-        {
-          text: "取消",
-          style: "cancel",
-        },
-        {
-          text: "删除",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await PlayRecordManager.remove(source, id);
-              onRecordDeleted?.();
-            } catch (error) {
-              logger.info("Failed to delete play record:", error);
-              Alert.alert("错误", "删除观看记录失败，请重试");
-            }
-          },
-        },
-      ]);
+      // 不再弹确认框:记录先从列表隐藏,底部出现"撤销"提示条,撤销窗口结束后才真正删除
+      usePlayRecordUndoStore.getState().requestDelete({ source, id, title });
+      onRecordDeleted?.();
     };
 
     const isContinueWatching = progress !== undefined && progress > 0 && progress < 1;
@@ -120,16 +106,17 @@ const VideoCardMobile = forwardRef<View, VideoCardMobileProps>(
     const styles = createMobileStyles(cardWidth, cardHeight, spacing);
 
     return (
-      <Animated.View style={[styles.wrapper, { opacity: fadeAnim }]} ref={ref}>
+      <FadeInView style={styles.wrapper} stagger extraTransform={[{ scale }]} ref={ref}>
         <TouchableOpacity
           onPress={handlePress}
           onLongPress={handleLongPress}
+          {...pressHandlers}
           style={styles.pressable}
           activeOpacity={0.8}
           delayLongPress={800}
         >
           <View style={styles.card}>
-            <Image source={api.getImageSource(poster)} style={styles.poster} />
+            <FadeInImage source={api.getImageSource(poster)} style={styles.poster} />
             
             {/* 进度条 */}
             {isContinueWatching && (
@@ -177,6 +164,11 @@ const VideoCardMobile = forwardRef<View, VideoCardMobileProps>(
 
           <View style={styles.infoContainer}>
             <ThemedText numberOfLines={2} style={styles.title}>{title}</ThemedText>
+            {reason ? (
+              <ThemedText numberOfLines={2} style={{ fontSize: 11, lineHeight: 15, color: "#8fb8ff", marginTop: 2 }}>
+                {reason}
+              </ThemedText>
+            ) : null}
             {isContinueWatching && (
               <ThemedText style={styles.continueLabel} numberOfLines={1}>
                 第{episodeIndex}集 {Math.round((progress || 0) * 100)}%
@@ -184,7 +176,7 @@ const VideoCardMobile = forwardRef<View, VideoCardMobileProps>(
             )}
           </View>
         </TouchableOpacity>
-      </Animated.View>
+      </FadeInView>
     );
   }
 );

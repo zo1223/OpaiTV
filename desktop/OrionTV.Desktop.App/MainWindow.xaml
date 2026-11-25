@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:ctrl="clr-namespace:OrionTV.Desktop.App.Controls"
         mc:Ignorable="d"
         Title="OpaiTV" Height="820" Width="1280" MinHeight="680" MinWidth="1040"
         Background="{StaticResource AppBackgroundBrush}"
@@ -56,16 +57,36 @@
 
                         <TextBlock Text="用户" Style="{StaticResource SectionHeaderStyle}" Margin="14,16,0,6" />
                         <RadioButton x:Name="NavFavorites" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xEB51;" Content="收藏" Click="Nav_Click" />
-                        <RadioButton x:Name="NavSettings" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE713;" Content="设置" Click="Nav_Click" />
+                        <Grid>
+                            <RadioButton x:Name="NavSettings" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE713;" Content="设置" Click="Nav_Click" />
+                            <!-- 更新小红点：有新版本可更新时显示，点“设置”进入现有更新流程 -->
+                            <Ellipse x:Name="SettingsUpdateDot"
+                                     Width="8"
+                                     Height="8"
+                                     Fill="#FFFF3B30"
+                                     HorizontalAlignment="Right"
+                                     VerticalAlignment="Center"
+                                     Margin="0,0,22,0"
+                                     IsHitTestVisible="False"
+                                     ToolTip="有新版本可更新"
+                                     Visibility="Collapsed" />
+                        </Grid>
                     </StackPanel>
                 </ScrollViewer>
             </DockPanel>
         </Border>
 
         <Grid Grid.Column="1">
-            <ContentControl x:Name="ContentHost" />
+            <ContentControl x:Name="ContentHost">
+                <!-- 页面切换动效（淡入 + 轻微上移）只动这个位移与透明度，不触发布局 -->
+                <ContentControl.RenderTransform>
+                    <TranslateTransform x:Name="ContentShift" />
+                </ContentControl.RenderTransform>
+            </ContentControl>
             <!-- 播放页独立常驻；切到侧栏其他栏目时只隐藏，不卸载播放器原生宿主。 -->
             <ContentControl x:Name="PlayerHost" Visibility="Collapsed" Panel.ZIndex="10" />
+            <!-- 收藏侧滑面板：盖在内容区之上，从右侧滑入。 -->
+            <ctrl:FavoritesPanel x:Name="FavoritesPanel" Panel.ZIndex="20" />
         </Grid>
     </Grid>
 </Window>

@@ -9,7 +9,10 @@
                       Padding="14,8"
                       ScrollChanged="Scroll_ScrollChanged">
             <StackPanel>
-                <ItemsControl x:Name="Items">
+                <!-- 头部插槽：放在卡片流上方，随卡片一起滚动（首页横幅用）。没有内容时不占位。 -->
+                <ContentPresenter x:Name="HeaderHost" Visibility="Collapsed" />
+
+                <ItemsControl x:Name="Items" PreviewMouseRightButtonUp="Items_PreviewMouseRightButtonUp">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
                             <WrapPanel />
@@ -17,7 +20,7 @@
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                            <ctrl:VideoCardControl Item="{Binding}" Click="OnCardClick" />
+                            <ctrl:VideoCardControl Item="{Binding}" Click="OnCardClick" Loaded="OnCardLoaded" />
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>

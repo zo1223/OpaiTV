@@ -21,10 +21,30 @@ public sealed class AppServices : IDisposable
         VodClients = new VodSourceClientFactory(Http);
         AppleCms = VodClients.AppleCms;
         Douban = new DoubanClient(Http);
-        Catalog = new CatalogService(VodClients, Douban) { IsAdultSourceHidden = IsAdultSourceHidden };
+        Tmdb = new TmdbClient(Http);
+        Catalog = new CatalogService(VodClients, Douban) 
+        {
+            IsAdultSourceHidden = IsAdultSourceHidden,
+            // _settings 在构造函数后半段才赋值；万一更早被调用，按“开关关闭”处理（宁可多拦）
+            ShowAdultContent = () => _settings?.ShowAdultContent == true,
+            // 片源模式（稳定 / 影视 / 全量 / 关闭）：每次取数时现读设置，切换立即生效
+            SourceModeOf = SourceModeOf,
+        };
         M3u = new M3uParser(Http);
-        Hls = new HlsAdSkip(Http);
-        ChannelHealth = new ChannelHealthProbe(Http);
+        // 播放代理模式：所有取媒体地址的请求（弱网缓存下载、广告区间、可播性探测）每次都现读当前设置。
+        // _settings 在构造函数后半段才赋值，更早被读到时按系统代理处理（与没有这个设置时一致）。
+        PlaybackProxyRuntime.Current = () => PlaybackProxyDecision.From(_settings);
+        PlaybackHttp = new HttpClient(new HttpClientHandler
+        {
+            UseProxy = true,
+            Proxy = new PlaybackWebProxy(static () => PlaybackProxyRuntime.Current()),
+        })
+        {
+            Timeout = TimeSpan.FromSeconds(20),
+        };
+        PlaybackHttp.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OpaiTV-Desktop");
+        Hls = new HlsAdSkip(PlaybackHttp);
+        ChannelHealth = new ChannelHealthProbe(PlaybackHttp);
         VodSourceHealth = new VodSourceHealthProbe(ChannelHealth, new LibVlcMediaDecodeProbe(GetLibVlcAsync));
         VodPlayableSources = new VodPlayableSourceResolver(
             (title, cancellationToken) => Catalog.GetDetailSourcesAsync(Sources, title, cancellationToken),
@@ -38,13 +58,66 @@ public sealed class AppServices : IDisposable
         Downloads = new VodDownloadManager(VodCache);
         _danmakuHttp = DanmakuHttp.CreateDefaultClient();
         Danmaku = new DanmakuService(new DanmakuHttp(_danmakuHttp));
+        RecordDeletion = new PendingPlayRecordDeletion(PlayRecords, ScheduleOnUiThread);
         _settings = SettingsStore.Load();
         // 启动时先挂上磁盘里已有的 AI 额外源（订阅随后异步加载再合并）
         RebuildSources();
     }
 
     public HttpClient Http { get; }
+
+    /// <summary>
+    /// 取媒体地址用的 HttpClient（m3u8 广告区间、频道 / 片源可播性探测）：按播放代理模式选路。
+    /// 目录、搜索、海报、更新检查仍用 <see cref="Http"/>，不受播放代理模式影响。
+    /// </summary>
+    public HttpClient PlaybackHttp { get; }
+
+    /// <summary>
+    /// 播放代理模式（系统代理 / 强制代理 / 直连）：立即保存，下一次播放生效（正在播放的不打断）。
+    /// 强制代理但地址不合法时返回 false，什么都不改。落盘失败时抛出异常，本次运行内仍按新值生效。
+    /// </summary>
+    public bool SetPlaybackProxy(string? mode, string? proxyUrl)
+    {
+        if (!PlaybackProxySettings.TryApply(_settings, mode, proxyUrl, out var updated))
+        {
+            return false;
+        }
+
+        Settings = updated;
+        SettingsStore.Save(_settings);
+        return true;
+    }
+
     public DesktopUpdateService Updates { get; }
+
+    /// <summary>“接着看”可撤销删除：删除先进入 5 秒撤销窗口，超时才真正删记录。</summary>
+    public PendingPlayRecordDeletion RecordDeletion { get; }
+
+    /// <summary>收藏在收藏页之外被改动（侧滑面板里删除）之后触发，已打开的收藏页据此刷新。</summary>
+    public event Action? FavoritesChanged;
+
+    public void NotifyFavoritesChanged() => FavoritesChanged?.Invoke();
+
+    /// <summary>“接着看”列表里正在等待撤销的删除不显示。</summary>
+    public bool IsPlayRecordPendingDeletion(string source, string id) => RecordDeletion.IsPending(source, id);
+
+    private static IDisposable ScheduleOnUiThread(TimeSpan delay, Action callback)
+    {
+        // 撤销窗口的定时器跑在 UI 线程：到点提交删除后直接刷新界面，不需要跨线程。
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = delay };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            callback();
+        };
+        timer.Start();
+        return new UiTimerHandle(timer);
+    }
+
+    private sealed class UiTimerHandle(System.Windows.Threading.DispatcherTimer timer) : IDisposable
+    {
+        public void Dispose() => timer.Stop();
+    }
     public VodSourceClientFactory VodClients { get; }
     public AppleCmsClient AppleCms { get; }
     public DoubanClient Douban { get; }
@@ -64,6 +137,8 @@ public sealed class AppServices : IDisposable
 
     public FavoriteStore Favorites { get; } = new();
     public PlayRecordStore PlayRecords { get; } = new();
+    /// <summary>搜索记录（标签云），只存本机。</summary>
+    public SearchHistoryStore SearchHistory { get; } = new();
     public LocalMediaStore LocalMedia { get; } = new();
     private DesktopSettings _settings;
 
@@ -77,7 +152,7 @@ public sealed class AppServices : IDisposable
             if (adultChanged)
             {
                 // 成人内容开关变化（设置页切换，或 settings.json 被外部改写后重载）：可见源列表立即重算
-                RebuildSources();
+                RebuildSources(notifyAdultVisibilityChanged: true);
             }
         }
     }
@@ -108,10 +183,55 @@ public sealed class AppServices : IDisposable
         AdultContentFilter.IsHidden(_allSources, _settings.ShowAdultContent, sourceKey);
 
     /// <summary>
-    /// 被隐藏的成人源发生变化（开关切换，或成人源被添加/删除/改标记）。
+    /// 成人内容开关关闭，且该分类信息（分类名 / 题材标签）属于成人分类。
+    /// 收藏、观看历史保存的分类用它过滤；词表与规则集中在 Core 的 AdultCategories。
+    /// </summary>
+    public bool IsAdultCategoryHidden(string? category) =>
+        AdultContentFilter.IsCategoryHidden(_settings.ShowAdultContent, category);
+
+    /// <summary>
+    /// 被隐藏的成人内容发生变化（开关切换，或成人源被添加/删除/改标记）。
     /// 已打开的页面要丢弃按旧状态取到的内容；可能在后台线程触发。
     /// </summary>
     public event Action? AdultVisibilityChanged;
+
+    /// <summary>该片源当前的模式；没有设置过的是全量。</summary>
+    public SourceMode SourceModeOf(string sourceKey) => SourceModes.ModeOf(_settings?.SourceModes, sourceKey);
+
+    /// <summary>
+    /// 片源模式：立即生效并保存，不等“保存设置”。下一次搜索 / 首页取数就按新模式；
+    /// 按旧模式算出来的可播源缓存一并作废。落盘失败时抛出异常，本次运行内仍按新值生效。
+    /// </summary>
+    public void SetSourceMode(string sourceKey, SourceMode mode)
+    {
+        Settings = _settings with { SourceModes = SourceModes.With(_settings.SourceModes, sourceKey, mode) };
+        PlayabilityCache.Invalidate();
+        VodPlayableSources.Invalidate();
+        SettingsStore.Save(_settings);
+    }
+
+    /// <summary>“为你推荐”的候选池：首页加载过的条目，只在内存里。</summary>
+    public RecommendationPool RecommendationPool { get; } = new();
+
+    /// <summary>
+    /// TMDB 元数据（详情页补全海报 / 简介 / 评分 / 年份）。只有用户在设置里填了自己的 Key 才会发请求，
+    /// 请求只发往 TMDB 官方接口；失败时返回 null，详情页照旧显示原有数据。
+    /// </summary>
+    public TmdbClient Tmdb { get; }
+
+    /// <summary>TMDB Key：立即保存，只写进本机的 settings.json；留空即停用。</summary>
+    public void SetTmdbApiKey(string? key)
+    {
+        Settings = _settings with { TmdbApiKey = (key ?? string.Empty).Trim() };
+        SettingsStore.Save(_settings);
+    }
+
+    /// <summary>个性化推荐开关：立即生效并保存。</summary>
+    public void SetPersonalizedRecommendations(bool enabled)
+    {
+        Settings = _settings with { PersonalizedRecommendations = enabled };
+        SettingsStore.Save(_settings);
+    }
 
     /// <summary>
     /// 成人内容(18+)开关：立即生效并保存，不等“保存设置”——关掉之后不能因为忘了点保存而继续显示。
@@ -364,7 +484,10 @@ public sealed class AppServices : IDisposable
         return Sources.Count;
     }
 
-    private void RebuildSources()
+    /// <param name="notifyAdultVisibilityChanged">
+    /// 开关本身变了：即使没有任何成人源（被隐藏源的签名不变），按分类过滤的结果也变了，必须通知页面重取。
+    /// </param>
+    private void RebuildSources(bool notifyAdultVisibilityChanged = false)
     {
         var all = VideoSourceMerger.Merge(_subscriptionSources, _extraSources);
         var showAdultContent = _settings.ShowAdultContent;
@@ -374,7 +497,8 @@ public sealed class AppServices : IDisposable
         PlayabilityCache.Invalidate();
         VodPlayableSources.Invalidate();
 
-        if (!string.Equals(signature, Interlocked.Exchange(ref _hiddenAdultSignature, signature), StringComparison.Ordinal))
+        if (!string.Equals(signature, Interlocked.Exchange(ref _hiddenAdultSignature, signature), StringComparison.Ordinal)
+            || notifyAdultVisibilityChanged)
         {
             AdultVisibilityChanged?.Invoke();
         }
@@ -409,10 +533,13 @@ public sealed class AppServices : IDisposable
 
     public void Dispose()
     {
+        // 退出时还在撤销窗口里的删除直接生效，不留到下次启动。
+        RecordDeletion.Flush();
         Updates.Dispose();
         VodPlayableSources.Dispose();
         Downloads.Dispose();
         VodCache.Dispose();
+        PlaybackHttp.Dispose();
         Task[] pendingCleanups;
         lock (_playbackCleanupSync)
         {

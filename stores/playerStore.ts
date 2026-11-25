@@ -4,12 +4,24 @@ import { AVPlaybackStatus, Video } from "expo-av";
 import { RefObject } from "react";
 import { PlayRecord, PlayRecordManager, PlayerSettingsManager } from "@/services/storage";
 import { getAdRangesFromM3U8, M3U8AdRange } from "@/services/m3u8";
+import { getItemCategoryNames } from "@/services/adultCategoryFilter";
 import { useSettingsStore } from "@/stores/settingsStore";
 import useDetailStore, { episodesSelectorBySource } from "./detailStore";
 import { getSearchResultSourceKey } from "@/services/videoSourceSubscription";
+import { normalizePlaybackProxySettings, PlaybackProxySettings, resolvePlaybackUrl } from "@/services/playbackProxy";
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('PlayerStore');
+
+/** 读取当前的播放代理设置(读不到时按系统代理,即不改写地址) */
+const snapshotPlaybackProxy = (): PlaybackProxySettings => {
+  try {
+    const { playbackProxyMode, playbackProxyUrl } = useSettingsStore.getState();
+    return normalizePlaybackProxySettings({ mode: playbackProxyMode, proxyUrl: playbackProxyUrl });
+  } catch {
+    return normalizePlaybackProxySettings(null);
+  }
+};
 
 interface Episode {
   url: string;
@@ -63,6 +75,8 @@ interface PlayerState {
   _isRecordSaveThrottled: boolean;
   _playSeq: number;
   _loadSeq: number;
+  /** 本次播放使用的代理设置:在 loadVideo 开始时取一次,设置页之后的切换下次播放才生效 */
+  _playbackProxy: PlaybackProxySettings;
   _episodeSwitching: boolean;
   // Internal helper
   _savePlayRecord: (updates?: Partial<PlayRecord>, options?: { immediate?: boolean }) => void;
@@ -94,6 +108,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   _isRecordSaveThrottled: false,
   _playSeq: 0,
   _loadSeq: 0,
+  _playbackProxy: normalizePlaybackProxySettings(null),
   _episodeSwitching: false,
 
   setVideoRef: (ref) => set({ videoRef: ref }),
@@ -119,9 +134,12 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     // 下次进入播放页时先播放旧视频并把它的进度记到新视频名下
     const loadSeq = get()._loadSeq + 1;
     const isStale = () => get()._loadSeq !== loadSeq;
+    // 代理模式在开始播放时定下来:剧集地址按它改写一次,播放期间不再跟随设置变化
+    const playbackProxy = snapshotPlaybackProxy();
 
     set({
       isLoading: true,
+      _playbackProxy: playbackProxy,
       // 作废仍在途的 playEpisode,并抑制换源/加载期间旧视频残留的片尾自动切集
       _playSeq: get()._playSeq + 1,
       _loadSeq: loadSeq,
@@ -253,14 +271,14 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       const initialPositionFromRecord = playRecord?.play_time ? playRecord.play_time * 1000 : 0;
       const savedPlaybackRate = playerSettings?.playbackRate || 1.0;
       const adRanges = useSettingsStore.getState().autoSkipAdsEnabled
-        ? await getAdRangesFromM3U8(episodes[episodeIndex] || "")
+        ? await getAdRangesFromM3U8(resolvePlaybackUrl(episodes[episodeIndex] || "", playbackProxy))
         : [];
       
       if (isStale()) return;
 
       const episodesMappingStart = performance.now();
       const mappedEpisodes = episodes.map((ep, index) => ({
-        url: ep,
+        url: resolvePlaybackUrl(ep, playbackProxy),
         title: `第 ${index + 1} 集`,
       }));
       const episodesMappingEnd = performance.now();
@@ -284,11 +302,11 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     } catch (error) {
       logger.debug("Failed to load play record", error);
       const adRanges = useSettingsStore.getState().autoSkipAdsEnabled
-        ? await getAdRangesFromM3U8(episodes[episodeIndex] || "")
+        ? await getAdRangesFromM3U8(resolvePlaybackUrl(episodes[episodeIndex] || "", playbackProxy))
         : [];
       if (isStale()) return;
       const mappedEpisodes = episodes.map((ep, index) => ({
-        url: ep,
+        url: resolvePlaybackUrl(ep, playbackProxy),
         title: `Episode ${index + 1}`,
       }));
 
@@ -463,6 +481,9 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         total_time: status.durationMillis ? Math.floor(status.durationMillis / 1000) : 0,
         source_name: detail.source_name,
         year: detail.year || "",
+        // 成人内容(18+)按分类过滤用:首页“接着看”在开关关闭时据此隐藏成人分类条目。
+        // 拿不到分类时不写该字段,不覆盖记录里已有的分类
+        ...(getItemCategoryNames(detail) ? { type_name: getItemCategoryNames(detail) } : {}),
         ...existingRecord,
         ...updates,
       });
@@ -670,8 +691,10 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       // 重新加载当前集数的episodes
       const newEpisodes = fallbackSource.episodes || [];
       if (newEpisodes.length > currentEpisodeIndex) {
+        // 同一次播放里换源,沿用开始播放时的代理设置
+        const playbackProxy = get()._playbackProxy;
         const mappedEpisodes = newEpisodes.map((ep, index) => ({
-          url: ep,
+          url: resolvePlaybackUrl(ep, playbackProxy),
           title: `第 ${index + 1} 集`,
         }));
         

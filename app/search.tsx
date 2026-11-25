@@ -19,6 +19,22 @@ import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
 import { DeviceUtils } from "@/utils/DeviceUtils";
 import Logger from '@/utils/Logger';
+import { mergeSearchResults, resolveSearchIntent } from "@/services/searchIntent";
+import {
+  IncrementalSearchSnapshot,
+  describeSourceProgress,
+  summarizeSearchProgress,
+} from "@/services/incrementalSearch";
+import {
+  SearchHistoryEntry,
+  clearSearchHistory,
+  loadSearchHistory,
+  recordSearch,
+  removeSearch,
+  toTagCloud,
+  upsertSearchEntry,
+  withoutSearchEntry,
+} from "@/services/searchHistory";
 
 const logger = Logger.withTag('SearchScreen');
 
@@ -32,6 +48,11 @@ export default function SearchScreen() {
   // 较早发出但较晚返回的搜索不得覆盖较新搜索的结果或提前关掉加载态
   const searchSeqRef = useRef(0);
   const [isInputFocused, setIsInputFocused] = useState(false);
+  // 搜索记录(标签云)只存本机；自然语言扩展检索命中时在结果上方给一行提示
+  const [history, setHistory] = useState<SearchHistoryEntry[]>([]);
+  const [intentHint, setIntentHint] = useState<string | null>(null);
+  // 逐源进度:每个源一返回就更新一次,结果同时并入列表
+  const [progress, setProgress] = useState<IncrementalSearchSnapshot<SearchResult> | null>(null);
   const { showModal: showRemoteModal, lastMessage, targetPage, clearMessage } = useRemoteControlStore();
   const { remoteInputEnabled, showAdultContent } = useSettingsStore();
   const router = useRouter();
@@ -52,9 +73,23 @@ export default function SearchScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastMessage, targetPage]);
 
+  useEffect(() => {
+    let active = true;
+    loadSearchHistory()
+      .then((entries) => {
+        if (active && entries.length > 0) {
+          setHistory(entries);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
   // 成人内容开关关闭后,已经显示出来的结果里不能留着成人源的条目(新的搜索由 api 层过滤)
   useEffect(() => {
-    setResults((current) => current.filter((item) => !api.isAdultSourceHidden(item.source)));
+    setResults((current) => current.filter((item) => !api.isAdultItemHidden(item)));
   }, [showAdultContent]);
 
   // useEffect(() => {
@@ -75,18 +110,73 @@ export default function SearchScreen() {
     const seq = ++searchSeqRef.current;
     setLoading(true);
     setError(null);
+    setIntentHint(null);
+    // 搜索记录只写本机，写入失败不影响搜索
+    setHistory((current) => upsertSearchEntry(current, term));
+    recordSearch(term).catch(() => {});
+    // 自然语言(天气/心情/场景)说法命中时，用题材词走同一条搜索路径再查一轮(成人过滤等逻辑一致)，
+    // 与关键词结果合并去重；这一轮失败只当作没有结果，不影响关键词搜索。
+    const intent = resolveSearchIntent(term);
+    const intentGenres = intent ? intent.genres.slice(0, 3) : [];
+    const intentLabel = intent ? `已按“${intent.label}”扩展检索：${intentGenres.join(" / ")}` : null;
+    const intentSearch: Promise<SearchResult[]> =
+      intentGenres.length > 0
+        ? Promise.all(
+            intentGenres.map((genre) =>
+              Promise.resolve()
+                .then(() => api.searchVideos(genre))
+                .then((response) => response?.results ?? [])
+                .catch(() => [] as SearchResult[])
+            )
+          ).then((lists) => lists.flat())
+        : Promise.resolve([]);
+    // 关键词搜索逐源进行:搜到一个源就先显示一个源的结果,不等全部搜完;
+    // 扩展检索(题材词)的结果到了再并进来。旧搜索的迟到回调一律作废。
+    let keywordResults: SearchResult[] = [];
+    let intentResults: SearchResult[] = [];
+    const isStale = () => searchSeqRef.current !== seq;
+    const publish = () => {
+      const merged = mergeSearchResults(keywordResults, intentResults);
+      setResults(merged);
+      if (intentResults.length > 0 && merged.length > 0) {
+        setIntentHint(intentLabel);
+      }
+      return merged;
+    };
+    setResults([]);
+    setProgress(null);
+    const intentDone = intentSearch.then((extra) => {
+      if (isStale()) return;
+      intentResults = extra;
+      if (extra.length > 0) {
+        publish();
+      }
+    });
     try {
-      const response = await api.searchVideos(term);
-      if (searchSeqRef.current !== seq) return;
-      if (response.results.length > 0) {
-        setResults(response.results);
-      } else {
+      await api.searchVideosIncremental(
+        term,
+        (snapshot) => {
+          if (isStale()) return;
+          keywordResults = snapshot.results;
+          setProgress(snapshot);
+          publish();
+        },
+        isStale
+      );
+      if (isStale()) return;
+      await intentDone;
+      if (isStale()) return;
+      if (publish().length === 0) {
         setError("没有找到相关内容");
       }
     } catch (err) {
       logger.info("Search failed:", err);
-      if (searchSeqRef.current !== seq) return;
-      setError("搜索失败，请稍后重试。");
+      if (isStale()) return;
+      await intentDone;
+      if (isStale()) return;
+      if (publish().length === 0) {
+        setError("搜索失败，请稍后重试。");
+      }
     } finally {
       if (searchSeqRef.current === seq) {
         setLoading(false);
@@ -95,6 +185,24 @@ export default function SearchScreen() {
   };
 
   const onSearchPress = () => handleSearch();
+
+  const handleHistoryPress = (query: string) => {
+    setKeyword(query);
+    handleSearch(query);
+  };
+
+  const handleHistoryRemove = (query: string) => {
+    setHistory((current) => withoutSearchEntry(current, query));
+    removeSearch(query).catch(() => {});
+  };
+
+  const handleHistoryClear = () => {
+    setHistory([]);
+    clearSearchHistory().catch(() => {});
+  };
+
+  // 关键词为空且没有结果时，在搜索框下方显示搜索记录标签云
+  const showHistoryCloud = !loading && keyword.trim().length === 0 && results.length === 0 && history.length > 0;
 
   const handleQrPress = () => {
     if (!remoteInputEnabled) {
@@ -115,6 +223,7 @@ export default function SearchScreen() {
       poster={item.poster}
       year={item.year}
       sourceName={item.source_name}
+      directPlay
       api={api}
     />
   );
@@ -158,20 +267,86 @@ export default function SearchScreen() {
         )}
       </View>
 
-      {loading ? (
+      {showHistoryCloud && (
+        <View style={dynamicStyles.historyContainer}>
+          <View style={dynamicStyles.historyHeader}>
+            <ThemedText style={dynamicStyles.historyTitle}>搜索记录</ThemedText>
+            <TouchableOpacity
+              onPress={handleHistoryClear}
+              accessibilityRole="button"
+              accessibilityLabel="清空搜索记录"
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <ThemedText style={dynamicStyles.historyClear}>清空</ThemedText>
+            </TouchableOpacity>
+          </View>
+          <View style={dynamicStyles.historyTags}>
+            {toTagCloud(history).map((tag) => (
+              <View key={tag.query} style={dynamicStyles.historyTag}>
+                <TouchableOpacity
+                  onPress={() => handleHistoryPress(tag.query)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`搜索 ${tag.query}`}
+                >
+                  <ThemedText
+                    numberOfLines={1}
+                    style={[dynamicStyles.historyTagText, { fontSize: tag.fontSize, opacity: 0.7 + 0.3 * tag.weight }]}
+                  >
+                    {tag.query}
+                  </ThemedText>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => handleHistoryRemove(tag.query)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`删除搜索记录 ${tag.query}`}
+                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
+                >
+                  <ThemedText style={dynamicStyles.historyTagRemove}>×</ThemedText>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
+
+      {progress && progress.total > 0 ? (
+        <View style={dynamicStyles.progressContainer} accessibilityLabel="片源搜索进度">
+          <ThemedText style={dynamicStyles.progressSummary}>{summarizeSearchProgress(progress)}</ThemedText>
+          <View style={dynamicStyles.progressSources}>
+            {progress.progress.map((item) => (
+              <ThemedText
+                key={item.key}
+                numberOfLines={1}
+                style={[
+                  dynamicStyles.progressSource,
+                  item.status === "done" && item.count > 0 && dynamicStyles.progressSourceHit,
+                  (item.status === "failed" || item.status === "timeout") && dynamicStyles.progressSourceFailed,
+                ]}
+              >
+                {describeSourceProgress(item)}
+              </ThemedText>
+            ))}
+          </View>
+        </View>
+      ) : null}
+
+      {loading && results.length === 0 ? (
         <VideoLoadingAnimation showProgressBar={false} />
       ) : error ? (
         <View style={[commonStyles.center, { flex: 1 }]}>
           <ThemedText style={dynamicStyles.errorText}>{error}</ThemedText>
         </View>
       ) : (
-        <CustomScrollView
-          data={results}
-          renderItem={renderItem}
-          loading={loading}
-          error={error}
-          emptyMessage="输入关键词开始搜索"
-        />
+        <>
+          {intentHint ? <ThemedText style={dynamicStyles.intentHint}>{intentHint}</ThemedText> : null}
+          <CustomScrollView
+            data={results}
+            renderItem={renderItem}
+            loading={false}
+            error={error}
+            emptyMessage="输入关键词开始搜索"
+          />
+        </>
       )}
       <RemoteControlModal />
     </>
@@ -247,6 +422,81 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       color: "red",
       fontSize: isMobile ? 14 : 16,
       textAlign: "center",
+    },
+    historyContainer: {
+      paddingHorizontal: spacing,
+      marginBottom: spacing,
+    },
+    historyHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: spacing / 2,
+    },
+    historyTitle: {
+      color: "#aaa",
+      fontSize: isMobile ? 13 : 15,
+    },
+    historyClear: {
+      color: "#888",
+      fontSize: isMobile ? 13 : 15,
+    },
+    historyTags: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      alignItems: "center",
+    },
+    historyTag: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: "#2c2c2e",
+      borderRadius: 16,
+      paddingLeft: 12,
+      paddingRight: 8,
+      paddingVertical: 6,
+      marginRight: 8,
+      marginBottom: 8,
+      maxWidth: "100%",
+    },
+    historyTagText: {
+      color: "white",
+      flexShrink: 1,
+    },
+    historyTagRemove: {
+      color: "#888",
+      fontSize: 16,
+      marginLeft: 6,
+    },
+    progressContainer: {
+      paddingHorizontal: spacing,
+      marginBottom: spacing / 2,
+    },
+    progressSummary: {
+      color: "#ccc",
+      fontSize: isMobile ? 12 : 14,
+      marginBottom: 4,
+    },
+    progressSources: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+    },
+    progressSource: {
+      color: "#888",
+      fontSize: isMobile ? 11 : 13,
+      marginRight: 10,
+      marginBottom: 2,
+    },
+    progressSourceHit: {
+      color: "#6fcf97",
+    },
+    progressSourceFailed: {
+      color: "#eb5757",
+    },
+    intentHint: {
+      color: "#aaa",
+      fontSize: isMobile ? 12 : 14,
+      paddingHorizontal: spacing,
+      marginBottom: spacing / 2,
     },
   });
 };

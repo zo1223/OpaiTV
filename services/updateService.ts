@@ -234,14 +234,16 @@ class UpdateService {
    *  5️⃣ 版本比对工具（保持原来的实现）
    * --------------------------------------------------------------- */
   compareVersions(v1: string, v2: string): number {
-    const p1 = v1.split('.').map(Number);
-    const p2 = v2.split('.').map(Number);
-    for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
-      const n1 = p1[i] ?? 0;
-      const n2 = p2[i] ?? 0;
+    const a = parseVersion(v1);
+    const b = parseVersion(v2);
+    for (let i = 0; i < Math.max(a.parts.length, b.parts.length); i++) {
+      const n1 = a.parts[i] ?? 0;
+      const n2 = b.parts[i] ?? 0;
       if (n1 > n2) return 1;
       if (n1 < n2) return -1;
     }
+    // 数字部分相同时,带预发布后缀的(1.3.27-beta)比正式版低
+    if (a.prerelease !== b.prerelease) return a.prerelease ? -1 : 1;
     return 0;
   }
   getCurrentVersion(): string {
@@ -250,6 +252,20 @@ class UpdateService {
   isUpdateAvailable(remoteVersion: string): boolean {
     return this.compareVersions(remoteVersion, currentVersion) > 0;
   }
+}
+
+/**
+ * 把版本号拆成数字段:去掉首尾空白和 v 前缀,"-" / "+" 之后的后缀不参与数字比较,
+ * 每段只取开头的数字(取不到按 0)。按数字而不是按字符串比较,所以 1.3.9 < 1.3.10。
+ */
+function parseVersion(version: string): { parts: number[]; prerelease: boolean } {
+  const text = String(version ?? '').trim().replace(/^v/i, '');
+  const core = text.split(/[-+]/)[0];
+  const parts = core.split('.').map((segment) => {
+    const match = /^\d+/.exec(segment.trim());
+    return match ? parseInt(match[0], 10) : 0;
+  });
+  return { parts, prerelease: /^[^+]*-/.test(text) };
 }
 
 /* 单例导出 */

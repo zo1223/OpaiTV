@@ -4,8 +4,18 @@ using OrionTV.Desktop.Core;
 
 namespace OrionTV.Desktop.App.Views;
 
-public partial class HomeView : UserControl, INavigationAware, IDisposable
+public partial class HomeView : UserControl, INavigationAware, IKeyboardFocusTarget, IDisposable
 {
+    /// <summary>键盘切换到首页后的默认焦点：卡片区里第一个能拿焦点的元素；卡片区没有时落在页面第一个可聚焦元素上。</summary>
+    public void FocusDefaultElement()
+    {
+        var first = new System.Windows.Input.TraversalRequest(System.Windows.Input.FocusNavigationDirection.First);
+        if (!Grid.MoveFocus(first))
+        {
+            MoveFocus(new System.Windows.Input.TraversalRequest(System.Windows.Input.FocusNavigationDirection.First));
+        }
+    }
+
     private const int PageSize = 30;
 
     private static readonly string[] MovieTags =
@@ -26,22 +36,271 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
     private CancellationTokenSource? _cts;
     private readonly HashSet<string> _shownKeys = new(StringComparer.Ordinal);
 
+    // 首页大横幅：挂在卡片网格的头部插槽里，随卡片一起滚动
+    private readonly Controls.HeroBannerControl _banner = new();
+    private readonly List<CatalogItem> _bannerHomeItems = new();
+    private CancellationTokenSource? _bannerPlayCts;
+    private bool _bannerPreparing;
+
     public HomeView(IAppHost host)
     {
         InitializeComponent();
         _host = host;
         Grid.CardClicked += OnCardClicked;
         Grid.EndReached += OnEndReached;
+        Grid.CardRemoveRequested += OnRecordRemoveRequested;
+        _host.Services.RecordDeletion.Changed += OnRecordDeletionChanged;
+        _host.Services.Updates.AvailableUpdateChanged += OnAvailableUpdateChanged;
+        RefreshUpdateBadge();
+        RefreshUndoBar();
+
+        _banner.PlayRequested += OnBannerPlayRequested;
+        _banner.DetailRequested += OpenBannerDetail;
+        _banner.DescriptionProvider = BannerDescriptionOf;
+        Grid.Header = _banner;
+        Grid.SizeChanged += (_, _) => SyncBannerVisibility();
+        _host.Services.AdultVisibilityChanged += OnAdultVisibilityChangedForBanner;
+        // 离开首页（切到别的页面 / 进了播放页）后，还没准备好的横幅起播作废
+        Unloaded += (_, _) => CancelBannerPlay();
+        IsVisibleChanged += (_, _) =>
+        {
+            if (!IsVisible)
+            {
+                CancelBannerPlay();
+            }
+        };
     }
 
+    // ---------- 首页大横幅：数据只来自个性化推荐与首页已经加载的条目，不为横幅发任何请求 ----------
+
+    /// <summary>
+    /// 把首页刚显示的条目喂给横幅。传进来的都是已经过成人过滤 / 片源模式过滤的可见条目。
+    /// 首页数据只用来把横幅凑满：凑够以后不再换，切分类时横幅内容保持稳定。
+    /// </summary>
+    private void FeedBanner(IEnumerable<CatalogItem> items)
+    {
+        foreach (var item in items)
+        {
+            if (_bannerHomeItems.Count >= HeroBanner.MaxItems * 2)
+            {
+                break;
+            }
+
+            // 本地视频不进横幅（它的续播走另一条本地路径）
+            if (string.Equals(item.Source, "local", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(item.Poster)
+                || _bannerHomeItems.Any(existing => HeroBanner.KeyOf(existing) == HeroBanner.KeyOf(item)))
+            {
+                continue;
+            }
+
+            _bannerHomeItems.Add(item);
+        }
+
+        RefreshBanner();
+    }
+
+    /// <summary>重算横幅：个性化推荐（开关开且有结果）在前，其后是首页已加载的条目。</summary>
+    private void RefreshBanner()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _banner.SetItems(HeroBanner.Pick(LoadRecommendations(), _bannerHomeItems));
+        SyncBannerVisibility();
+    }
+
+    /// <summary>
+    /// CardGrid 的提示文字（加载中 / 空态 / 失败）居中显示在整个网格区域里：
+    /// 区域不够高时横幅会压到它，这时先收起横幅，有卡片了再放出来。
+    /// </summary>
+    private void SyncBannerVisibility()
+    {
+        var showsMessage = Grid.Count == 0;
+        var roomy = Grid.ActualHeight >= 2 * (Controls.HeroBannerControl.BannerHeight + 70);
+        _banner.Suppressed = showsMessage && !roomy;
+    }
+
+    /// <summary>首页条目自己不带简介：可播性探测已经取到过候选线路时，借用其中的简介（只查本机缓存）。</summary>
+    private string? BannerDescriptionOf(CatalogItem item)
+    {
+        var candidates = item.CandidateSources;
+        if (candidates is not { Count: > 0 } && _host.Services.PlayabilityCache.TryGet(item, out var cached))
+        {
+            candidates = cached.CandidateSources;
+        }
+
+        return HeroBanner.DescriptionOf(
+            candidates?.Where(candidate => !_host.Services.Catalog.IsResultHidden(candidate)));
+    }
+
+    // 18+ 开关或成人源变化：按旧状态取到的首页条目全部丢掉，横幅只按当前状态重算
+    private void OnAdultVisibilityChangedForBanner() => Dispatcher.BeginInvoke(() =>
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        CancelBannerPlay();
+        _bannerHomeItems.Clear();
+        RefreshBanner();
+    });
+
+    private void CancelBannerPlay()
+    {
+        _bannerPlayCts?.Cancel();
+        _bannerPlayCts = null;
+        _bannerPreparing = false;
+        _banner.SetPreparing(false);
+    }
+
+    /// <summary>
+    /// 横幅“播放”：与搜索结果点一下起播同一套选线（有观看记录续播，否则第一集）。
+    /// 找不到可播线路或准备失败时退回详情页；准备期间离开了首页则作废。
+    /// </summary>
+    private async void OnBannerPlayRequested(CatalogItem item)
+    {
+        if (_bannerPreparing || _disposed)
+        {
+            return;
+        }
+
+        _bannerPreparing = true;
+        _banner.SetPreparing(true);
+        var cts = new CancellationTokenSource();
+        _bannerPlayCts = cts;
+        PlayParameter? play = null;
+        try
+        {
+            play = await ResolveBannerPlayAsync(item, cts.Token);
+        }
+        catch
+        {
+            // 起播准备失败时退回详情页
+        }
+
+        var stale = cts.IsCancellationRequested || !ReferenceEquals(_bannerPlayCts, cts)
+            || _disposed || !IsLoaded || !IsVisible;
+        if (ReferenceEquals(_bannerPlayCts, cts))
+        {
+            _bannerPlayCts = null;
+            _bannerPreparing = false;
+            _banner.SetPreparing(false);
+        }
+
+        cts.Dispose();
+        if (stale)
+        {
+            return;
+        }
+
+        if (play is not null)
+        {
+            _host.Navigate(AppPage.Player, play);
+            return;
+        }
+
+        OpenBannerDetail(item);
+    }
+
+    private async Task<PlayParameter?> ResolveBannerPlayAsync(CatalogItem item, CancellationToken token)
+    {
+        var services = _host.Services;
+        var target = item;
+        if (target.CandidateSources is not { Count: > 0 })
+        {
+            if (services.PlayabilityCache.TryGet(target, out var cached) && cached.CandidateSources is { Count: > 0 })
+            {
+                // 可播性探测已经取到过候选线路：直接用，不再发请求
+                target = target with { CandidateSources = cached.CandidateSources };
+            }
+            else if (target.Source == "douban" || services.FindSource(target.Source) is null)
+            {
+                // 豆瓣条目没有绑定片源：按标题走详情页同一条取源路径（已带成人过滤与片源模式）
+                var sources = await services.Catalog.GetDetailSourcesAsync(services.Sources, target.Title, token);
+                token.ThrowIfCancellationRequested();
+                var candidates = CatalogPlayability.FromDetailSources(target.Title, sources).CandidateSources;
+                if (candidates is not { Count: > 0 })
+                {
+                    return null;
+                }
+
+                target = target with { CandidateSources = candidates };
+            }
+        }
+
+        return await DirectPlay.ResolveAsync(services, target);
+    }
+
+    private void OpenBannerDetail(CatalogItem item)
+    {
+        var isDouban = item.Source == "douban";
+        _host.Navigate(AppPage.Detail, new DetailParameter(
+            item.Title,
+            isDouban ? null : item.Source,
+            isDouban ? null : item.Id,
+            item.CandidateSources,
+            item.PlayableSources));
+    }
+
+    /// <summary>“接着看”列表：成人过滤之外，再去掉正在等待撤销的删除。</summary>
+    private IReadOnlyList<PlayRecordHistoryEntry> VisibleRecords() =>
+        _host.Services.PlayRecords.GetLatestByMedia(
+            _host.Services.IsAdultSourceHidden,
+            _host.Services.IsAdultCategoryHidden,
+            _host.Services.IsPlayRecordPendingDeletion);
+
     public void OnNavigatedTo(object? parameter) => BuildCategories();
+
+    // ---------- 为你推荐：只读本机的观看历史、收藏和首页已加载过的条目，不发任何请求 ----------
+
+    private IReadOnlyList<RecommendationWatched> RecommendationWatched() =>
+        VisibleRecords()
+            .Where(entry => !string.Equals(entry.Source, "local", StringComparison.OrdinalIgnoreCase))
+            .Select(entry => new RecommendationWatched(entry.Record.Title, entry.Record.Category, entry.Record.SaveTime))
+            .ToList();
+
+    private IReadOnlyList<RecommendationFavorite> RecommendationFavorites() =>
+        _host.Services.Favorites
+            .GetVisibleEntries(_host.Services.IsAdultSourceHidden, _host.Services.IsAdultCategoryHidden)
+            .Select(entry => new RecommendationFavorite(
+                entry.Item.Title, entry.Item.Category, entry.Source, entry.Id, entry.Item.Cover, entry.Item.SourceName, entry.Item.Year))
+            .ToList();
+
+    private List<CatalogItem> LoadRecommendations()
+    {
+        var services = _host.Services;
+        // 候选池同样走现有的成人过滤（成人源 / 成人分类在开关关闭时不进入推荐）
+        var candidates = services.RecommendationPool.Snapshot()
+            .Where(candidate => !services.IsAdultSourceHidden(candidate.Item.Source)
+                                && !services.IsAdultCategoryHidden(candidate.Category))
+            .ToList();
+        return LocalRecommender.Recommend(
+                services.Settings.PersonalizedRecommendations,
+                RecommendationWatched(),
+                RecommendationFavorites(),
+                candidates,
+                DateTimeOffset.UtcNow)
+            .Select(item => item.Item with { Reason = item.Reason })
+            .ToList();
+    }
 
     private void BuildCategories()
     {
         _categories.Clear();
-        if (_host.Services.PlayRecords.GetLatestByMedia(_host.Services.IsAdultSourceHidden).Count > 0)
+        if (VisibleRecords().Count > 0)
         {
             _categories.Add(new HomeCategory("观看历史", "record"));
+        }
+
+        // 为你推荐：开关开着，且本机有观看历史或收藏时才出现
+        if (_host.Services.Settings.PersonalizedRecommendations
+            && LocalRecommender.HasSignals(RecommendationWatched(), RecommendationFavorites()))
+        {
+            _categories.Add(new HomeCategory(LocalRecommender.Title, "recommend"));
         }
 
         _categories.Add(new HomeCategory("热门剧集", "tv", "热门"));
@@ -85,6 +344,8 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
         _selected = category;
         _selectedTag = null;
         ClearHistoryButton.Visibility = category.Type == "record" ? Visibility.Visible : Visibility.Collapsed;
+        // 只有“观看历史”里的卡片能右键删除
+        Grid.RemoveMenuText = category.Type == "record" ? "删除这条观看记录" : null;
 
         if (category.Tags is { Count: > 0 } tags)
         {
@@ -150,6 +411,7 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
         }
 
         Grid.ShowMessage("加载中…");
+        SyncBannerVisibility();
 
         try
         {
@@ -162,8 +424,19 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
                 }
 
                 Grid.ShowResults(records, "暂无观看记录");
+                FeedBanner(records);
                 _hasMore = false;
                 _ = HydrateMissingRecordPostersAsync(records, token);
+                return;
+            }
+
+            if (category.Type == "recommend")
+            {
+                Grid.ShowResults(
+                    LoadRecommendations(),
+                    "还没有可推荐的内容：多逛逛首页的其它分类，这里会根据你的观看历史与收藏给出推荐");
+                RefreshBanner();
+                _hasMore = false;
                 return;
             }
 
@@ -182,8 +455,11 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
                 return;
             }
 
+            // 加载过的条目留在内存里，作为“为你推荐”的候选（不落盘、不上传）
+            _host.Services.RecommendationPool.Add(results, $"{category.Title},{tag}");
             var displayResults = PrepareSourceCountResults(results);
             Grid.ShowResults(displayResults, "该分类下暂无内容");
+            FeedBanner(displayResults);
             _shownKeys.Clear();
             foreach (var item in displayResults)
             {
@@ -207,6 +483,7 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
             if (_cts == cts)
             {
                 _loading = false;
+                SyncBannerVisibility();
             }
         }
     }
@@ -219,7 +496,7 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
         }
 
         var category = _selected;
-        if (category is null || category.Type == "record")
+        if (category is null || category.Type is "record" or "recommend")
         {
             return;
         }
@@ -243,6 +520,7 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
                 return;
             }
 
+            _host.Services.RecommendationPool.Add(results, $"{category.Title},{tag}");
             // 跨页去重:源站不同页可能返回重复条目(HashSet.Add 返回 false 即为重复)
             var displayResults = PrepareSourceCountResults(results)
                 .Where(item => _shownKeys.Add($"{item.Source}+{item.Id}"))
@@ -266,7 +544,7 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
 
     private List<CatalogItem> LoadRecords()
     {
-        return _host.Services.PlayRecords.GetLatestByMedia(_host.Services.IsAdultSourceHidden)
+        return VisibleRecords()
             .Select(entry =>
             {
                 var source = entry.Source;
@@ -462,7 +740,10 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
         {
             try
             {
-                var results = await _host.Services.VodClients.For(source).GetByIdAsync(source, item.Id);
+                // 旧记录没有保存分类：按 id 取回后再按成人分类过滤一次（开关关闭时不直接起播）
+                var results = (await _host.Services.VodClients.For(source).GetByIdAsync(source, item.Id))
+                    .Where(result => !_host.Services.Catalog.IsResultHidden(result))
+                    .ToList();
                 var line = PlaybackResumePolicy.FindOriginalPlaybackLine(
                     results,
                     item.Id,
@@ -486,7 +767,8 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
                             poster,
                             line.PlaybackSourceKey,
                             line.EpisodeLabels,
-                            resume));
+                            resume,
+                            AdultContentFilter.CategoryOf(line)));
                         return;
                     }
                 }
@@ -673,15 +955,87 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
             return;
         }
 
+        // 清空是整库删除：还在撤销窗口里的那条先生效，清空之后不能再被“撤销”回来。
+        _host.Services.RecordDeletion.Flush();
         _host.Services.PlayRecords.Clear();
         BuildCategories();
     }
 
-    private void FavoritesButton_Click(object sender, RoutedEventArgs e) => _host.Navigate(AppPage.Favorites);
+    private void OnRecordRemoveRequested(CatalogItem item)
+    {
+        if (_selected?.Type != "record")
+        {
+            return;
+        }
+
+        // 记录先进入撤销窗口：列表里立即消失，文件不动；Changed 事件里刷新列表和提示条。
+        _host.Services.RecordDeletion.Delete(item.Source, item.Id, item.Title);
+    }
+
+    private void UndoButton_Click(object sender, RoutedEventArgs e) => _host.Services.RecordDeletion.Undo();
+
+    // 删除 / 撤销 / 超时提交之后都会触发；定时器在 UI 线程，但 Flush 可能来自别处，统一切回 UI 线程。
+    private void OnRecordDeletionChanged() => Dispatcher.BeginInvoke(() =>
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        RefreshUndoBar();
+        var hasRecords = VisibleRecords().Count > 0;
+        var hasRecordCategory = _categories.Any(category => category.Type == "record");
+        if (_selected?.Type == "record")
+        {
+            if (!hasRecords && _host.Services.RecordDeletion.Pending is null)
+            {
+                // 最后一条真的删掉了：“观看历史”分类随之消失。
+                BuildCategories();
+            }
+            else
+            {
+                _ = FetchAsync();
+            }
+        }
+        else if (hasRecords && !hasRecordCategory)
+        {
+            // 撤销把唯一的一条恢复回来了，但“观看历史”分类已经不在：重建分类条。
+            BuildCategories();
+        }
+    });
+
+    private void RefreshUndoBar()
+    {
+        var pending = _host.Services.RecordDeletion.Pending;
+        if (pending is null)
+        {
+            UndoBar.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        UndoText.Text = string.IsNullOrWhiteSpace(pending.Title)
+            ? "已删除这条观看记录"
+            : $"已删除《{pending.Title}》的观看记录";
+        UndoBar.Visibility = Visibility.Visible;
+    }
+
+    // 更新检查在后台线程完成
+    private void OnAvailableUpdateChanged() => Dispatcher.BeginInvoke(RefreshUpdateBadge);
+
+    private void RefreshUpdateBadge()
+    {
+        var hasUpdate = _host.Services.Updates.HasUpdateBadge;
+        SettingsUpdateDot.Visibility = hasUpdate ? Visibility.Visible : Visibility.Collapsed;
+        SettingsButton.ToolTip = hasUpdate
+            ? $"设置（有新版本 {_host.Services.Updates.AvailableUpdate?.VersionText} 可更新）"
+            : "设置";
+    }
+
+    private void FavoritesButton_Click(object sender, RoutedEventArgs e) => _host.ShowFavoritesPanel();
 
     private void SearchButton_Click(object sender, RoutedEventArgs e) => _host.Navigate(AppPage.Search);
 
-    private void SettingsButton_Click(object sender, RoutedEventArgs e) => _host.Navigate(AppPage.Settings);
+    private void SettingsButton_Click(object sender, RoutedEventArgs e) => _host.OpenSettings();
 
     public void Dispose()
     {
@@ -692,6 +1046,10 @@ public partial class HomeView : UserControl, INavigationAware, IDisposable
 
         // 离开首页时取消进行中的加载与可播性探测循环,避免每次进首页都叠加一条全源探测循环。
         _disposed = true;
+        _host.Services.RecordDeletion.Changed -= OnRecordDeletionChanged;
+        _host.Services.Updates.AvailableUpdateChanged -= OnAvailableUpdateChanged;
+        _host.Services.AdultVisibilityChanged -= OnAdultVisibilityChangedForBanner;
+        CancelBannerPlay();
         _cts?.Cancel();
         _cts = null;
     }

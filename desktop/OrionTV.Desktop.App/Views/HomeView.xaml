@@ -32,7 +32,19 @@
                 <Button x:Name="ClearHistoryButton" Style="{StaticResource IconButtonStyle}" Content="&#xE74D;" Click="ClearHistoryButton_Click" ToolTip="清空观看历史" Visibility="Collapsed" />
                 <Button x:Name="FavoritesButton" Style="{StaticResource IconButtonStyle}" Content="&#xEB51;" Click="FavoritesButton_Click" ToolTip="收藏" />
                 <Button x:Name="SearchButton" Style="{StaticResource IconButtonStyle}" Content="&#xE721;" Click="SearchButton_Click" ToolTip="搜索" />
-                <Button x:Name="SettingsButton" Style="{StaticResource IconButtonStyle}" Content="&#xE713;" Click="SettingsButton_Click" ToolTip="设置" />
+                <Grid>
+                    <Button x:Name="SettingsButton" Style="{StaticResource IconButtonStyle}" Content="&#xE713;" Click="SettingsButton_Click" ToolTip="设置" />
+                    <!-- 更新小红点：有新版本可更新时显示 -->
+                    <Ellipse x:Name="SettingsUpdateDot"
+                             Width="8"
+                             Height="8"
+                             Fill="#FFFF3B30"
+                             HorizontalAlignment="Right"
+                             VerticalAlignment="Top"
+                             Margin="0,9,9,0"
+                             IsHitTestVisible="False"
+                             Visibility="Collapsed" />
+                </Grid>
             </StackPanel>
         </DockPanel>
 
@@ -47,5 +59,33 @@
         </ScrollViewer>
 
         <ctrl:CardGrid x:Name="Grid" Grid.Row="3" Margin="0,6,0,0" />
+
+        <!-- 删除观看记录后的撤销提示条：撤销窗口内可恢复，超时后记录才真正删除 -->
+        <Border x:Name="UndoBar"
+                Grid.Row="3"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Bottom"
+                Margin="0,0,0,24"
+                Padding="18,10,10,10"
+                CornerRadius="10"
+                Background="{StaticResource PanelAltBrush}"
+                BorderBrush="{StaticResource BorderBrushDark}"
+                BorderThickness="1"
+                MaxWidth="560"
+                Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock x:Name="UndoText"
+                           Foreground="{StaticResource TextBrush}"
+                           FontSize="14"
+                           VerticalAlignment="Center"
+                           MaxWidth="400"
+                           TextTrimming="CharacterEllipsis" />
+                <Button x:Name="UndoButton"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Content="撤销"
+                        Margin="16,0,0,0"
+                        Click="UndoButton_Click" />
+            </StackPanel>
+        </Border>
     </Grid>
 </UserControl>

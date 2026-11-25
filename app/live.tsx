@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { View, FlatList, StyleSheet, ActivityIndicator, Modal, Text, Pressable } from "react-native";
 import type { HWEvent } from "react-native";
 import type { AVPlaybackStatus } from "expo-av";
@@ -8,12 +8,23 @@ import { probeChannels, labelOf, healthColor, ChannelHealthResult } from "@/serv
 import { ThemedView } from "@/components/ThemedView";
 import { StyledButton } from "@/components/StyledButton";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { normalizePlaybackProxySettings, PlaybackProxySettings, resolvePlaybackUrl } from "@/services/playbackProxy";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
 import { DeviceUtils } from "@/utils/DeviceUtils";
 import { useSafeTVEventHandler } from "@/hooks/useSafeTVEventHandler";
+
+/** 读取当前的播放代理设置(读不到时按系统代理,即不改写地址) */
+const readPlaybackProxySettings = (): PlaybackProxySettings => {
+  try {
+    const { playbackProxyMode, playbackProxyUrl } = useSettingsStore.getState();
+    return normalizePlaybackProxySettings({ mode: playbackProxyMode, proxyUrl: playbackProxyUrl });
+  } catch {
+    return normalizePlaybackProxySettings(null);
+  }
+};
 
 export default function LiveScreen() {
   const { m3uUrl } = useSettingsStore();
@@ -121,7 +132,13 @@ export default function LiveScreen() {
   // 频道列表可能在重载后变短,索引先钳制到有效范围再取 URL
   const selectedChannel =
     channels.length > 0 ? channels[Math.min(currentChannelIndex, channels.length - 1)] : null;
-  const selectedChannelUrl = selectedChannel ? getPlayableUrl(selectedChannel.url) : null;
+  const selectedChannelOriginalUrl = selectedChannel ? getPlayableUrl(selectedChannel.url) : null;
+  // 播放代理模式在选台(开始一次播放)时读取:设置页切换后,下次选台 / 进入直播页才生效
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const liveProxy = useMemo(() => readPlaybackProxySettings(), [selectedChannelOriginalUrl, reloadToken]);
+  const selectedChannelUrl = selectedChannelOriginalUrl
+    ? resolvePlaybackUrl(selectedChannelOriginalUrl, liveProxy)
+    : null;
 
   useEffect(() => {
     // 设置页每次按键都会更新 m3uUrl;旧地址的请求晚返回时不能覆盖新地址的频道列表

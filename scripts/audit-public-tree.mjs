@@ -41,9 +41,13 @@ const secretPatterns = [
 ];
 
 const allowedHosts = new Set([
+  "360zy.com",
   "api.bilibili.com",
   "api.github.com",
   "api.openai.com",
+  "api.themoviedb.org",
+  "bfzyapi.com",
+  "cj.rycjapi.com",
   "comment.bilibili.com",
   "dm.video.qq.com",
   "docs.expo.dev",
@@ -53,22 +57,35 @@ const allowedHosts = new Set([
   "github.com",
   "i0.hdslb.com",
   "icons.expo.fyi",
+  "image.tmdb.org",
   "img3.doubanio.com",
   "m.douban.com",
   "movie.douban.com",
   "nodejs.org",
   "openspeech.bytedance.com",
   "pbaccess.video.qq.com",
+  "purl.org",
   "raw.githubusercontent.com",
   "reactnativeunistyles.vercel.app",
   "schemas.android.com",
   "schemas.microsoft.com",
   "schemas.openxmlformats.org",
+  "schemas.xmlsoap.org",
   "tamagui.dev",
   "v.qq.com",
   "www.bilibili.com",
   "www.nativewind.dev",
+  "www.themoviedb.org",
   "yarnpkg.com",
+]);
+
+// 内置默认片源（用户可在设置里关闭或删除）的 Apple CMS 接口。只有这里逐条列出的、
+// 已人工验证过的地址可以出现在仓库里；其它任何真实视频接口 URL 仍然一律拒绝。
+// 新增内置源时：这里加接口地址，allowedHosts 里加域名，两处都要有。
+const reviewedSourceEndpoints = new Set([
+  "https://360zy.com/api.php/provide/vod",
+  "https://bfzyapi.com/api.php/provide/vod",
+  "https://cj.rycjapi.com/api.php/provide/vod",
 ]);
 
 const urlPattern = /\b(?:https?|wss?):\/\/[^\s"'<>()[\]{}；，。]+/giu;
@@ -149,7 +166,9 @@ for (const relativePath of trackedFiles) {
       continue;
     }
     if (videoUrlPattern.test(candidate)) {
-      failures.push(normalizedPath + ": real-looking video URL " + candidate);
+      if (!reviewedSourceEndpoints.has(candidate.replace(/\/+$/u, ""))) {
+        failures.push(normalizedPath + ": real-looking video URL " + candidate);
+      }
       continue;
     }
     if (!allowedHosts.has(host)) {

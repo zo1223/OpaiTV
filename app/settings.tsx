@@ -13,6 +13,10 @@ import { LiveStreamSection } from "@/components/settings/LiveStreamSection";
 import { VideoSourceSubscriptionSection } from "@/components/settings/VideoSourceSubscriptionSection";
 import { AddVideoSourceSection, AddVideoSourceSectionRef } from "@/components/settings/AddVideoSourceSection";
 import { AdultContentSection } from "@/components/settings/AdultContentSection";
+import { SourceModeSection } from "@/components/settings/SourceModeSection";
+import { RecommendationSection } from "@/components/settings/RecommendationSection";
+import { PlaybackProxySection } from "@/components/settings/PlaybackProxySection";
+import { TmdbSection } from "@/components/settings/TmdbSection";
 import { DanmakuSection, DanmakuSectionRef } from "@/components/settings/DanmakuSection";
 import { RemoteInputSection } from "@/components/settings/RemoteInputSection";
 import { SettingsSection } from "@/components/settings/SettingsSection";
@@ -315,6 +319,46 @@ export default function SettingsScreen() {
         />
       ),
       key: "adultContent",
+    },
+    {
+      component: (
+        <SourceModeSection
+          onFocus={() => {
+            setCurrentSection("sourceMode");
+          }}
+        />
+      ),
+      key: "sourceMode",
+    },
+    {
+      component: (
+        <RecommendationSection
+          onFocus={() => {
+            setCurrentSection("recommendation");
+          }}
+        />
+      ),
+      key: "recommendation",
+    },
+    {
+      component: (
+        <PlaybackProxySection
+          onFocus={() => {
+            setCurrentSection("playbackProxy");
+          }}
+        />
+      ),
+      key: "playbackProxy",
+    },
+    {
+      component: (
+        <TmdbSection
+          onFocus={() => {
+            setCurrentSection("tmdb");
+          }}
+        />
+      ),
+      key: "tmdb",
     },
     {
       component: (

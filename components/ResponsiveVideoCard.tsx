@@ -1,16 +1,15 @@
 import React, { useState, useEffect, useCallback, useRef, forwardRef } from "react";
-import { View, Text, Image, StyleSheet, TouchableOpacity, Alert, Animated } from "react-native";
+import { View, Text, Image, StyleSheet, TouchableOpacity, Animated } from "react-native";
 import { useRouter } from "expo-router";
 import { Star, Play } from "lucide-react-native";
-import { PlayRecordManager } from "@/services/storage";
+import { usePlayRecordUndoStore } from "@/stores/playRecordUndoStore";
 import { API } from "@/services/api";
 import { ThemedText } from "@/components/ThemedText";
 import { Colors } from "@/constants/Colors";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { DeviceUtils } from "@/utils/DeviceUtils";
-import Logger from '@/utils/Logger';
+import { usePressScale } from "@/hooks/usePressScale";
 
-const logger = Logger.withTag('ResponsiveVideoCard');
 
 interface VideoCardProps extends React.ComponentProps<typeof TouchableOpacity> {
   id: string;
@@ -56,8 +55,11 @@ const ResponsiveVideoCard = forwardRef<View, VideoCardProps>(
     const longPressTriggered = useRef(false);
     const scale = useRef(new Animated.Value(1)).current;
 
+    // 触屏设备:按下缩小一点、松开弹回。TV 上不启用,焦点放大保持原样
+    const { scale: pressScale, pressHandlers } = usePressScale({ disabled: responsiveConfig.deviceType === 'tv' });
+
     const animatedStyle = {
-      transform: [{ scale }],
+      transform: [{ scale }, { scale: pressScale }],
     };
 
     const handlePress = () => {
@@ -118,35 +120,9 @@ const ResponsiveVideoCard = forwardRef<View, VideoCardProps>(
 
       longPressTriggered.current = true;
 
-      // Show confirmation dialog to delete play record
-      Alert.alert("删除观看记录", `确定要删除"${title}"的观看记录吗？`, [
-        {
-          text: "取消",
-          style: "cancel",
-        },
-        {
-          text: "删除",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              // Delete from local storage
-              await PlayRecordManager.remove(source, id);
-
-              // Call the onRecordDeleted callback
-              if (onRecordDeleted) {
-                onRecordDeleted();
-              }
-              // 如果没有回调函数，则使用导航刷新作为备选方案
-              else if (router.canGoBack()) {
-                router.replace("/");
-              }
-            } catch (error) {
-              logger.info("Failed to delete play record:", error);
-              Alert.alert("错误", "删除观看记录失败，请重试");
-            }
-          },
-        },
-      ]);
+      // 不再弹确认框:记录先从列表隐藏,底部出现"撤销"提示条,撤销窗口结束后才真正删除
+      usePlayRecordUndoStore.getState().requestDelete({ source, id, title });
+      onRecordDeleted?.();
     };
 
     // 是否是继续观看的视频
@@ -204,6 +180,7 @@ const ResponsiveVideoCard = forwardRef<View, VideoCardProps>(
         <TouchableOpacity
           onPress={handlePress}
           onLongPress={handleLongPress}
+          {...pressHandlers}
           onFocus={handleFocus}
           onBlur={handleBlur}
           style={styles.pressable}

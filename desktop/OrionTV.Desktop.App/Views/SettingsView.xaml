@@ -58,6 +58,37 @@
 
                 <!-- 成人内容(18+)：默认关闭；切换后立即生效并保存，不随“保存设置”提交。
                      放在“一键加源”之前：下面的源列表再长，开关的位置也不变 -->
+                <!-- 个性化推荐：默认开；纯本地计算，改了立即生效并保存 -->
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <DockPanel>
+                        <ToggleButton x:Name="RecommendToggle" DockPanel.Dock="Right" Style="{StaticResource SwitchStyle}"
+                                      VerticalAlignment="Center" Margin="14,0,0,0"
+                                      Checked="RecommendToggle_Changed" Unchecked="RecommendToggle_Changed" />
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="个性化推荐" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" />
+                            <TextBlock x:Name="RecommendStatus" Foreground="{StaticResource MutedTextBrush}"
+                                       FontSize="12" Margin="0,5,0,0" TextWrapping="Wrap"
+                                       Text="首页显示“为你推荐”。仅在本机根据观看历史与收藏计算，不联网、不上传观看记录" />
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <!-- TMDB 元数据：填了自己的 Key 才启用；改了立即保存，不随“保存设置”提交 -->
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <StackPanel>
+                        <TextBlock Text="TMDB 元数据" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" />
+                        <TextBlock Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,5,0,8" TextWrapping="Wrap"
+                                   Text="填写自己的 TMDB API Key（或 Read Access Token）后，详情页会用 TMDB 补全缺少的海报、简介、年份，并显示 TMDB 评分。Key 只保存在本机，只会发给 TMDB 官方接口；填写后打开详情页时会把片名发给 TMDB 查询；留空则不启用。" />
+                        <DockPanel>
+                            <Button x:Name="TmdbKeyClearButton" DockPanel.Dock="Right" Style="{StaticResource SecondaryButtonStyle}"
+                                    Height="36" Padding="14,0" Margin="8,0,0,0" FontSize="13" Content="清除" Click="TmdbKeyClearButton_Click" />
+                            <PasswordBox x:Name="TmdbKeyBox" Height="36" FontSize="14" VerticalContentAlignment="Center"
+                                         PasswordChanged="TmdbKeyBox_PasswordChanged" />
+                        </DockPanel>
+                        <TextBlock x:Name="TmdbKeyStatus" Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+
                 <Border Style="{StaticResource CardPanelStyle}">
                     <DockPanel>
                         <ToggleButton x:Name="AdultContentToggle" DockPanel.Dock="Right" Style="{StaticResource SwitchStyle}"
@@ -140,6 +171,14 @@
                         </Border>
                         <TextBlock x:Name="SourceSummaryText" Foreground="{StaticResource MutedTextBrush}"
                                    FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap" />
+                        <!-- 片源模式：每个片源一个四档选择（稳定 / 影视 / 全量 / 关闭），改了立即生效并保存 -->
+                        <TextBlock Text="片源模式：稳定＝只用该源最稳的一条线路；影视＝只保留影视类内容；全量＝什么都搜；关闭＝不参与搜索与首页。改了立即生效。"
+                                   Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="0,12,0,0" TextWrapping="Wrap" />
+                        <TextBlock x:Name="SourceModeStatus" Foreground="{StaticResource DangerBrush}" FontSize="12"
+                                   Margin="0,4,0,0" TextWrapping="Wrap" Visibility="Collapsed" />
+                        <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto" Margin="0,8,0,0">
+                            <StackPanel x:Name="SourceModesPanel" />
+                        </ScrollViewer>
                         <ItemsControl x:Name="ExtraSourcesList" Margin="0,10,0,0">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
@@ -181,6 +220,25 @@
                         <ToggleButton x:Name="AutoSkipToggle" DockPanel.Dock="Right" Style="{StaticResource SwitchStyle}" VerticalAlignment="Center" Checked="OnFieldChanged" Unchecked="OnFieldChanged" />
                         <TextBlock Text="自动跳过广告" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
                     </DockPanel>
+                </Border>
+
+                <!-- 播放代理：系统代理 / 强制代理 / 直连。改了立即保存，下一次播放生效，不随“保存设置”提交 -->
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <StackPanel>
+                        <TextBlock Text="播放代理" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,10" />
+                        <ComboBox x:Name="PlaybackProxyModeBox" Height="36" FontSize="14" SelectionChanged="PlaybackProxyModeBox_SelectionChanged">
+                            <ComboBoxItem Content="系统代理（跟随系统代理设置）" Tag="system" />
+                            <ComboBoxItem Content="强制代理（使用下面填写的地址）" Tag="forced" />
+                            <ComboBoxItem Content="直连（不走代理）" Tag="direct" />
+                        </ComboBox>
+                        <TextBox x:Name="PlaybackProxyUrlBox" Margin="0,8,0,0"
+                                 Tag="强制代理地址（HTTP 代理），例如 http://127.0.0.1:7890"
+                                 KeyDown="PlaybackProxyUrlBox_KeyDown" LostFocus="PlaybackProxyUrlBox_LostFocus" />
+                        <TextBlock x:Name="PlaybackProxyStatus" Foreground="{StaticResource MutedTextBrush}"
+                                   FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0" />
+                        <TextBlock Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0"
+                                   Text="对点播（弱网缓存开启时，默认开启）、下载、广告识别和可播性检测的请求生效，切换后下一次播放起作用。直播以及关闭弱网缓存后的点播由播放内核自行联网，目前不保证按这里的模式走。目录、搜索、海报不受这里影响。" />
+                    </StackPanel>
                 </Border>
 
                 <!-- 弹幕：默认关闭。每一项改了立即生效并保存，不随“保存设置”提交。

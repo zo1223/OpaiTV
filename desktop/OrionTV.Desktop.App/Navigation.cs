@@ -22,6 +22,15 @@ public interface IAppHost
     void Navigate(AppPage page, object? parameter = null);
     void GoBack();
 
+    /// <summary>
+    /// 从内容区右侧滑出收藏面板。当前页面是原生视频画面（播放、直播、本地视频）时面板盖不住视频，
+    /// 改为直接进入收藏页。
+    /// </summary>
+    void ShowFavoritesPanel();
+
+    /// <summary>进入设置页（顶部是“软件更新”；小红点亮着时那里显示“下载并安装”，走现有更新流程）。</summary>
+    void OpenSettings();
+
     /// <summary>当前是否处于沉浸全屏（隐藏侧边栏、无边框最大化）。</summary>
     bool IsFullscreen { get; }
 
@@ -33,6 +42,12 @@ public interface IAppHost
 public interface INavigationAware
 {
     void OnNavigatedTo(object? parameter);
+}
+
+/// <summary>页面可选实现：键盘切换到该页之后，把键盘焦点放到页面的默认位置。</summary>
+public interface IKeyboardFocusTarget
+{
+    void FocusDefaultElement();
 }
 
 public interface INavigationVisibilityAware
@@ -83,4 +98,6 @@ public sealed record PlayParameter(
     string Poster = "",
     string? PlaybackSourceKey = null,
     IReadOnlyList<string>? EpisodeLabels = null,
-    PlaybackResumeContext? Resume = null);
+    PlaybackResumeContext? Resume = null,
+    // 条目的分类信息（AdultContentFilter.CategoryOf），随观看记录保存，供成人内容按分类过滤
+    string? Category = null);

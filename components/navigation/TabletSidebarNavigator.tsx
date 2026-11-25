@@ -6,6 +6,8 @@ import { Colors } from '@/constants/Colors';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
 import { DeviceUtils } from '@/utils/DeviceUtils';
 import { ThemedText } from '@/components/ThemedText';
+import useFavoritesStore from '@/stores/favoritesStore';
+import { UpdateBadge } from '@/components/UpdateBadge';
 
 interface SidebarItem {
   key: string;
@@ -51,7 +53,14 @@ const TabletSidebarNavigator: React.FC<TabletSidebarNavigatorProps> = ({
     }
   };
 
+  const openFavoritesDrawer = useFavoritesStore((state) => state.openDrawer);
+
   const handleItemPress = (route: string) => {
+    // 收藏入口滑出侧边面板;已经在收藏页时不再叠一层
+    if (route === '/favorites' && pathname !== '/favorites') {
+      openFavoritesDrawer();
+      return;
+    }
     if (route === '/') {
       router.push('/');
     } else {
@@ -94,14 +103,18 @@ const TabletSidebarNavigator: React.FC<TabletSidebarNavigatorProps> = ({
               <TouchableOpacity
                 key={item.key}
                 style={[dynamicStyles.sidebarItem, isActive && dynamicStyles.activeSidebarItem]}
+                testID={`sidebar-item-${item.key}`}
                 onPress={() => handleItemPress(item.route)}
                 activeOpacity={0.7}
               >
-                <IconComponent
-                  size={20}
-                  color={isActive ? Colors.dark.primary : '#ccc'}
-                  strokeWidth={isActive ? 2.5 : 2}
-                />
+                <View>
+                  <IconComponent
+                    size={20}
+                    color={isActive ? Colors.dark.primary : '#ccc'}
+                    strokeWidth={isActive ? 2.5 : 2}
+                  />
+                  {item.key === 'settings' && <UpdateBadge />}
+                </View>
                 {!collapsed && (
                   <Text style={[
                     dynamicStyles.sidebarItemLabel,

@@ -84,3 +84,39 @@ describe('updateService.downloadApk', () => {
     expect(Toast.show).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('updateService version comparison', () => {
+  it.each([
+    ['1.3.26', '1.3.27', -1],
+    ['1.3.27', '1.3.26', 1],
+    ['1.3.26', '1.3.26', 0],
+    // 按数字比较,不是按字符串
+    ['1.3.9', '1.3.10', -1],
+    ['1.9.0', '1.10.0', -1],
+    ['2.0.0', '1.99.99', 1],
+    // v 前缀与空白
+    ['v1.3.27', '1.3.26', 1],
+    ['v2.0.0', '1.9.9', 1],
+    ['V1.3.26', ' 1.3.26 ', 0],
+    // 段数不同:缺的段按 0
+    ['1.3', '1.3.1', -1],
+    ['1.3', '1.3.0', 0],
+    ['1.4', '1.3.26', 1],
+    // 预发布后缀低于同号正式版,构建号后缀不影响
+    ['1.3.27-beta.1', '1.3.27', -1],
+    ['1.3.27-beta.1', '1.3.26', 1],
+    ['1.3.27+build5', '1.3.27', 0],
+  ])('compareVersions(%s, %s) = %d', (a, b, expected) => {
+    expect(updateService.compareVersions(a, b)).toBe(expected);
+    expect(updateService.compareVersions(b, a)).toBe(expected === 0 ? 0 : -expected);
+  });
+
+  it('reports an update only for a strictly newer remote version', () => {
+    const [major, minor, patch] = updateService.getCurrentVersion().split('.').map(Number);
+    expect(updateService.isUpdateAvailable(`${major}.${minor}.${patch + 1}`)).toBe(true);
+    expect(updateService.isUpdateAvailable(`v${major}.${minor}.${patch + 1}`)).toBe(true);
+    expect(updateService.isUpdateAvailable(`${major}.${minor}.${patch}`)).toBe(false);
+    expect(updateService.isUpdateAvailable(`${major}.${minor}.${Math.max(patch - 1, 0)}`)).toBe(false);
+    expect(updateService.isUpdateAvailable('')).toBe(false);
+  });
+});

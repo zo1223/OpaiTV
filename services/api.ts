@@ -12,6 +12,13 @@ import {
   VideoSourceCategoryVideosResponse,
   VideoSourceSubscriptionSource,
 } from "./videoSourceSubscription";
+import { isAdultCategoryHidden } from "./adultCategoryFilter";
+import { applySourceModes, isSourceOff, normalizeSourceModes, SourceModeMap } from "./sourceMode";
+import {
+  IncrementalSearchSnapshot,
+  IncrementalSearchSource,
+  runIncrementalSearch,
+} from "./incrementalSearch";
 
 // region: --- Interface Definitions ---
 export interface DoubanItem {
@@ -41,6 +48,9 @@ export interface VideoDetail {
   source_name: string;
   desc?: string;
   type?: string;
+  /** 源站分类名 / 题材标签:成人内容(18+)按分类过滤用 */
+  type_name?: string;
+  class?: string;
   year?: string;
   area?: string;
   director?: string;
@@ -77,6 +87,8 @@ export interface Favorite {
   search_title: string;
   year: string;
   save_time?: number;
+  /** 收藏时条目的分类(type_name 与 class 用逗号拼接)。成人内容开关关闭时按它过滤;旧数据没有该字段 */
+  type_name?: string;
 }
 
 export interface PlayRecord {
@@ -89,6 +101,8 @@ export interface PlayRecord {
   total_time: number;
   save_time: number;
   year: string;
+  /** 保存记录时条目的分类(type_name 与 class 用逗号拼接)。成人内容开关关闭时按它过滤;旧数据没有该字段 */
+  type_name?: string;
 }
 
 export interface ApiSite {
@@ -339,11 +353,20 @@ const fetchDoubanSubjects = async (
   return fetchDoubanMobileRecommendations(type, normalizedTag, pageSize, pageStart);
 };
 
+/** 条目上可用于成人分类判断的字段。 */
+export interface AdultFilterableItem {
+  source?: string | null;
+  type_name?: string | null;
+  class?: string | null;
+}
+
 export class API {
   public baseURL: string = "";
   private subscribedVideoSources: VideoSourceSubscriptionSource[] = [];
   // 成人内容开关(设置页),默认关闭:标记为 adult 的源对所有取数入口不可见
   private showAdultContent = false;
+  // 片源模式(稳定/影视/全量/关闭),按源 key;没有条目的源是全量。见 services/sourceMode
+  private sourceModes: SourceModeMap = {};
 
   constructor(baseURL?: string) {
     if (baseURL) {
@@ -359,6 +382,25 @@ export class API {
     this.subscribedVideoSources = sources;
   }
 
+  /** 片源模式立即生效:下一次搜索/首页取数就按新模式 */
+  public setSourceModes(modes: SourceModeMap | null | undefined) {
+    this.sourceModes = normalizeSourceModes(modes);
+  }
+
+  public getSourceModes(): SourceModeMap {
+    return { ...this.sourceModes };
+  }
+
+  // 搜索与首页用的源列表:在成人过滤之后的可见源里,再去掉模式为“关闭”的源
+  private getActiveVideoSources() {
+    return this.getVisibleVideoSources().filter((source) => !isSourceOff(this.sourceModes, source.key));
+  }
+
+  // 成人过滤之后,再按各源的模式收窄(关闭 / 只留影视类 / 只留最稳线路)
+  private modeItems<T extends AdultFilterableItem>(items: T[] | null | undefined): T[] {
+    return applySourceModes(this.visibleItems(items), this.sourceModes);
+  }
+
   public setShowAdultContent(enabled: boolean) {
     this.showAdultContent = enabled;
   }
@@ -366,6 +408,29 @@ export class API {
   /** 该源是成人源且成人内容开关关闭。播放记录、收藏等按源 key 保存的数据用它过滤 */
   public isAdultSourceHidden(sourceKey: string) {
     return !this.showAdultContent && this.subscribedVideoSources.some((source) => source.adult && source.key === sourceKey);
+  }
+
+  /**
+   * 该分类(type_name / class)是成人分类且成人内容开关关闭。
+   * 关键词只在 services/adultCategoryFilter.ts 一处维护,调用点不要自己拼。
+   */
+  public isAdultCategoryHidden(typeName?: string | null, className?: string | null) {
+    return isAdultCategoryHidden(this.showAdultContent, typeName, className);
+  }
+
+  /** 条目是否应隐藏:来自被隐藏的成人源,或属于成人分类(开关关闭时)。所有内容入口落地前都用它 */
+  public isAdultItemHidden(item: AdultFilterableItem | null | undefined) {
+    if (!item) {
+      return false;
+    }
+    return (
+      (typeof item.source === "string" && this.isAdultSourceHidden(item.source)) ||
+      this.isAdultCategoryHidden(item.type_name, item.class)
+    );
+  }
+
+  private visibleItems<T extends AdultFilterableItem>(items: T[] | null | undefined): T[] {
+    return Array.isArray(items) ? items.filter((item) => !this.isAdultItemHidden(item)) : [];
   }
 
   // 是否处于订阅模式仍按全部源判断:成人源被隐藏不应让请求改走后端
@@ -387,6 +452,21 @@ export class API {
       throw new Error("VIDEO_SOURCE_NOT_FOUND");
     }
     return result;
+  }
+
+  // 成人分类的详情在开关关闭时按“源不存在”处理,与被隐藏的成人源一致
+  private unlessAdultCategory<T extends AdultFilterableItem>(detail: T): T {
+    if (detail && this.isAdultCategoryHidden(detail.type_name, detail.class)) {
+      throw new Error("VIDEO_SOURCE_NOT_FOUND");
+    }
+    return detail;
+  }
+
+  // 分类浏览:成人分类不进入分类列表(开关关闭时)
+  private visibleCategories(categories: VideoSourceCategory[]): VideoSourceCategory[] {
+    return Array.isArray(categories)
+      ? categories.filter((category) => !this.isAdultCategoryHidden(category?.name))
+      : categories;
   }
 
   private async _fetch(url: string, options: RequestInit = {}): Promise<Response> {
@@ -526,12 +606,12 @@ export class API {
       }
 
       const settledResults = await Promise.allSettled(
-        this.getVisibleVideoSources().map((source) =>
+        this.getActiveVideoSources().map((source) =>
           withSourceTimeout((signal) => fetchAppleCmsHomePage(source, type, tag, pageStart, pageSize, signal))
         )
       );
       const sourceResults = settledResults.map((result) =>
-        result.status === "fulfilled" ? result.value.filter((item) => !this.isAdultSourceHidden(item.source)) : []
+        result.status === "fulfilled" ? this.modeItems(result.value) : []
       );
       const list = mixSourceResults(sourceResults, pageSize, getVideoDedupeKey);
       return { code: 0, message: "", list };
@@ -539,53 +619,135 @@ export class API {
 
     const url = `/api/douban?type=${type}&tag=${encodeURIComponent(tag)}&pageSize=${pageSize}&pageStart=${pageStart}`;
     const response = await this._fetch(url);
-    return response.json();
+    const data: DoubanResponse = await response.json();
+    return Array.isArray(data?.list) ? { ...data, list: this.modeItems(data.list) } : data;
+  }
+
+  /**
+   * 跨片源增量搜索:逐源并发,每个源一返回就通过 onUpdate 回报进度和目前为止的结果。
+   * 参与的源 = 成人过滤后可见、且模式不是“关闭”的源;每个源的结果先过成人过滤再按该源模式收窄。
+   * 后端模式下源列表取自后端,逐源走 /api/search/one;拿不到源列表时退回一次性的 /api/search。
+   */
+  async searchVideosIncremental(
+    query: string,
+    onUpdate: (snapshot: IncrementalSearchSnapshot<SearchResult>) => void,
+    isCancelled?: () => boolean
+  ): Promise<IncrementalSearchSnapshot<SearchResult>> {
+    if (this.hasSubscribedVideoSources()) {
+      const sources = this.getActiveVideoSources();
+      return runIncrementalSearch<SearchResult>({
+        sources: sources.map((source) => ({ key: source.key, name: source.name || source.key })),
+        searchOne: async (target, signal) => {
+          const source = sources.find((item) => item.key === target.key);
+          const found = source ? await searchAppleCmsSource(source, query, signal) : [];
+          // 请求在途时该源可能刚被关掉或被隐藏:落地前按当前状态再确认一次
+          return this.isAdultSourceHidden(target.key) || isSourceOff(this.sourceModes, target.key)
+            ? []
+            : this.modeItems(found);
+        },
+        onUpdate,
+        isCancelled,
+        timeoutMs: SOURCE_REQUEST_TIMEOUT_MS,
+      });
+    }
+
+    let sites: IncrementalSearchSource[] = [];
+    try {
+      sites = (await this.getResources()).map((site) => ({ key: site.key, name: site.name || site.key }));
+    } catch (error) {
+      if (error instanceof Error && (error.message === "API_URL_NOT_SET" || error.message === "UNAUTHORIZED")) {
+        throw error;
+      }
+    }
+    if (sites.length === 0) {
+      return runIncrementalSearch<SearchResult>({
+        sources: [{ key: "__all__", name: "全部片源" }],
+        searchOne: async () => (await this.searchVideos(query)).results,
+        onUpdate,
+        isCancelled,
+        timeoutMs: SOURCE_REQUEST_TIMEOUT_MS * 2,
+      });
+    }
+    return runIncrementalSearch<SearchResult>({
+      sources: sites,
+      searchOne: async (target, signal) => {
+        const url = `/api/search/one?q=${encodeURIComponent(query)}&resourceId=${encodeURIComponent(target.key)}`;
+        const response = await this._fetch(url, { signal });
+        const data = await response.json();
+        return this.modeItems<SearchResult>(data?.results);
+      },
+      onUpdate,
+      isCancelled,
+      timeoutMs: SOURCE_REQUEST_TIMEOUT_MS,
+    });
   }
 
   async searchVideos(query: string): Promise<{ results: SearchResult[] }> {
     if (this.hasSubscribedVideoSources()) {
       const settledResults = await Promise.allSettled(
-        this.getVisibleVideoSources().map((source) =>
+        this.getActiveVideoSources().map((source) =>
           withSourceTimeout((signal) => searchAppleCmsSource(source, query, signal))
         )
       );
-      const results = settledResults
-        .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
-        .filter((item) => !this.isAdultSourceHidden(item.source));
+      const results = this.modeItems(
+        settledResults.flatMap((result) => (result.status === "fulfilled" ? result.value : []))
+      );
       return { results };
     }
 
     const url = `/api/search?q=${encodeURIComponent(query)}`;
     const response = await this._fetch(url);
-    return response.json();
+    const data = await response.json();
+    return { ...data, results: this.modeItems<SearchResult>(data?.results) };
   }
 
   async searchVideo(query: string, resourceId: string, signal?: AbortSignal, id?: string): Promise<{ results: SearchResult[] }> {
     if (this.hasSubscribedVideoSources()) {
-      const source = findVideoSource({ sources: this.getVisibleVideoSources() }, resourceId);
+      // 带 id 是打开/续播某一条已知条目(不是搜索):片源模式不拦它,只有成人过滤照常
+      const source = findVideoSource(
+        { sources: id ? this.getVisibleVideoSources() : this.getActiveVideoSources() },
+        resourceId
+      );
       if (!source) {
         return { results: [] };
       }
       const results = id
         ? await getAppleCmsSourceResult(source, id, signal)
         : (await searchAppleCmsSource(source, query, signal)).filter((item) => titleMatchesQuery(item.title, query));
-      return { results: this.isAdultSourceHidden(source.key) ? [] : results };
+      if (this.isAdultSourceHidden(source.key)) {
+        return { results: [] };
+      }
+      return { results: id ? this.visibleItems(results) : this.modeItems(results) };
     }
 
     const url = `/api/search/one?q=${encodeURIComponent(query)}&resourceId=${encodeURIComponent(resourceId)}`;
     const response = await this._fetch(url, { signal });
     const { results } = await response.json();
-    return { results: results.filter((item: any) => titleMatchesQuery(item.title, query)) };
+    if (isSourceOff(this.sourceModes, resourceId)) {
+      return { results: [] };
+    }
+    return { results: this.modeItems<SearchResult>(results).filter((item) => titleMatchesQuery(item.title, query)) };
   }
 
   async getResources(signal?: AbortSignal): Promise<ApiSite[]> {
     if (this.hasSubscribedVideoSources()) {
-      return videoSourceConfigToApiSites({ sources: this.getVisibleVideoSources() });
+      return videoSourceConfigToApiSites({ sources: this.getActiveVideoSources() });
     }
 
     const url = `/api/search/resources`;
     const response = await this._fetch(url, { signal });
-    return response.json();
+    const sites = await response.json();
+    return Array.isArray(sites) ? sites.filter((site) => !isSourceOff(this.sourceModes, site?.key)) : sites;
+  }
+
+  /** 设置页“片源模式”用的源列表:包含模式为“关闭”的源(否则关掉之后就找不到它、没法再打开);成人源照常按开关隐藏 */
+  async getModeConfigurableSources(signal?: AbortSignal): Promise<ApiSite[]> {
+    if (this.hasSubscribedVideoSources()) {
+      return videoSourceConfigToApiSites({ sources: this.getVisibleVideoSources() });
+    }
+    const response = await this._fetch(`/api/search/resources`, { signal });
+    const sites = await response.json();
+    return Array.isArray(sites) ? sites : [];
   }
 
   async getSourceCategories(source: string, signal?: AbortSignal): Promise<VideoSourceCategory[]> {
@@ -594,12 +756,13 @@ export class API {
       if (!subscribedSource) {
         throw new Error("VIDEO_SOURCE_NOT_FOUND");
       }
-      return this.unlessHidden(source, fetchAppleCmsCategories(subscribedSource, signal));
+      const categories = await this.unlessHidden(source, fetchAppleCmsCategories(subscribedSource, signal));
+      return this.visibleCategories(categories);
     }
 
     const response = await this._fetch(`/api/source-search/categories?source=${encodeURIComponent(source)}`, { signal });
     const data = await response.json();
-    return data.categories || data;
+    return this.visibleCategories(data.categories || data);
   }
 
   async getSourceVideos(
@@ -614,14 +777,19 @@ export class API {
       if (!subscribedSource) {
         throw new Error("VIDEO_SOURCE_NOT_FOUND");
       }
-      return this.unlessHidden(source, fetchAppleCmsCategoryVideos(subscribedSource, categoryId, page, pageSize, signal));
+      const videos = await this.unlessHidden(
+        source,
+        fetchAppleCmsCategoryVideos(subscribedSource, categoryId, page, pageSize, signal)
+      );
+      return { ...videos, results: this.visibleItems(videos.results) };
     }
 
     const response = await this._fetch(
       `/api/source-search/videos?source=${encodeURIComponent(source)}&categoryId=${encodeURIComponent(categoryId)}&page=${page}`,
       { signal }
     );
-    return response.json();
+    const data: VideoSourceCategoryVideosResponse = await response.json();
+    return Array.isArray(data?.results) ? { ...data, results: this.visibleItems(data.results) } : data;
   }
 
   async getVideoDetail(source: string, id: string): Promise<VideoDetail> {
@@ -630,12 +798,12 @@ export class API {
       if (!subscribedSource) {
         throw new Error("VIDEO_SOURCE_NOT_FOUND");
       }
-      return this.unlessHidden(source, getAppleCmsDetail(subscribedSource, id));
+      return this.unlessAdultCategory(await this.unlessHidden(source, getAppleCmsDetail(subscribedSource, id)));
     }
 
     const url = `/api/detail?source=${source}&id=${id}`;
     const response = await this._fetch(url);
-    return response.json();
+    return this.unlessAdultCategory<VideoDetail>(await response.json());
   }
 }
 

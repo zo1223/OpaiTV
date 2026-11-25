@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { SearchResult, api } from "@/services/api";
+import { getItemCategoryNames } from "@/services/adultCategoryFilter";
 import { getResolutionFromM3U8 } from "@/services/m3u8";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { FavoriteManager } from "@/services/storage";
@@ -7,6 +8,7 @@ import {
   expandSearchResultPlaybackSources,
   getSearchResultSourceKey,
 } from "@/services/videoSourceSubscription";
+import { fetchTmdbMetadata, TmdbMetadata } from "@/services/tmdb";
 import Logger from "@/utils/Logger";
 
 const logger = Logger.withTag("DetailStore");
@@ -31,6 +33,8 @@ interface DetailState {
   controller: AbortController | null;
   isFavorited: boolean;
   failedSources: Set<string>; // 记录失败的source列表
+  /** TMDB 补全的元数据:没填 Key、没查到或请求失败时为 null,详情页照原有数据显示 */
+  tmdbMeta: TmdbMetadata | null;
 
   init: (q: string, preferredSource?: string, id?: string) => Promise<void>;
   setDetail: (detail: SearchResultWithResolution) => Promise<void>;
@@ -54,6 +58,7 @@ const useDetailStore = create<DetailState>((set, get) => ({
   controller: null,
   isFavorited: false,
   failedSources: new Set(),
+  tmdbMeta: null,
 
   init: async (q, preferredSource, id) => {
     const perfStart = performance.now();
@@ -394,6 +399,9 @@ const useDetailStore = create<DetailState>((set, get) => ({
         source_name: detail.source_name,
         playback_source: detail.playback_source,
         playback_sources: detail.playback_sources,
+        // 详情接口没带分类时保留搜索结果里的分类(收藏 / 播放记录按它做成人分类过滤)
+        type_name: videoDetail.type_name ?? detail.type_name,
+        class: videoDetail.class ?? detail.class,
       };
     } catch {
       // 详情接口失败时退回搜索结果本身
@@ -427,6 +435,8 @@ const useDetailStore = create<DetailState>((set, get) => ({
       total_episodes: episodes.length,
       search_title: get().q!,
       year: year || "",
+      // 成人内容(18+)按分类过滤用:收藏页在开关关闭时据此隐藏成人分类条目
+      ...(getItemCategoryNames(detail) ? { type_name: getItemCategoryNames(detail) } : {}),
     };
 
     const newIsFavorited = await FavoriteManager.toggle(source, id.toString(), favoriteItem);
@@ -492,6 +502,37 @@ const useDetailStore = create<DetailState>((set, get) => ({
     return selectedSource;
   },
 }));
+
+// TMDB 补全:详情确定之后在后台查一次,不阻塞详情页。
+// 没填 Key 时什么都不做;查询失败或没对上时保持 null;换了片名后迟到的结果作废。
+let tmdbLookupSeq = 0;
+let tmdbLookupTitle: string | null = null;
+
+useDetailStore.subscribe((state, prevState) => {
+  if (state.detail === prevState.detail) return;
+  try {
+    const title = state.detail?.title ?? null;
+    // 同一部片换源:沿用已有结果,不重复查
+    if (title === tmdbLookupTitle) return;
+    tmdbLookupTitle = title;
+    const seq = ++tmdbLookupSeq;
+    if (state.tmdbMeta) useDetailStore.setState({ tmdbMeta: null });
+    if (!title || !state.detail) return;
+
+    const apiKey = useSettingsStore.getState().tmdbApiKey;
+    if (!apiKey) return;
+
+    const { year, type_name } = state.detail;
+    void fetchTmdbMetadata({ title, year, type_name }, apiKey)
+      .then((meta) => {
+        if (seq !== tmdbLookupSeq || !meta) return;
+        useDetailStore.setState({ tmdbMeta: meta });
+      })
+      .catch(() => undefined);
+  } catch {
+    // 补全只是锦上添花,任何异常都不能影响详情页
+  }
+});
 
 export const sourcesSelector = (state: DetailState) => state.sources;
 export default useDetailStore;

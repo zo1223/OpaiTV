@@ -3,69 +3,110 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:app="clr-namespace:OrionTV.Desktop.App"
              xmlns:ctrl="clr-namespace:OrionTV.Desktop.App.Controls">
+    <!-- 沉浸式详情页：海报背景通顶，标题 / 简介 / 播放按钮叠在背景上；播放源、集数、下载、相关推荐依次往下排 -->
     <Grid Background="{StaticResource AppBackgroundBrush}">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-        </Grid.RowDefinitions>
-
-        <ctrl:PageHeader x:Name="Header" Grid.Row="0" Title="详情" />
-
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="20,16">
+        <ScrollViewer x:Name="PageScroll" VerticalScrollBarVisibility="Auto" ScrollChanged="PageScroll_ScrollChanged">
             <StackPanel>
-                <TextBlock x:Name="MessageText" Foreground="{StaticResource MutedTextBrush}" FontSize="15" Margin="0,40" HorizontalAlignment="Center" Visibility="Collapsed" />
+                <TextBlock x:Name="MessageText" Foreground="{StaticResource MutedTextBrush}" FontSize="15" Margin="0,120,0,40" HorizontalAlignment="Center" Visibility="Collapsed" />
 
                 <StackPanel x:Name="ContentPanel" Visibility="Collapsed">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-
-                        <Border Grid.Column="0" Width="180" Height="260" CornerRadius="10" Background="{StaticResource PanelAltBrush}" ClipToBounds="True">
-                            <Image x:Name="PosterImage" Stretch="UniformToFill" />
+                    <Grid x:Name="HeroArea" MinHeight="420" ClipToBounds="True">
+                        <!-- 背景：与左下角海报共用同一张已加载的图，放大、模糊、压暗；外层缓存成位图，滚动时不重复做模糊 -->
+                        <Border Margin="-24" IsHitTestVisible="False">
+                            <Border.CacheMode>
+                                <BitmapCache RenderAtScale="0.5" />
+                            </Border.CacheMode>
+                            <Border>
+                                <Border.Background>
+                                    <ImageBrush ImageSource="{Binding Source, ElementName=PosterImage}" Stretch="UniformToFill" AlignmentY="Top" Opacity="0.55" />
+                                </Border.Background>
+                                <Border.Effect>
+                                    <BlurEffect Radius="18" RenderingBias="Performance" />
+                                </Border.Effect>
+                            </Border>
                         </Border>
+                        <!-- 自上而下渐变到页面背景色，保证文字可读并与下方内容衔接 -->
+                        <Rectangle IsHitTestVisible="False">
+                            <Rectangle.Fill>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                    <GradientStop Color="#99151718" Offset="0" />
+                                    <GradientStop Color="#80151718" Offset="0.45" />
+                                    <GradientStop Color="#FF151718" Offset="1" />
+                                </LinearGradientBrush>
+                            </Rectangle.Fill>
+                        </Rectangle>
 
-                        <StackPanel Grid.Column="1" Margin="20,0,0,0">
-                            <DockPanel>
-                                <Button x:Name="FavoriteButton" DockPanel.Dock="Right" Style="{StaticResource IconButtonStyle}" FontSize="20" Content="&#xEB51;" Click="FavoriteButton_Click" ToolTip="收藏" />
-                                <TextBlock x:Name="TitleText" Foreground="{StaticResource TextBrush}" FontSize="26" FontWeight="Bold" TextWrapping="Wrap" VerticalAlignment="Center" />
-                            </DockPanel>
-                            <StackPanel x:Name="MetaPanel" Orientation="Horizontal" Margin="0,8,0,0">
-                                <TextBlock x:Name="YearText" Foreground="{StaticResource MutedTextBrush}" FontSize="14" Margin="0,0,14,0" />
-                                <TextBlock x:Name="TypeText" Foreground="{StaticResource MutedTextBrush}" FontSize="14" />
+                        <Grid Margin="28,84,28,20" VerticalAlignment="Bottom">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <Border Grid.Column="0" Width="180" Height="260" CornerRadius="10" Background="{StaticResource PanelAltBrush}" ClipToBounds="True" VerticalAlignment="Bottom">
+                                <Image x:Name="PosterImage" Stretch="UniformToFill" />
+                            </Border>
+
+                            <StackPanel Grid.Column="1" Margin="24,0,0,0" VerticalAlignment="Bottom">
+                                <TextBlock x:Name="TitleText" Foreground="White" FontSize="32" FontWeight="Bold" TextWrapping="Wrap" />
+                                <StackPanel x:Name="MetaPanel" Orientation="Horizontal" Margin="0,8,0,0">
+                                    <TextBlock x:Name="YearText" Foreground="{StaticResource SoftTextBrush}" FontSize="14" Margin="0,0,14,0" />
+                                    <TextBlock x:Name="TypeText" Foreground="{StaticResource SoftTextBrush}" FontSize="14" />
+                                    <!-- TMDB 评分：只有填了 TMDB Key 且查到同名条目时才显示 -->
+                                    <TextBlock x:Name="RatingText" Foreground="{StaticResource PrimaryBrush}" FontSize="14" Margin="14,0,0,0" Visibility="Collapsed" />
+                                </StackPanel>
+                                <TextBlock x:Name="DescText" Foreground="{StaticResource SoftTextBrush}" FontSize="14" LineHeight="22" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" Margin="0,12,0,0" MaxHeight="110"
+                                           Cursor="Hand" ToolTip="点击展开 / 收起完整简介" MouseLeftButtonUp="DescText_MouseLeftButtonUp" />
+                                <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
+                                    <Button x:Name="PlayButton" Style="{StaticResource PrimaryButtonStyle}" Height="46" MinWidth="168" Padding="24,0" FontSize="16" FontWeight="SemiBold" Content="▶  播放" IsEnabled="False" Click="PlayButton_Click" />
+                                    <Button x:Name="FavoriteButton" Style="{StaticResource IconButtonStyle}" FontSize="20" Margin="12,0,0,0" Content="&#xEB51;" Click="FavoriteButton_Click" ToolTip="收藏" />
+                                </StackPanel>
                             </StackPanel>
-                            <TextBlock x:Name="DescText" Foreground="{StaticResource SoftTextBrush}" FontSize="14" LineHeight="22" TextWrapping="Wrap" Margin="0,14,0,0" MaxHeight="200" />
-                        </StackPanel>
+                        </Grid>
                     </Grid>
 
-                    <StackPanel Orientation="Horizontal" Margin="0,26,0,10">
-                        <Rectangle Width="4" Height="16" RadiusX="2" RadiusY="2" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Center" />
-                        <TextBlock x:Name="SourcesHeader" Text="选择播放源" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" Margin="8,0,0,0" />
-                        <Button x:Name="ScanButton" Style="{StaticResource SecondaryButtonStyle}" Height="32" Padding="14,0" Margin="12,0,0,0" FontSize="13" Content="测速" Click="ScanButton_Click" ToolTip="检测各播放线路的延迟和速率；Mbps 是兆比特/秒，2 Mbps 约等于 244 KB/s" />
-                        <TextBlock x:Name="ScanSummaryText" Foreground="{StaticResource MutedTextBrush}" FontSize="13" Margin="10,0,0,0" VerticalAlignment="Center" />
-                    </StackPanel>
-                    <WrapPanel x:Name="SourceBar" />
+                    <StackPanel Margin="28,8,28,20">
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,10">
+                            <Rectangle Width="4" Height="16" RadiusX="2" RadiusY="2" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Center" />
+                            <TextBlock x:Name="SourcesHeader" Text="选择播放源" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" Margin="8,0,0,0" />
+                            <Button x:Name="ScanButton" Style="{StaticResource SecondaryButtonStyle}" Height="32" Padding="14,0" Margin="12,0,0,0" FontSize="13" Content="测速" Click="ScanButton_Click" ToolTip="检测各播放线路的延迟和速率；Mbps 是兆比特/秒，2 Mbps 约等于 244 KB/s" />
+                            <TextBlock x:Name="ScanSummaryText" Foreground="{StaticResource MutedTextBrush}" FontSize="13" Margin="10,0,0,0" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <WrapPanel x:Name="SourceBar" />
 
-                    <StackPanel Orientation="Horizontal" Margin="0,20,0,10">
-                        <Rectangle Width="4" Height="16" RadiusX="2" RadiusY="2" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Center" />
-                        <TextBlock Text="播放列表" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" Margin="8,0,0,0" />
-                        <TextBlock Text="点击集数直接播放源站；下载完成后可在上方选择「本地已下载」" Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="12,0,0,0" VerticalAlignment="Center" />
-                    </StackPanel>
-                    <WrapPanel x:Name="EpisodeBar" Margin="0,0,0,8" />
+                        <StackPanel Orientation="Horizontal" Margin="0,20,0,10">
+                            <Rectangle Width="4" Height="16" RadiusX="2" RadiusY="2" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Center" />
+                            <TextBlock Text="播放列表" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" Margin="8,0,0,0" />
+                            <TextBlock Text="点击集数直接播放源站；下载完成后可在上方选择「本地已下载」" Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="12,0,0,0" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <WrapPanel x:Name="EpisodeBar" Margin="0,0,0,8" />
 
-                    <StackPanel Orientation="Horizontal" Margin="0,12,0,10">
-                        <Rectangle Width="4" Height="16" RadiusX="2" RadiusY="2" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Center" />
-                        <TextBlock Text="下载到本地" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" Margin="8,0,0,0" />
-                        <Button x:Name="DownloadAllButton" Style="{StaticResource SecondaryButtonStyle}" Height="32" Padding="14,0" Margin="12,0,0,0" FontSize="13" Content="下载全部" Click="DownloadAllButton_Click" ToolTip="按当前播放源逐集下载到本地（仅 HLS）" />
-                        <Button x:Name="DecryptMergeAllButton" Style="{StaticResource SecondaryButtonStyle}" Height="32" Padding="14,0" Margin="8,0,0,0" FontSize="13" Content="解密合并全部" Click="DecryptMergeAllButton_Click" IsEnabled="False" ToolTip="将当前影片所有已下载完成的 AES-128 剧集合并为单文件" />
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,10">
+                            <Rectangle Width="4" Height="16" RadiusX="2" RadiusY="2" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Center" />
+                            <TextBlock Text="下载到本地" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" Margin="8,0,0,0" />
+                            <Button x:Name="DownloadAllButton" Style="{StaticResource SecondaryButtonStyle}" Height="32" Padding="14,0" Margin="12,0,0,0" FontSize="13" Content="下载全部" Click="DownloadAllButton_Click" ToolTip="按当前播放源逐集下载到本地（仅 HLS）" />
+                            <Button x:Name="DecryptMergeAllButton" Style="{StaticResource SecondaryButtonStyle}" Height="32" Padding="14,0" Margin="8,0,0,0" FontSize="13" Content="解密合并全部" Click="DecryptMergeAllButton_Click" IsEnabled="False" ToolTip="将当前影片所有已下载完成的 AES-128 剧集合并为单文件" />
+                        </StackPanel>
+                        <TextBlock x:Name="DownloadHintText" Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8"
+                                   Text="下载与播放互不影响：正常播放始终走源站；整集下载完成后会出现「本地已下载」播放源。" />
+                        <WrapPanel x:Name="DownloadBar" Margin="0,0,0,8" />
+                        <TextBlock x:Name="DownloadStatusText" Foreground="{StaticResource SoftTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,20" />
+
+                        <!-- 相关推荐：只用本机已加载过的首页条目（同系列 / 同分类），不发请求；没有时整块不显示 -->
+                        <StackPanel x:Name="RelatedPanel" Visibility="Collapsed">
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <Rectangle Width="4" Height="16" RadiusX="2" RadiusY="2" Fill="{StaticResource PrimaryBrush}" VerticalAlignment="Center" />
+                                <TextBlock Text="相关推荐" Foreground="{StaticResource TextBrush}" FontSize="17" FontWeight="SemiBold" Margin="8,0,0,0" />
+                                <TextBlock Text="来自本机已加载过的首页条目，不联网" Foreground="{StaticResource MutedTextBrush}" FontSize="12" Margin="12,0,0,0" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <WrapPanel x:Name="RelatedBar" Margin="-6,0,0,8" />
+                        </StackPanel>
                     </StackPanel>
-                    <TextBlock x:Name="DownloadHintText" Foreground="{StaticResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8"
-                               Text="下载与播放互不影响：正常播放始终走源站；整集下载完成后会出现「本地已下载」播放源。" />
-                    <WrapPanel x:Name="DownloadBar" Margin="0,0,0,8" />
-                    <TextBlock x:Name="DownloadStatusText" Foreground="{StaticResource SoftTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,20" />
                 </StackPanel>
             </StackPanel>
         </ScrollViewer>
+
+        <!-- 返回按钮叠在背景上；页面往下滚以后头部才逐渐变成实底并显示片名 -->
+        <Border x:Name="HeaderBackdrop" VerticalAlignment="Top" Height="64" Background="{StaticResource AppBackgroundBrush}" Opacity="0" IsHitTestVisible="False" />
+        <ctrl:PageHeader x:Name="Header" VerticalAlignment="Top" Title="详情" />
     </Grid>
 </UserControl>

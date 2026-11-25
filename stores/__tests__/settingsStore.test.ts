@@ -20,6 +20,7 @@ jest.mock("@/services/api", () => ({
     setBaseUrl: jest.fn(),
     setSubscribedVideoSources: jest.fn(),
     setShowAdultContent: jest.fn(),
+    setSourceModes: jest.fn(),
   },
 }));
 

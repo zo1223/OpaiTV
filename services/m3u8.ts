@@ -1,4 +1,6 @@
 import Logger from '@/utils/Logger';
+import { runAdDetection } from '@/services/adDetection';
+import type { AdDetectionOptions, AdDetectionResult } from '@/services/adDetection';
 
 const logger = Logger.withTag('M3U8');
 
@@ -55,38 +57,31 @@ export const parseAdRangesFromM3U8 = (playlist: string): M3U8AdRange[] => {
 // 播放器拿不到地址也就不会报错换源。超时后按"没有广告区间"处理,照常开始播放。
 const AD_RANGE_REQUEST_TIMEOUT_MS = 8_000;
 
+/**
+ * 广告多级识别:CUE 标记 → 片头片尾黑场 + 静音 → 异源段启发式,逐级回落(见 services/adDetection.ts)。
+ * 返回命中的级别与每一级的结果;任何失败都只会得到空区间,不抛异常。
+ */
+export const detectAdsFromM3U8 = async (
+  url: string,
+  options: AdDetectionOptions = {}
+): Promise<AdDetectionResult> => {
+  if (typeof url !== "string" || !isM3U8Url(url)) {
+    return { ranges: [], tier: "none", attempts: [] };
+  }
+
+  return runAdDetection(url, {
+    timeoutMs: AD_RANGE_REQUEST_TIMEOUT_MS,
+    ...options,
+    parseCueRanges: parseAdRangesFromM3U8,
+  });
+};
+
 export const getAdRangesFromM3U8 = async (
   url: string,
   signal?: AbortSignal
 ): Promise<M3U8AdRange[]> => {
-  if (!isM3U8Url(url)) {
-    return [];
-  }
-
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  const timer = setTimeout(abort, AD_RANGE_REQUEST_TIMEOUT_MS);
-  if (signal?.aborted) {
-    abort();
-  } else {
-    signal?.addEventListener("abort", abort);
-  }
-
-  try {
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) {
-      return [];
-    }
-
-    const playlist = await response.text();
-    return parseAdRangesFromM3U8(playlist);
-  } catch (error) {
-    logger.info(`M3U8 ad range detection failed: ${error}`);
-    return [];
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", abort);
-  }
+  const result = await detectAdsFromM3U8(url, { signal });
+  return result.ranges;
 };
 
 export const getResolutionFromM3U8 = async (

@@ -397,6 +397,8 @@ const mapAppleCmsDetail = (source: VideoSourceSubscriptionSource, item: any): Vi
   source_name: source.name,
   desc: item.vod_content || item.vod_blurb || item.vod_remarks,
   type: item.type_id !== undefined ? String(item.type_id) : undefined,
+  type_name: item.type_name,
+  class: item.vod_class,
   year: item.vod_year,
   area: item.vod_area,
   director: item.vod_director,

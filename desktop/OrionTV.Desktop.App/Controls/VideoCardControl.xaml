@@ -1,32 +1,21 @@
 <UserControl x:Class="OrionTV.Desktop.App.Controls.VideoCardControl"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:app="clr-namespace:OrionTV.Desktop.App"
              Cursor="Hand"
              Width="150"
              MouseEnter="OnMouseEnter"
+             MouseMove="OnMouseMove"
              MouseLeave="OnMouseLeave"
              MouseLeftButtonUp="OnClick">
-    <UserControl.Triggers>
-        <EventTrigger RoutedEvent="MouseEnter">
-            <BeginStoryboard>
-                <Storyboard>
-                    <DoubleAnimation Storyboard.TargetName="CardScale" Storyboard.TargetProperty="ScaleX" To="1.04" Duration="0:0:0.12" />
-                    <DoubleAnimation Storyboard.TargetName="CardScale" Storyboard.TargetProperty="ScaleY" To="1.04" Duration="0:0:0.12" />
-                </Storyboard>
-            </BeginStoryboard>
-        </EventTrigger>
-        <EventTrigger RoutedEvent="MouseLeave">
-            <BeginStoryboard>
-                <Storyboard>
-                    <DoubleAnimation Storyboard.TargetName="CardScale" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.12" />
-                    <DoubleAnimation Storyboard.TargetName="CardScale" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.12" />
-                </Storyboard>
-            </BeginStoryboard>
-        </EventTrigger>
-    </UserControl.Triggers>
-    <StackPanel Margin="6,6,6,12">
+    <StackPanel x:Name="Root" Margin="6,6,6,12">
+        <!-- 入场动画（淡入 + 上移到位）只动这个位移，与悬浮姿态互不干扰 -->
+        <StackPanel.RenderTransform>
+            <TranslateTransform x:Name="EntranceShift" />
+        </StackPanel.RenderTransform>
+        <!-- 宽度与布局槽一致：控件宽 150 减去左右各 6 的外边距。写成 150 时右侧 12px 会被布局裁掉 -->
         <Border x:Name="CardBorder"
-                Width="150"
+                Width="138"
                 Height="210"
                 CornerRadius="8"
                 Background="{StaticResource PanelAltBrush}"
@@ -34,8 +23,14 @@
                 BorderThickness="2"
                 ClipToBounds="True"
                 RenderTransformOrigin="0.5,0.5">
+            <!-- 悬浮姿态：放大 + 跟随鼠标的轻微斜切 + 抬起/位移，全部是渲染变换，不触发布局 -->
             <Border.RenderTransform>
-                <ScaleTransform x:Name="CardScale" />
+                <TransformGroup>
+                    <ScaleTransform x:Name="CardScale" />
+                    <SkewTransform x:Name="CardSkew" />
+                    <TranslateTransform x:Name="CardShift" />
+                    <TranslateTransform x:Name="CardLift" />
+                </TransformGroup>
             </Border.RenderTransform>
             <Grid>
                 <Grid Background="#FF25292B">
@@ -52,7 +47,17 @@
                                    HorizontalAlignment="Center" />
                     </StackPanel>
                 </Grid>
-                <Image x:Name="PosterImage" Stretch="UniformToFill" />
+                <Image x:Name="PosterImage" Stretch="UniformToFill" app:ImageLoader.FadeIn="True" />
+
+                <!-- 悬浮高光：中心跟随鼠标，平时完全透明，不参与命中测试 -->
+                <Border x:Name="GlareLayer" IsHitTestVisible="False" Opacity="0">
+                    <Border.Background>
+                        <RadialGradientBrush x:Name="GlareBrush" Center="0.5,0.5" GradientOrigin="0.5,0.5" RadiusX="0.8" RadiusY="0.6">
+                            <GradientStop Color="#30FFFFFF" Offset="0" />
+                            <GradientStop Color="#00FFFFFF" Offset="1" />
+                        </RadialGradientBrush>
+                    </Border.Background>
+                </Border>
 
                 <Border x:Name="SourceBadge"
                         VerticalAlignment="Top"

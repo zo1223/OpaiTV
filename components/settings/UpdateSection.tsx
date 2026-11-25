@@ -14,7 +14,8 @@ export function UpdateSection() {
     downloadProgress, 
     checkForUpdate,
     isLatestVersion,
-    error
+    error,
+    setShowUpdateModal,
   } = useUpdateStore();
 
   const [checking, setChecking] = React.useState(false);
@@ -62,6 +63,21 @@ export function UpdateSection() {
         <View style={styles.row}>
           <ThemedText style={styles.label}>下载进度</ThemedText>
           <ThemedText style={styles.value}>{downloadProgress}%</ThemedText>
+        </View>
+      )}
+
+      {updateAvailable && !!remoteVersion && (
+        <View style={styles.buttonContainer}>
+          {/* 打开现有的更新弹窗(下载 / 安装都在弹窗里),不另写下载逻辑 */}
+          <StyledButton
+            testID="update-now-button"
+            onPress={() => setShowUpdateModal(true)}
+            disabled={checking}
+            style={styles.button}
+            variant="primary"
+          >
+            <ThemedText style={styles.buttonText}>立即更新到 v{remoteVersion}</ThemedText>
+          </StyledButton>
         </View>
       )}
 

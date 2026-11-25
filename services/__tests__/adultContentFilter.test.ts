@@ -259,3 +259,193 @@ describe("addManualVideoSource", () => {
     }
   );
 });
+
+// 按分类过滤:源本身没有成人标记,但分类表里带成人分类(伦理片 / 福利 …)
+describe("adult category filter", () => {
+  const site = { key: "site", name: "Site", api: "https://site.example/vod" };
+  const vod = (id: number, name: string, typeName: string, vodClass?: string) => ({
+    vod_id: id,
+    vod_name: name,
+    vod_pic: "",
+    type_name: typeName,
+    ...(vodClass ? { vod_class: vodClass } : {}),
+    vod_play_url: "HD$https://video.example/movie.m3u8",
+  });
+  const catalog = [
+    vod(1, "Movie", "电影"),
+    // 片名带“伦理”,分类是正常分类:不能被拦
+    vod(2, "伦理学讲座", "电影", "剧情"),
+    vod(3, "Late Night", "伦理片"),
+    // 分类正常,题材标签是成人标签
+    vod(4, "Tagged", "电影", "剧情,情色"),
+    vod(5, "Bonus", "福利"),
+  ];
+  const normalTitles = ["Movie", "伦理学讲座"];
+  const allTitles = catalog.map((item) => item.vod_name);
+  let api: API;
+
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    api = new API();
+    api.setSubscribedVideoSources([site]);
+    jest.spyOn(global, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("douban.com")) {
+        return { ok: false, json: async () => ({}) } as Response;
+      }
+      const ids = url.match(/[?&]ids=([^&]+)/)?.[1];
+      const list = ids ? catalog.filter((item) => String(item.vod_id) === ids) : catalog;
+      return {
+        ok: true,
+        json: async () => ({
+          class: [
+            { type_id: 1, type_name: "电影" },
+            { type_id: 2, type_name: "爱情片" },
+            { type_id: 34, type_name: "伦理片" },
+            { type_id: 35, type_name: "港台三级" },
+            { type_id: 36, type_name: "里番动漫" },
+            { type_id: 40, type_name: "福利" },
+            { type_id: 41, type_name: "写真热舞" },
+            { type_id: 42, type_name: "擦边短剧" },
+            { type_id: 43, type_name: "两性课堂" },
+          ],
+          list,
+          total: list.length,
+          page: 1,
+          pagecount: 1,
+        }),
+      } as Response;
+    });
+  });
+
+  const titles = (items: { title: string }[]) => items.map((item) => item.title);
+
+  describe("when the toggle is off (default)", () => {
+    it("drops adult-category items from search results, and keeps a normal title that merely contains 伦理", async () => {
+      expect(titles((await api.searchVideos("anything")).results)).toEqual(normalTitles);
+    });
+
+    it("drops them from a single-source search and from a lookup by id", async () => {
+      expect((await api.searchVideo("Late Night", "site")).results).toEqual([]);
+      expect((await api.searchVideo("Late Night", "site", undefined, "3")).results).toEqual([]);
+      expect(titles((await api.searchVideo("伦理学讲座", "site")).results)).toEqual(["伦理学讲座"]);
+      expect(titles((await api.searchVideo("Movie", "site", undefined, "1")).results)).toEqual(["Movie"]);
+    });
+
+    it("leaves adult categories out of the category list", async () => {
+      await expect(api.getSourceCategories("site")).resolves.toEqual([
+        { id: "1", name: "电影" },
+        { id: "2", name: "爱情片" },
+      ]);
+    });
+
+    it("drops them from category browsing", async () => {
+      expect(titles((await api.getSourceVideos("site", "34")).results)).toEqual(normalTitles);
+    });
+
+    it("refuses to open the detail of an adult-category item, and opens normal ones", async () => {
+      await expect(api.getVideoDetail("site", "3")).rejects.toThrow("VIDEO_SOURCE_NOT_FOUND");
+      await expect(api.getVideoDetail("site", "4")).rejects.toThrow("VIDEO_SOURCE_NOT_FOUND");
+      await expect(api.getVideoDetail("site", "2")).resolves.toMatchObject({ title: "伦理学讲座", type_name: "电影" });
+    });
+
+    it("leaves them out of the home page fallback", async () => {
+      const { list } = await api.getDoubanData("movie", "热门");
+
+      expect(list.length).toBeGreaterThan(0);
+      expect(titles(list).filter((title) => !normalTitles.includes(title))).toEqual([]);
+    });
+
+    it("reports hidden categories and items for data stored outside the api", () => {
+      expect(api.isAdultCategoryHidden("伦理片")).toBe(true);
+      expect(api.isAdultCategoryHidden("电影", "剧情,情色")).toBe(true);
+      expect(api.isAdultCategoryHidden("爱情片", "爱情")).toBe(false);
+      expect(api.isAdultCategoryHidden(undefined, null)).toBe(false);
+      expect(api.isAdultItemHidden({ source: "site", type_name: "福利" })).toBe(true);
+      expect(api.isAdultItemHidden({ source: "site", type_name: "剧情片" })).toBe(false);
+      // 没有分类信息(旧数据)时无法判断,不按片名猜
+      expect(api.isAdultItemHidden({ source: "site" })).toBe(false);
+      expect(api.isAdultItemHidden(null)).toBe(false);
+    });
+
+    it("also filters answers from the backend", async () => {
+      api.setSubscribedVideoSources([]);
+      api.setBaseUrl("https://backend.example");
+      (fetch as jest.Mock).mockImplementation(async (input) => {
+        const url = String(input);
+        const results = [
+          { id: 1, title: "Movie", source: "site", type_name: "剧情片" },
+          { id: 3, title: "Late Night", source: "site", type_name: "伦理片" },
+        ];
+        const body = url.includes("/categories")
+          ? { categories: [{ id: "1", name: "剧情片" }, { id: "34", name: "伦理片" }] }
+          : url.includes("/api/detail")
+            ? { id: "3", title: "Late Night", source: "site", type_name: "伦理片" }
+            : { results, list: results, total: 2, page: 1, pageCount: 1 };
+        return { ok: true, status: 200, json: async () => body } as Response;
+      });
+
+      expect(titles((await api.searchVideos("x")).results)).toEqual(["Movie"]);
+      expect(titles((await api.getSourceVideos("site", "34")).results)).toEqual(["Movie"]);
+      await expect(api.getSourceCategories("site")).resolves.toEqual([{ id: "1", name: "剧情片" }]);
+      await expect(api.getVideoDetail("site", "3")).rejects.toThrow("VIDEO_SOURCE_NOT_FOUND");
+    });
+  });
+
+  describe("when the toggle is on", () => {
+    beforeEach(() => {
+      api.setShowAdultContent(true);
+    });
+
+    it("shows adult categories and their items normally", async () => {
+      expect(titles((await api.searchVideos("anything")).results)).toEqual(allTitles);
+      expect(titles((await api.searchVideo("Late Night", "site")).results)).toEqual(["Late Night"]);
+      expect(titles((await api.searchVideo("Late Night", "site", undefined, "3")).results)).toEqual(["Late Night"]);
+      expect((await api.getSourceCategories("site")).map((category) => category.name)).toEqual([
+        "电影",
+        "爱情片",
+        "伦理片",
+        "港台三级",
+        "里番动漫",
+        "福利",
+        "写真热舞",
+        "擦边短剧",
+        "两性课堂",
+      ]);
+      expect(titles((await api.getSourceVideos("site", "34")).results)).toEqual(allTitles);
+      await expect(api.getVideoDetail("site", "3")).resolves.toMatchObject({ title: "Late Night", type_name: "伦理片" });
+      expect(titles((await api.getDoubanData("movie", "热门")).list)).toContain("Tagged");
+      expect(api.isAdultCategoryHidden("伦理片")).toBe(false);
+      expect(api.isAdultItemHidden({ source: "site", type_name: "福利" })).toBe(false);
+    });
+
+    it("drops adult-category answers that arrive after the toggle was turned off", async () => {
+      const pending = [
+        api.searchVideos("anything"),
+        api.searchVideo("Late Night", "site", undefined, "3"),
+        api.getSourceCategories("site"),
+        api.getSourceVideos("site", "34"),
+        api.getVideoDetail("site", "3").catch((error: Error) => error.message),
+        api.getDoubanData("movie", "热门"),
+      ] as const;
+      api.setShowAdultContent(false);
+
+      const [search, byId, categories, videos, detail, home] = await Promise.all(pending);
+
+      expect(titles(search.results)).toEqual(normalTitles);
+      expect(byId).toEqual({ results: [] });
+      expect(categories.map((category) => category.name)).toEqual(["电影", "爱情片"]);
+      expect(titles(videos.results)).toEqual(normalTitles);
+      expect(detail).toBe("VIDEO_SOURCE_NOT_FOUND");
+      expect(titles(home.list).filter((title) => !normalTitles.includes(title))).toEqual([]);
+    });
+
+    it("takes effect immediately in both directions, without any adult-marked source", async () => {
+      api.setShowAdultContent(false);
+      expect(titles((await api.searchVideos("anything")).results)).toEqual(normalTitles);
+
+      api.setShowAdultContent(true);
+      expect(titles((await api.searchVideos("anything")).results)).toEqual(allTitles);
+    });
+  });
+});

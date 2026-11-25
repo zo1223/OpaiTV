@@ -13,6 +13,8 @@ public static class DesktopPaths
     public static string FavoritesFile => Path.Combine(DataDirectory, "favorites.json");
     public static string PlayRecordsFile => Path.Combine(DataDirectory, "play_records.json");
     public static string LocalMediaFile => Path.Combine(DataDirectory, "local_media.json");
+    /// <summary>搜索记录（标签云），只存本机。</summary>
+    public static string SearchHistoryFile => Path.Combine(DataDirectory, "search_history.json");
     /// <summary>AI/CLI 解析写入的额外视频源（与订阅源合并）。</summary>
     public static string ExtraSourcesFile => Path.Combine(DataDirectory, "extra_sources.json");
     public static string DefaultVodCacheDirectory => Path.Combine(
@@ -63,7 +65,29 @@ public sealed record DesktopSettings(
     /// <summary>弹幕滚动速度：slow | normal | fast。</summary>
     string DanmakuSpeed = DanmakuSettingsRules.DefaultSpeed,
     /// <summary>弹幕字号：small | normal | large。</summary>
-    string DanmakuFontSize = DanmakuSettingsRules.DefaultFontSize);
+    string DanmakuFontSize = DanmakuSettingsRules.DefaultFontSize,
+    /// <summary>
+    /// 片源模式：片源 key → "stable" | "media" | "full" | "off"；没有记录的片源按全量处理。
+    /// 设置页切换后立即生效并保存，不随“保存设置”提交。旧设置文件没有这个字段（null）。
+    /// </summary>
+    IReadOnlyDictionary<string, string>? SourceModes = null,
+    /// <summary>
+    /// 个性化推荐开关，默认开启。只在本机根据观看历史与收藏计算，不联网、不上传观看记录。
+    /// 设置页切换后立即生效并保存。
+    /// </summary>
+    bool PersonalizedRecommendations = true,
+    /// <summary>
+    /// 播放代理模式："system"（跟随系统代理，默认）| "forced"（走 PlaybackProxyUrl）| "direct"（不走代理）。
+    /// 只存本机；设置页切换后立即保存，下一次播放生效。见 <see cref="PlaybackProxyModes"/>。
+    /// </summary>
+    string PlaybackProxyMode = PlaybackProxyModes.SystemProxy,
+    /// <summary>强制代理模式使用的 HTTP 代理地址，例如 http://127.0.0.1:7890。</summary>
+    string PlaybackProxyUrl = "",
+    /// <summary>
+    /// 用户自己的 TMDB API Key（v3）或 Read Access Token（v4）。只存在本机的 settings.json 里，
+    /// 只会发给 TMDB 官方接口；留空时不发任何 TMDB 请求。
+    /// </summary>
+    string TmdbApiKey = "");
 
 public static class VodCacheSettings
 {
@@ -103,6 +127,10 @@ public static class DesktopSettingsMigration
             DanmakuOpacity = DanmakuSettingsRules.NormalizeOpacity(settings.DanmakuOpacity),
             DanmakuSpeed = DanmakuSettingsRules.NormalizeSpeed(settings.DanmakuSpeed),
             DanmakuFontSize = DanmakuSettingsRules.NormalizeFontSize(settings.DanmakuFontSize),
+            SourceModes = OrionTV.Desktop.Core.SourceModes.Normalize(settings.SourceModes),
+            PlaybackProxyMode = PlaybackProxyModes.NormalizeForSettings(settings.PlaybackProxyMode, settings.PlaybackProxyUrl),
+            PlaybackProxyUrl = PlaybackProxyAddress.NormalizeText(settings.PlaybackProxyUrl),
+            TmdbApiKey = (settings.TmdbApiKey ?? string.Empty).Trim(),
         };
 }
 

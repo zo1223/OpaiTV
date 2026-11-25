@@ -16,7 +16,9 @@ public sealed record CatalogItem(
     CatalogPlayabilityStatus PlayabilityStatus = CatalogPlayabilityStatus.Unknown,
     int? PlayableSourceCount = null,
     IReadOnlyList<SearchResult>? CandidateSources = null,
-    IReadOnlyList<SearchResult>? PlayableSources = null);
+    IReadOnlyList<SearchResult>? PlayableSources = null,
+    // “为你推荐”的推荐理由（因为你看过《…》 / 因为你常看「…」），显示在卡片标题下方
+    string? Reason = null);
 
 /// <summary>
 /// 编排层：移植自安卓 services/api.ts 的订阅模式数据流。
@@ -52,7 +54,42 @@ public sealed class CatalogService
     /// </summary>
     public Func<string, bool>? IsAdultSourceHidden { get; init; }
 
+    /// <summary>
+    /// 成人内容(18+)开关的当前值，由宿主提供；每次用到时现取，开关切换立即生效。
+    /// 关闭时，成人分类（分类名 / 题材标签命中 <see cref="AdultCategories"/>）的条目对所有取数入口不可见。
+    /// 为空表示不按分类过滤。
+    /// </summary>
+    public Func<bool>? ShowAdultContent { get; init; }
+
+    /// <summary>
+    /// 片源模式（稳定 / 影视 / 全量 / 关闭），由宿主提供；每次用到时现取，切换立即生效。为空表示全部按全量处理。
+    /// 与成人内容过滤相互独立：成人过滤照常先做，模式过滤在它之后再收一层。
+    /// </summary>
+    public Func<string, SourceMode>? SourceModeOf { get; init; }
+
     public IVodSourceClient ClientFor(VideoSource source) => _clients.For(source);
+
+    private SourceMode ModeOf(string sourceKey) => SourceModeOf?.Invoke(sourceKey) ?? SourceMode.Full;
+
+    // 搜索与首页聚合用的源列表：成人过滤之后，再去掉模式为“关闭”的源。
+    // 详情 / 续播（GetPreferredDetailSourcesAsync、HydrateEpisodesAsync）不走这里：关闭的源已有的记录仍可播放。
+    private IReadOnlyList<VideoSource> ActiveSources(IReadOnlyList<VideoSource> sources) =>
+        SourceModes.ActiveSources(VisibleSources(sources), SourceModeOf);
+
+    // 请求在途时模式可能被切换：结果落地前按当前模式再处理一次。
+    private IReadOnlyList<SearchResult> ApplyMode(VideoSource source, IReadOnlyList<SearchResult> results) =>
+        SourceModes.Apply(ModeOf(source.Key), results);
+
+    /// <summary>参与全源搜索的片源（成人过滤 + 去掉“关闭”模式的源）。</summary>
+    public IReadOnlyList<VideoSource> SearchableSources(IReadOnlyList<VideoSource> sources) => ActiveSources(sources);
+
+    /// <summary>该条目当前是否被成人内容过滤隐藏：来自被隐藏的成人源，或属于成人分类且开关关闭。</summary>
+    public bool IsResultHidden(SearchResult result) =>
+        IsHidden(result.Source) || IsCategoryHidden(result.TypeName, result.Class);
+
+    private bool IsCategoryHidden(params string?[] categoryNames) =>
+        ShowAdultContent is { } showAdultContent
+        && AdultContentFilter.IsCategoryHidden(showAdultContent(), categoryNames);
 
     // 所有取数入口（首页、搜索、详情、补剧集）只能用这份列表，不直接用调用方传入的 sources：
     // 调用方手里可能还是开关关闭之前的快照。
@@ -65,8 +102,8 @@ public sealed class CatalogService
     private bool IsHidden(string sourceKey) => IsAdultSourceHidden?.Invoke(sourceKey) == true;
 
     private IReadOnlyList<SearchResult> VisibleResults(IReadOnlyList<SearchResult> results) =>
-        results.Any(result => IsHidden(result.Source))
-            ? results.Where(result => !IsHidden(result.Source)).ToList()
+        results.Any(IsResultHidden)
+            ? results.Where(result => !IsResultHidden(result)).ToList()
             : results;
 
     public async Task<IReadOnlyList<CatalogItem>> GetHomeDataAsync(
@@ -93,7 +130,9 @@ public sealed class CatalogService
         }
 
         var perSource = await Task.WhenAll(
-            VisibleSources(sources).Select(source => SafeHomePageAsync(source, type, tag, pageStart, pageSize, cancellationToken)));
+            ActiveSources(sources).Select(async source => ApplyMode(
+                source,
+                await SafeHomePageAsync(source, type, tag, pageStart, pageSize, cancellationToken).ConfigureAwait(false))));
         // 混合时不按 pageSize 截断:被裁掉的条目在下一次请求(源站已翻页)中永久丢失;
         // 去重与按位交错混合保留。
         var mixed = MixSourceResults(perSource.Select(VisibleResults).ToList(), int.MaxValue, GetDedupeKey);
@@ -106,8 +145,32 @@ public sealed class CatalogService
         CancellationToken cancellationToken = default)
     {
         var perSource = await SearchSourcesConcurrentlyAsync(sources, query, cancellationToken).ConfigureAwait(false);
-        return perSource
-            .SelectMany(items => items)
+        return MergeByTitle(perSource.SelectMany(items => items));
+    }
+
+    /// <summary>
+    /// 跨片源实时搜索：逐源并发、逐源回报进度（见 <see cref="IncrementalSearch"/>）。
+    /// 成人过滤与片源模式和 <see cref="SearchAllAsync"/> 完全一致；单个源失败或超时只标记状态。
+    /// </summary>
+    public Task<SearchProgress> SearchAllIncrementalAsync(
+        IReadOnlyList<VideoSource> sources,
+        string query,
+        Action<SearchProgress>? onProgress,
+        CancellationToken cancellationToken = default,
+        TimeSpan? sourceTimeout = null) =>
+        IncrementalSearch.RunAsync(
+            ActiveSources(sources),
+            async (source, token) => ApplyMode(
+                source,
+                VisibleResults(await ClientFor(source).SearchAsync(source, query, token).ConfigureAwait(false))),
+            onProgress,
+            cancellationToken,
+            sourceTimeout);
+
+    /// <summary>多源命中按标题（去空白、小写）归并成一张卡片，候选线路按 source/id/线路去重。</summary>
+    public static IReadOnlyList<CatalogItem> MergeByTitle(IEnumerable<SearchResult> results)
+    {
+        return results
             .GroupBy(item => CatalogTitleMatcher.Normalize(item.Title), StringComparer.Ordinal)
             .Select(group =>
             {
@@ -129,6 +192,86 @@ public sealed class CatalogService
                 };
             })
             .ToList();
+    }
+
+    /// <summary>自然语言意图检索时最多查询的片源数 / 每个片源最多取的分类数。</summary>
+    public const int MaxIntentSources = 4;
+    public const int MaxIntentCategoriesPerSource = 2;
+
+    /// <summary>
+    /// 自然语言意图检索：在前几个可见片源里，把意图的题材关键词对到片源自己的分类上，取各分类第一页，
+    /// 逐源交错混合并去重。任何一个片源失败只是少一份结果，绝不抛出——不能影响关键词搜索。
+    /// 成人源过滤与其它取数入口一致（VisibleSources / VisibleResults）。
+    /// </summary>
+    public async Task<IReadOnlyList<CatalogItem>> SearchByIntentAsync(
+        IReadOnlyList<VideoSource> sources,
+        SearchIntentMatch intent,
+        CancellationToken cancellationToken = default,
+        int pageSize = 24)
+    {
+        var visible = ActiveSources(sources).Take(MaxIntentSources).ToList();
+        if (visible.Count == 0 || intent.Genres.Count == 0)
+        {
+            return [];
+        }
+
+        var perSource = await Task.WhenAll(visible.Select(async source =>
+        {
+            try
+            {
+                var client = ClientFor(source);
+                // 成人分类不参与题材匹配（开关关闭时）；取回的条目落地前还会再按分类过滤一次
+                var categories = (await client.GetCategoriesAsync(source, cancellationToken).ConfigureAwait(false))
+                    .Where(category => !IsCategoryHidden(category.Name))
+                    .ToList();
+                var picked = SearchIntents.MatchCategories(categories, intent, MaxIntentCategoriesPerSource);
+                var collected = new List<SearchResult>();
+                foreach (var category in picked)
+                {
+                    var page = await client
+                        .GetCategoryVideosAsync(source, category.Id, 1, pageSize, cancellationToken)
+                        .ConfigureAwait(false);
+                    collected.AddRange(page.Results);
+                }
+
+                return ApplyMode(source, collected);
+            }
+            catch
+            {
+                return [];
+            }
+        })).ConfigureAwait(false);
+
+        var mixed = MixSourceResults(perSource.Select(VisibleResults).ToList(), int.MaxValue, GetDedupeKey);
+        return mixed.Select(ToCatalogItem).ToList();
+    }
+
+    /// <summary>
+    /// 关键词结果与意图结果合并去重：关键词命中排在前面，意图结果里标题（去空白、小写）已出现的丢弃。
+    /// </summary>
+    public static IReadOnlyList<CatalogItem> MergeKeywordAndIntent(
+        IReadOnlyList<CatalogItem> keywordResults,
+        IReadOnlyList<CatalogItem> intentResults)
+    {
+        if (intentResults.Count == 0)
+        {
+            return keywordResults;
+        }
+
+        var merged = new List<CatalogItem>(keywordResults);
+        var seen = new HashSet<string>(
+            keywordResults.Select(item => CatalogTitleMatcher.Normalize(item.Title)),
+            StringComparer.Ordinal);
+        foreach (var item in intentResults)
+        {
+            var key = CatalogTitleMatcher.Normalize(item.Title);
+            if (key.Length == 0 || seen.Add(key))
+            {
+                merged.Add(item);
+            }
+        }
+
+        return merged;
     }
 
     /// <summary>已知 source/id 时优先走单源 id 查询，避免进入详情页前再次全源搜索。</summary>
@@ -174,6 +317,9 @@ public sealed class CatalogService
             {
                 return [];
             }
+
+            // 成人分类的条目在开关关闭时不可见（收藏 / 历史里的旧条目点进来也一样）
+            results = VisibleResults(results);
 
             var result = results.FirstOrDefault(item => item.Id == id)
                 ?? (!string.IsNullOrWhiteSpace(title) ? results.FirstOrDefault(item => item.Title == title) : null)
@@ -236,7 +382,8 @@ public sealed class CatalogService
 
         try
         {
-            var results = await ClientFor(source).GetByIdAsync(source, item.Id, cancellationToken).ConfigureAwait(false);
+            var results = VisibleResults(
+                await ClientFor(source).GetByIdAsync(source, item.Id, cancellationToken).ConfigureAwait(false));
             if (IsHidden(source.Key))
             {
                 return item;
@@ -248,6 +395,12 @@ public sealed class CatalogService
             if (match is null)
             {
                 return item;
+            }
+
+            // 稳定模式：还没有选定线路的条目，补剧集时也只取最稳的一条线路
+            if (item.PlaybackSourceKey is null && ModeOf(source.Key) == SourceMode.Stable)
+            {
+                match = SourceModes.KeepStableLine(match);
             }
 
             // 保留原 SourceName（含线路后缀），替换剧集
@@ -279,7 +432,7 @@ public sealed class CatalogService
         string query,
         CancellationToken cancellationToken)
     {
-        sources = VisibleSources(sources);
+        sources = ActiveSources(sources);
         if (sources.Count == 0)
         {
             return [];
@@ -293,7 +446,7 @@ public sealed class CatalogService
             await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                return await SafeSearchAsync(source, query, cancellationToken).ConfigureAwait(false);
+                return ApplyMode(source, await SafeSearchAsync(source, query, cancellationToken).ConfigureAwait(false));
             }
             finally
             {
