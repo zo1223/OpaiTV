@@ -506,7 +506,7 @@ describe("弹幕取数(来源选择)", () => {
       const http: DanmakuHttp = {
         ...builtin,
         async postJson(url, body, headers, timeoutMs) {
-          if (url.startsWith("http://my.server")) {
+          if (url.startsWith("http://127.0.0.1:9321")) {
             calls.push(`POST ${url}`);
             if (serverReply === "throw") throw new Error("ECONNREFUSED");
             return { isMatched: false, matches: [] };
@@ -514,8 +514,8 @@ describe("弹幕取数(来源选择)", () => {
           return builtin.postJson(url, body, headers, timeoutMs);
         },
       };
-      const track = await createDanmakuService(http).resolve(query, "http://my.server");
-      expect(calls[0]).toBe("POST http://my.server/api/v2/match");
+      const track = await createDanmakuService(http).resolve(query, "http://127.0.0.1:9321");
+      expect(calls[0]).toBe("POST http://127.0.0.1:9321/api/v2/match");
       expect(track!.provider).toBe("tencent");
     }
   });
@@ -532,7 +532,7 @@ describe("弹幕取数(来源选择)", () => {
         throw new Error("offline");
       },
     };
-    await expect(createDanmakuService(dead).resolve(query, "http://my.server")).resolves.toBeNull();
+    await expect(createDanmakuService(dead).resolve(query, "http://127.0.0.1:9321")).resolves.toBeNull();
     await expect(createDanmakuService(dead).resolve({ ...query, title: "  " })).resolves.toBeNull();
 
     const calls: string[] = [];
