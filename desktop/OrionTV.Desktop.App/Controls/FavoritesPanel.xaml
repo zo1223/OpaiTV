@@ -16,9 +16,11 @@
         <Border x:Name="Drawer"
                 Width="380"
                 HorizontalAlignment="Right"
+                Margin="0,8,0,12"
+                CornerRadius="24,0,0,24"
                 Background="{StaticResource PanelBrush}"
-                BorderBrush="{StaticResource BorderBrushDark}"
-                BorderThickness="1,0,0,0">
+                BorderBrush="{StaticResource GlassBorderBrush}"
+                BorderThickness="1,1,0,1">
             <Border.RenderTransform>
                 <TranslateTransform x:Name="DrawerTranslate" X="380" />
             </Border.RenderTransform>
@@ -39,9 +41,9 @@
                     <TextBlock x:Name="TitleText"
                                Text="我的收藏"
                                FontSize="20"
-                               FontWeight="SemiBold"
+                               FontWeight="Bold"
                                VerticalAlignment="Center"
-                               Foreground="{StaticResource PrimaryBrush}" />
+                               Foreground="{StaticResource TextBrush}" />
                 </DockPanel>
 
                 <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -50,7 +52,7 @@
                             <DataTemplate>
                                 <Border x:Name="Row"
                                         Background="Transparent"
-                                        CornerRadius="8"
+                                        CornerRadius="14"
                                         Padding="8"
                                         Margin="0,2"
                                         Cursor="Hand"
@@ -64,7 +66,7 @@
                                         <Border Grid.Column="0"
                                                 Width="54"
                                                 Height="76"
-                                                CornerRadius="6"
+                                                CornerRadius="10"
                                                 Background="{StaticResource PanelAltBrush}"
                                                 ClipToBounds="True">
                                             <Image Stretch="UniformToFill" app:ImageLoader.SourceUrl="{Binding Item.Cover}" />

@@ -71,7 +71,7 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
-      borderRadius: isMobile ? 8 : isTablet ? 10 : 12,
+      borderRadius: 14,
       paddingHorizontal: spacing,
       paddingVertical: spacing * 0.75,
       minHeight: isMobile ? minTouchTarget : isTablet ? 48 : 44,
@@ -82,14 +82,14 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       backgroundColor: Colors.dark.primary,
     },
     secondary: {
-      backgroundColor: '#2c2c2e',
+      backgroundColor: '#1F2338',
       borderWidth: 1,
-      borderColor: '#666',
+      borderColor: '#2A2F47',
     },
     ghost: {
       backgroundColor: 'transparent',
       borderWidth: 1,
-      borderColor: '#666',
+      borderColor: '#2A2F47',
     },
 
     // Sizes
@@ -123,7 +123,7 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       fontWeight: '600',
     },
     primaryText: {
-      color: 'white',
+      color: '#06140E',
     },
     secondaryText: {
       color: 'white',

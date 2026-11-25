@@ -18,7 +18,18 @@ public sealed class AppServices : IDisposable
         Http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         Http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OpaiTV-Desktop");
         Updates = new DesktopUpdateService();
-        VodClients = new VodSourceClientFactory(Http);
+        // 直连优先的智能分流：每个站点先直连，直连不通才走设置里的代理，走通的路记在本机（route_memory.json）。
+        // 代理模式每个请求现读；_settings 在构造函数后半段才赋值，更早被读到时按系统代理处理（与没有这个设置时一致）。
+        PlaybackProxyRuntime.Current = () => PlaybackProxyDecision.From(_settings);
+        Routes = new RouteMemory(DesktopPaths.RouteMemoryFile);
+        PlaybackProxyRuntime.Routes = Routes;
+        // 片源站点的请求（搜索、详情、分类、首页取数）走分流；20 秒总时限不变，直连那一次最多占其中约 5 秒。
+        SourceHttp = new HttpClient(SmartRouteHandler.Create(static () => PlaybackProxyRuntime.Current(), Routes))
+        {
+            Timeout = TimeSpan.FromSeconds(20),
+        };
+        SourceHttp.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OpaiTV-Desktop");
+        VodClients = new VodSourceClientFactory(SourceHttp);
         AppleCms = VodClients.AppleCms;
         Douban = new DoubanClient(Http);
         Tmdb = new TmdbClient(Http);
@@ -31,14 +42,8 @@ public sealed class AppServices : IDisposable
             SourceModeOf = SourceModeOf,
         };
         M3u = new M3uParser(Http);
-        // 播放代理模式：所有取媒体地址的请求（弱网缓存下载、广告区间、可播性探测）每次都现读当前设置。
-        // _settings 在构造函数后半段才赋值，更早被读到时按系统代理处理（与没有这个设置时一致）。
-        PlaybackProxyRuntime.Current = () => PlaybackProxyDecision.From(_settings);
-        PlaybackHttp = new HttpClient(new HttpClientHandler
-        {
-            UseProxy = true,
-            Proxy = new PlaybackWebProxy(static () => PlaybackProxyRuntime.Current()),
-        })
+        // 取媒体地址的请求（广告区间、可播性探测 / 测速）同样直连优先、代理兜底；弱网缓存下载在 VodCacheService 里接同一套。
+        PlaybackHttp = new HttpClient(SmartRouteHandler.Create(static () => PlaybackProxyRuntime.Current(), Routes))
         {
             Timeout = TimeSpan.FromSeconds(20),
         };
@@ -68,9 +73,18 @@ public sealed class AppServices : IDisposable
 
     /// <summary>
     /// 取媒体地址用的 HttpClient（m3u8 广告区间、频道 / 片源可播性探测）：按播放代理模式选路。
-    /// 目录、搜索、海报、更新检查仍用 <see cref="Http"/>，不受播放代理模式影响。
+    /// 直连优先、代理兜底（<see cref="SmartRouteHandler"/>）。
     /// </summary>
     public HttpClient PlaybackHttp { get; }
+
+    /// <summary>
+    /// 片源站点请求（搜索、详情、分类、首页取数）用的 HttpClient：与播放同一套直连优先、代理兜底的分流。
+    /// 豆瓣、TMDB、订阅、直播源列表、海报、更新检查仍用 <see cref="Http"/>（跟随系统代理），不受代理模式影响。
+    /// </summary>
+    public HttpClient SourceHttp { get; }
+
+    /// <summary>直连优先分流的线路记忆：每个站点上次走通的是直连还是代理。只存本机，不上传。</summary>
+    public RouteMemory Routes { get; }
 
     /// <summary>
     /// 播放代理模式（系统代理 / 强制代理 / 直连）：立即保存，下一次播放生效（正在播放的不打断）。
@@ -131,7 +145,7 @@ public sealed class AppServices : IDisposable
     public VodDownloadManager Downloads { get; }
     public CatalogPlayabilityCache PlayabilityCache { get; } = new();
 
-    /// <summary>弹幕取数（内置直连腾讯视频、哔哩哔哩；可选自定义 danmu_api 服务器）。用独立的 HttpClient，不影响其他请求。</summary>
+    /// <summary>弹幕取数（内置直连腾讯视频、哔哩哔哩、爱奇艺、优酷、芒果TV、咪咕视频；可选自定义 danmu_api 服务器）。用独立的 HttpClient，不影响其他请求。</summary>
     public DanmakuService Danmaku { get; }
     private readonly HttpClient _danmakuHttp;
 
@@ -540,6 +554,8 @@ public sealed class AppServices : IDisposable
         Downloads.Dispose();
         VodCache.Dispose();
         PlaybackHttp.Dispose();
+        SourceHttp.Dispose();
+        Routes.Flush();
         Task[] pendingCleanups;
         lock (_playbackCleanupSync)
         {

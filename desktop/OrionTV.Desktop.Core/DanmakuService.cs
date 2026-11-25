@@ -34,7 +34,7 @@ public interface IDanmakuHttp
 }
 
 /// <summary>基于 <see cref="HttpClient"/> 的实现。非 2xx 抛 <see cref="HttpRequestException"/>,超时抛 <see cref="OperationCanceledException"/>。</summary>
-public sealed class DanmakuHttp : IDanmakuHttp
+public sealed class DanmakuHttp : IDanmakuHttp, IDanmakuRawHttp
 {
     public const string UserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -104,12 +104,43 @@ public sealed class DanmakuHttp : IDanmakuHttp
         return await SendAsync(request, headers, timeout, decode: false, ct).ConfigureAwait(false);
     }
 
+    public async Task<DanmakuRawResponse> SendRawAsync(
+        string method,
+        string url,
+        string? body,
+        IReadOnlyDictionary<string, string>? headers,
+        TimeSpan timeout,
+        CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(new HttpMethod(method), url);
+        if (body is not null)
+        {
+            var content = new ByteArrayContent(Encoding.UTF8.GetBytes(body));
+            var contentType = headers?.FirstOrDefault(pair => string.Equals(pair.Key, "Content-Type", StringComparison.OrdinalIgnoreCase)).Value;
+            content.Headers.TryAddWithoutValidation("Content-Type", string.IsNullOrEmpty(contentType) ? "application/x-www-form-urlencoded" : contentType);
+            request.Content = content;
+        }
+
+        var setCookie = "";
+        var bytes = await SendAsync(
+                request,
+                headers,
+                timeout,
+                decode: true,
+                ct,
+                response => setCookie = response.Headers.TryGetValues("Set-Cookie", out var values) ? string.Join("; ", values) : "")
+            .ConfigureAwait(false);
+        var start = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+        return new DanmakuRawResponse(Encoding.UTF8.GetString(bytes, start, bytes.Length - start), setCookie);
+    }
+
     private async Task<byte[]> SendAsync(
         HttpRequestMessage request,
         IReadOnlyDictionary<string, string>? headers,
         TimeSpan timeout,
         bool decode,
-        CancellationToken ct)
+        CancellationToken ct,
+        Action<HttpResponseMessage>? inspect = null)
     {
         if (headers is not null)
         {
@@ -135,6 +166,7 @@ public sealed class DanmakuHttp : IDanmakuHttp
             throw new HttpRequestException($"HTTP {(int)response.StatusCode}");
         }
 
+        inspect?.Invoke(response);
         if (response.Content.Headers.ContentLength > MaxResponseBytes)
         {
             throw new HttpRequestException("response too large");
@@ -189,7 +221,7 @@ public interface IDanmakuProvider
 /// <summary>
 /// 弹幕取数入口。
 ///
-/// 默认来源是内置直连:按片名和集数依次去腾讯视频、哔哩哔哩的公开接口匹配并取弹幕,
+/// 默认来源是内置直连:按片名和集数依次去腾讯视频、哔哩哔哩、爱奇艺、优酷、芒果TV、咪咕视频的公开接口匹配并取弹幕,
 /// 不需要登录,也不需要任何服务器。设置里填了自定义 danmu_api 地址时先问它,
 /// 它匹配不到或访问失败再回到内置来源。
 ///
@@ -206,17 +238,39 @@ public sealed class DanmakuService
     public DanmakuService(IDanmakuHttp http)
     {
         _http = http;
-        _builtin = [new TencentDanmakuProvider(http), new BilibiliDanmakuProvider(http)];
+        // 按优先级依次尝试,匹配到就用。原有的两个来源排在前面,原来能匹配到的片行为不变。
+        _builtin =
+        [
+            new TencentDanmakuProvider(http),
+            new BilibiliDanmakuProvider(http),
+            new IqiyiDanmakuProvider(http),
+            new YoukuDanmakuProvider(http),
+            new MangoDanmakuProvider(http),
+            new MiguDanmakuProvider(http),
+        ];
     }
 
     /// <summary>给一集视频找弹幕;匹配不到、全部来源失败或被取消时返回 null。</summary>
-    public async Task<DanmakuTrack?> ResolveAsync(DanmakuQuery query, string? serverUrl, CancellationToken ct = default)
+    public async Task<DanmakuTrack?> ResolveAsync(DanmakuQuery query, string? serverUrl, CancellationToken ct = default) =>
+        (await ResolveDetailedAsync(query, serverUrl, ct).ConfigureAwait(false)).Track;
+
+    /// <summary>
+    /// 给一集视频找弹幕,并说明没找到的原因,供播放页提示用户:
+    /// 各来源都正常应答但没有这部片/这一集是 <see cref="DanmakuResolveOutcome.NotFound"/>;
+    /// 没有匹配到且至少一个来源访问出错(断网、超时、接口报错)是 <see cref="DanmakuResolveOutcome.Failed"/>。
+    /// 不抛异常。
+    /// </summary>
+    public async Task<DanmakuResolveResult> ResolveDetailedAsync(
+        DanmakuQuery query,
+        string? serverUrl,
+        CancellationToken ct = default)
     {
+        var failed = false;
         try
         {
             if (query is null || string.IsNullOrWhiteSpace(query.Title))
             {
-                return null;
+                return DanmakuResolveResult.NotFound;
             }
 
             var normalized = query with
@@ -226,7 +280,7 @@ public sealed class DanmakuService
                 EpisodeCount = Math.Max(1, query.EpisodeCount),
             };
 
-            var providers = new List<IDanmakuProvider>(3);
+            var providers = new List<IDanmakuProvider>(_builtin.Count + 1);
             var url = DanmakuSettingsRules.NormalizeServerUrl(serverUrl);
             if (url.Length > 0)
             {
@@ -248,7 +302,7 @@ public sealed class DanmakuService
             {
                 if (ct.IsCancellationRequested)
                 {
-                    return null;
+                    return DanmakuResolveResult.Cancelled;
                 }
 
                 try
@@ -256,22 +310,85 @@ public sealed class DanmakuService
                     var track = await provider.ResolveAsync(normalized, ct).ConfigureAwait(false);
                     if (track is not null)
                     {
-                        return track;
+                        return new DanmakuResolveResult(track, DanmakuResolveOutcome.Found);
                     }
                 }
                 catch
                 {
                     // 这个来源不可用,换下一个
+                    failed = true;
                 }
             }
 
-            return null;
+            if (ct.IsCancellationRequested)
+            {
+                return DanmakuResolveResult.Cancelled;
+            }
+
+            return failed ? DanmakuResolveResult.Failed : DanmakuResolveResult.NotFound;
         }
         catch
         {
-            return null;
+            return ct.IsCancellationRequested ? DanmakuResolveResult.Cancelled : DanmakuResolveResult.Failed;
         }
     }
+}
+
+/// <summary>找弹幕的结果类别。</summary>
+public enum DanmakuResolveOutcome
+{
+    /// <summary>匹配到了。</summary>
+    Found,
+
+    /// <summary>来源都正常应答,但没有这部片或这一集。</summary>
+    NotFound,
+
+    /// <summary>没有匹配到,且至少一个来源访问出错。</summary>
+    Failed,
+
+    /// <summary>调用方取消了(换集、关掉弹幕、离开播放页),不需要提示。</summary>
+    Cancelled,
+}
+
+public sealed record DanmakuResolveResult(DanmakuTrack? Track, DanmakuResolveOutcome Outcome)
+{
+    public static readonly DanmakuResolveResult NotFound = new(null, DanmakuResolveOutcome.NotFound);
+    public static readonly DanmakuResolveResult Failed = new(null, DanmakuResolveOutcome.Failed);
+    public static readonly DanmakuResolveResult Cancelled = new(null, DanmakuResolveOutcome.Cancelled);
+}
+
+/// <summary>播放页上弹幕状态的轻提示文字(纯文本规则,有单元测试)。</summary>
+public static class DanmakuNotice
+{
+    public const string Off = "弹幕已关闭";
+    public const string Loading = "弹幕已开启，正在匹配…";
+    public const string NotFound = "未找到该集弹幕";
+    public const string Failed = "弹幕获取失败，请检查网络后重试";
+    public const string LocalFile = "本地视频不匹配弹幕";
+    public const string RenderFailed = "弹幕显示出错，本集已停止显示";
+
+    public static string ProviderLabel(string? provider) => provider switch
+    {
+        "tencent" => "腾讯视频",
+        "bilibili" => "哔哩哔哩",
+        "iqiyi" => "爱奇艺",
+        "youku" => "优酷",
+        "mango" => "芒果TV",
+        "migu" => "咪咕视频",
+        "server" => "自定义弹幕服务器",
+        _ => "",
+    };
+
+    /// <summary>匹配结果对应的提示;被取消时没有提示(null)。</summary>
+    public static string? ForResult(DanmakuResolveResult result) => result.Outcome switch
+    {
+        DanmakuResolveOutcome.Found => ProviderLabel(result.Track?.Provider) is { Length: > 0 } label
+            ? $"弹幕已加载 · {label}"
+            : "弹幕已加载",
+        DanmakuResolveOutcome.NotFound => NotFound,
+        DanmakuResolveOutcome.Failed => Failed,
+        _ => null,
+    };
 }
 
 /// <summary>把 JSON 当 JavaScript 值来读的小工具:字段缺失或类型不对时不抛异常,取值规则与手机版的 JS 一致。</summary>

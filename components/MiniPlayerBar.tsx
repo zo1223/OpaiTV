@@ -209,8 +209,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     alignSelf: "stretch",
-    backgroundColor: "#1c1c1e",
-    borderRadius: 14,
+    backgroundColor: "#151828",
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
     padding: 6,
     elevation: 10,
     shadowColor: "#000",
@@ -233,7 +235,7 @@ const styles = StyleSheet.create({
   video: {
     width: 96,
     height: 54,
-    borderRadius: 8,
+    borderRadius: 12,
     backgroundColor: "#000",
     marginRight: 10,
   },
@@ -252,7 +254,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   time: {
-    color: "#b0b0b5",
+    color: "#9AA1B8",
     fontSize: 12,
     marginTop: 2,
   },
@@ -266,7 +268,7 @@ const styles = StyleSheet.create({
   progressFill: {
     height: 3,
     borderRadius: 2,
-    backgroundColor: "#4da3ff",
+    backgroundColor: "#6FDCA8",
   },
   iconButton: {
     width: 40,

@@ -1,4 +1,5 @@
 import Logger from '@/utils/Logger';
+import { smartFetch } from '@/services/smartRoute';
 import { runAdDetection } from '@/services/adDetection';
 import type { AdDetectionOptions, AdDetectionResult } from '@/services/adDetection';
 
@@ -107,7 +108,7 @@ export const getResolutionFromM3U8 = async (
 
   try {
     const fetchStart = performance.now();
-    const response = await fetch(url, { signal });
+    const response = await smartFetch(url, { signal });
     const fetchEnd = performance.now();
     logger.info(`[PERF] M3U8 fetch took ${(fetchEnd - fetchStart).toFixed(2)}ms, status: ${response.status}`);
     

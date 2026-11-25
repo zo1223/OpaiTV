@@ -520,6 +520,34 @@ describe("弹幕取数(来源选择)", () => {
     }
   });
 
+  it("内置来源按优先级依次尝试:腾讯、哔哩哔哩、爱奇艺、优酷、芒果TV、咪咕;都正常应答但没有时是 notFound", async () => {
+    const hosts: string[] = [];
+    const note = (url: string) => {
+      const host = url.replace(/^https?:\/\//, "").split("/")[0];
+      if (!hosts.includes(host)) hosts.push(host);
+    };
+    const empty: DanmakuHttp = {
+      getJson: async (url) => {
+        note(url);
+        // 哔哩哔哩搜索前要先拿到设备标识和签名密钥
+        if (url.includes("bilibili.com")) {
+          return { data: { b_3: "b3", wbi_img: { img_url: "https://i0.hdslb.com/bfs/wbi/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png", sub_url: "https://i0.hdslb.com/bfs/wbi/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png" }, result: [] } };
+        }
+        return {};
+      },
+      postJson: async (url) => (note(url), {}),
+      getBytes: async (url) => (note(url), new Uint8Array()),
+      sendRaw: async (url) => (note(url), { status: 200, text: "{}", setCookie: [] } as any),
+    };
+    const result = await createDanmakuService(empty).resolveDetailed({ ...query, title: "完全不存在的片子" }, "");
+    expect(result).toEqual({ track: null, outcome: "notFound" });
+    const order = ["qq.com", "bilibili.com", "iqiyi.com", "youku.com", "mgtv.com", "migu"].map((marker) =>
+      hosts.findIndex((host) => host.includes(marker))
+    );
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
   it("没有匹配到、全部来源失败、标题为空时都返回 null,不抛错", async () => {
     const dead: DanmakuHttp = {
       getJson: async () => {
@@ -534,6 +562,12 @@ describe("弹幕取数(来源选择)", () => {
     };
     await expect(createDanmakuService(dead).resolve(query, "http://127.0.0.1:9321")).resolves.toBeNull();
     await expect(createDanmakuService(dead).resolve({ ...query, title: "  " })).resolves.toBeNull();
+    // 来源访问出错要和"没有这部片"分开,播放页据此给不同的提示
+    await expect(createDanmakuService(dead).resolveDetailed(query, "")).resolves.toEqual({ track: null, outcome: "failed" });
+    await expect(createDanmakuService(dead).resolveDetailed({ ...query, title: "  " })).resolves.toEqual({
+      track: null,
+      outcome: "notFound",
+    });
 
     const calls: string[] = [];
     const service = createDanmakuService(builtinHttp(calls));

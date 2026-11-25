@@ -85,7 +85,7 @@ function AutoSkipAdsSection({
         <Switch
           value={autoSkipAdsEnabled}
           onValueChange={handleToggle}
-          trackColor={{ false: "#767577", true: Colors.dark.primary }}
+          trackColor={{ false: "#2A3048", true: Colors.dark.primary }}
           thumbColor={autoSkipAdsEnabled ? "#ffffff" : "#f4f3f4"}
           pointerEvents={Platform.isTV ? "none" : "auto"}
         />

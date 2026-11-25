@@ -221,7 +221,7 @@ const styles = StyleSheet.create({
   input: {
     width: "100%",
     height: 50,
-    backgroundColor: "#333",
+    backgroundColor: "#2A2F47",
     borderRadius: 8,
     paddingHorizontal: 16,
     color: "#fff",

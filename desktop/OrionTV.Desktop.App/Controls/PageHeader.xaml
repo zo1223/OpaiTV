@@ -23,9 +23,9 @@
                        VerticalAlignment="Center"
                        Margin="6,0,12,0"
                        FontSize="22"
-                       FontWeight="SemiBold"
+                       FontWeight="Bold"
                        TextTrimming="CharacterEllipsis"
-                       Foreground="{StaticResource PrimaryBrush}" />
+                       Foreground="{StaticResource TextBrush}" />
 
             <ContentPresenter x:Name="RightContent"
                               Grid.Column="2"

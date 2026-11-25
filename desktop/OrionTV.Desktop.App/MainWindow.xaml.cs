@@ -8,7 +8,7 @@ using OrionTV.Desktop.Core;
 
 namespace OrionTV.Desktop.App;
 
-/// <summary>导航壳：左侧侧边栏 + 内容区，实现 <see cref="IAppHost"/>。</summary>
+/// <summary>导航壳：顶部标题栏 + 可折叠侧边栏 + 内容区，实现 <see cref="IAppHost"/>。</summary>
 public partial class MainWindow : Window, IAppHost
 {
     private static readonly HashSet<AppPage> TopLevelPages =
@@ -24,6 +24,7 @@ public partial class MainWindow : Window, IAppHost
     public MainWindow()
     {
         InitializeComponent();
+        ApplySidebarMode(animate: false);
         Services = new AppServices();
         Services.AdultVisibilityChanged += OnAdultVisibilityChanged;
         Services.Updates.AvailableUpdateChanged += OnAvailableUpdateChanged;
@@ -196,8 +197,82 @@ public partial class MainWindow : Window, IAppHost
     // 更新检查在后台线程完成
     private void OnAvailableUpdateChanged() => Dispatcher.BeginInvoke(RefreshUpdateBadge);
 
-    private void RefreshUpdateBadge() =>
-        SettingsUpdateDot.Visibility = Services.Updates.HasUpdateBadge ? Visibility.Visible : Visibility.Collapsed;
+    private void RefreshUpdateBadge()
+    {
+        var visibility = Services.Updates.HasUpdateBadge ? Visibility.Visible : Visibility.Collapsed;
+        SettingsUpdateDot.Visibility = visibility;
+        TopSettingsUpdateDot.Visibility = visibility;
+    }
+
+    // ---- 侧栏折叠（纯外观状态：展开 → 仅图标 → 隐藏；只记在本机 ui_sidebar.txt，不进设置数据）----
+
+    private static readonly string SidebarStateFile =
+        System.IO.Path.Combine(DesktopPaths.DataDirectory, "ui_sidebar.txt");
+
+    private SidebarMode _sidebarMode = LoadSidebarMode();
+
+    private static SidebarMode LoadSidebarMode()
+    {
+        try
+        {
+            return System.IO.File.Exists(SidebarStateFile)
+                ? SidebarLayout.Parse(System.IO.File.ReadAllText(SidebarStateFile))
+                : SidebarMode.Expanded;
+        }
+        catch
+        {
+            return SidebarMode.Expanded;
+        }
+    }
+
+    private void SidebarToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _sidebarMode = SidebarLayout.Next(_sidebarMode);
+        try
+        {
+            System.IO.Directory.CreateDirectory(DesktopPaths.DataDirectory);
+            System.IO.File.WriteAllText(SidebarStateFile, _sidebarMode.ToString());
+        }
+        catch
+        {
+            // 记不住折叠状态不影响使用
+        }
+
+        ApplySidebarMode(animate: true);
+    }
+
+    private void ApplySidebarMode(bool animate)
+    {
+        if (IsFullscreen)
+        {
+            // 全屏时侧栏与顶部栏都收起；退出全屏时 SetFullscreen 会再调一次
+            return;
+        }
+
+        var compact = _sidebarMode == SidebarMode.Compact;
+        var hidden = _sidebarMode == SidebarMode.Hidden;
+        // SidebarItemStyle 按窗口 Tag 决定是否只显示图标
+        Tag = compact ? "compact" : null;
+        var headers = compact ? Visibility.Collapsed : Visibility.Visible;
+        NavHeaderMain.Visibility = headers;
+        NavHeaderAi.Visibility = headers;
+        NavHeaderUser.Visibility = headers;
+        SettingsUpdateDot.Margin = new Thickness(0, 0, compact ? 16 : 22, 0);
+        Sidebar.Visibility = hidden ? Visibility.Collapsed : Visibility.Visible;
+        SidebarColumn.Width = new GridLength(SidebarLayout.Width(_sidebarMode));
+        SidebarToggle.ToolTip = SidebarLayout.ToggleToolTip(_sidebarMode);
+        if (animate && !hidden)
+        {
+            Motion.FadeIn(Sidebar, 180);
+        }
+    }
+
+    // 顶部栏按钮：与侧栏对应项走同一条路
+    private void TopSearch_Click(object sender, RoutedEventArgs e) => Navigate(AppPage.Search);
+
+    private void TopFavorites_Click(object sender, RoutedEventArgs e) => ShowFavoritesPanel();
+
+    private void TopSettings_Click(object sender, RoutedEventArgs e) => OpenSettings();
 
     public void Navigate(AppPage page, object? parameter = null)
     {
@@ -348,6 +423,7 @@ public partial class MainWindow : Window, IAppHost
 
             Sidebar.Visibility = Visibility.Collapsed;
             SidebarColumn.Width = new GridLength(0);
+            TopBar.Visibility = Visibility.Collapsed;
             WindowStyle = WindowStyle.None;
             ResizeMode = ResizeMode.NoResize;
             // 先 Normal 再 Maximized，确保无边框窗口铺满并覆盖任务栏。
@@ -357,12 +433,13 @@ public partial class MainWindow : Window, IAppHost
         }
         else
         {
-            Sidebar.Visibility = Visibility.Visible;
-            SidebarColumn.Width = new GridLength(210);
+            // 先清全屏标记：ApplySidebarMode 在全屏期间不动侧栏
+            IsFullscreen = false;
+            TopBar.Visibility = Visibility.Visible;
+            ApplySidebarMode(animate: false);
             WindowStyle = _prevWindowStyle;
             ResizeMode = _prevResizeMode;
             WindowState = _prevWindowState;
-            IsFullscreen = false;
         }
     }
 

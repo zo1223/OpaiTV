@@ -390,8 +390,8 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
     inputContainer: {
       flex: 1,
       height: isMobile ? minTouchTarget : 50,
-      backgroundColor: "#2c2c2e",
-      borderRadius: isMobile ? 8 : 8,
+      backgroundColor: "#1F2338",
+      borderRadius: 14,
       marginRight: spacing / 2,
       borderWidth: 2,
       borderColor: "transparent",
@@ -408,7 +408,7 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       height: isMobile ? minTouchTarget : 50,
       justifyContent: "center",
       alignItems: "center",
-      borderRadius: isMobile ? 8 : 8,
+      borderRadius: 14,
       marginRight: deviceType !== 'mobile' ? spacing / 2 : 0,
     },
     qrButton: {
@@ -416,7 +416,7 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       height: isMobile ? minTouchTarget : 50,
       justifyContent: "center",
       alignItems: "center",
-      borderRadius: isMobile ? 8 : 8,
+      borderRadius: 14,
     },
     errorText: {
       color: "red",
@@ -434,11 +434,11 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       marginBottom: spacing / 2,
     },
     historyTitle: {
-      color: "#aaa",
+      color: "#9AA1B8",
       fontSize: isMobile ? 13 : 15,
     },
     historyClear: {
-      color: "#888",
+      color: "#9AA1B8",
       fontSize: isMobile ? 13 : 15,
     },
     historyTags: {
@@ -449,8 +449,10 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
     historyTag: {
       flexDirection: "row",
       alignItems: "center",
-      backgroundColor: "#2c2c2e",
-      borderRadius: 16,
+      backgroundColor: "#1F2338",
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: "rgba(255,255,255,0.08)",
       paddingLeft: 12,
       paddingRight: 8,
       paddingVertical: 6,

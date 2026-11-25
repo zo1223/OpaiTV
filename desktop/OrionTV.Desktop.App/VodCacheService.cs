@@ -183,16 +183,17 @@ public sealed class VodCacheService : IDisposable
 
     public VodCacheService()
     {
-        var handler = new HttpClientHandler
-        {
-            AllowAutoRedirect = true,
-            AutomaticDecompression = DecompressionMethods.All,
-            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
-            // 播放代理模式（系统代理 / 强制代理 / 直连）：每个请求现读当前设置，切换后下一次播放生效。
-            // 系统代理模式下与 HttpClient 默认行为相同。
-            UseProxy = true,
-            Proxy = new PlaybackWebProxy(static () => PlaybackProxyRuntime.Current()),
-        };
+        // 直连优先、代理兜底（SmartRouteHandler）：每个请求现读当前代理设置，切换后下一个请求生效。
+        // 先直连（等响应头最多约 5 秒），直连不通才走设置里的代理；代理模式为“直连”或没有可用代理时只走直连。
+        var handler = SmartRouteHandler.Create(
+            static () => PlaybackProxyRuntime.Current(),
+            PlaybackProxyRuntime.Routes,
+            static inner =>
+            {
+                inner.AllowAutoRedirect = true;
+                inner.AutomaticDecompression = DecompressionMethods.All;
+                inner.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+            });
         // 单次请求超时由 SendWithTimeoutAsync 控制；这里保持无限，避免长整集下载被全局超时打断。
         _http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
         _http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", PlaybackMediaOptions.AndroidLikeUserAgent);

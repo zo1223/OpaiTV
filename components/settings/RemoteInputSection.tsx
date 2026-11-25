@@ -82,7 +82,7 @@ export const RemoteInputSection: React.FC<RemoteInputSectionProps> = ({ onChange
             <Switch
               value={remoteInputEnabled}
               onValueChange={() => { }} // 禁用Switch的直接交互
-              trackColor={{ false: "#767577", true: Colors.dark.primary }}
+              trackColor={{ false: "#2A3048", true: Colors.dark.primary }}
               thumbColor={remoteInputEnabled ? "#ffffff" : "#f4f3f4"}
               pointerEvents="none"
             />
@@ -136,12 +136,12 @@ const styles = StyleSheet.create({
   },
   settingDescription: {
     fontSize: 14,
-    color: "#888",
+    color: "#9AA1B8",
   },
   statusContainer: {
     marginTop: 16,
     padding: 16,
-    backgroundColor: "#2a2a2c",
+    backgroundColor: "#1B1F33",
     borderRadius: 8,
   },
   statusItem: {
@@ -150,7 +150,7 @@ const styles = StyleSheet.create({
   },
   statusLabel: {
     fontSize: 14,
-    color: "#ccc",
+    color: "#C5CADB",
     minWidth: 80,
   },
   statusValue: {

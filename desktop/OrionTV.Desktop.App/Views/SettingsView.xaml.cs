@@ -665,7 +665,7 @@ public partial class SettingsView : UserControl, INavigationAware
         DanmakuServerHint.Text = _danmakuServerInvalid
             ? "地址无效，请填写 http(s) 地址；留空则使用内置来源"
             : string.IsNullOrEmpty(settings.DanmakuServerUrl)
-                ? "当前使用内置来源（腾讯视频、哔哩哔哩的公开弹幕），不需要任何配置"
+                ? "当前使用内置来源（腾讯视频、哔哩哔哩、爱奇艺、优酷、芒果TV、咪咕视频的公开弹幕），不需要任何配置"
                 : "优先使用这个服务器；它匹配不到或访问失败时自动改用内置来源";
     }
 
@@ -734,19 +734,13 @@ public partial class SettingsView : UserControl, INavigationAware
             .FirstOrDefault(item => string.Equals(item.Tag as string, mode, StringComparison.Ordinal));
         PlaybackProxyUrlBox.Text = settings.PlaybackProxyUrl ?? "";
         PlaybackProxyStatus.Text = "当前：" + DescribePlaybackProxy(settings);
+        // 分流规则说明：直连优先、失败走代理、代理流量只花在直连不通的源上（文字集中在 Core，便于测试）
+        PlaybackProxySummary.Text = SmartRoutingText.Summary;
     }
 
-    private static string DescribePlaybackProxy(DesktopSettings settings)
-    {
-        var decision = PlaybackProxyDecision.From(settings);
-        return decision.Mode switch
-        {
-            PlaybackProxyModes.ForcedProxy when decision.ProxyUri is not null =>
-                $"强制代理，播放请求走 {PlaybackProxyAddress.Describe(decision.ProxyUri)}",
-            PlaybackProxyModes.Direct => "直连，播放请求不走代理",
-            _ => "系统代理，播放请求跟随系统代理设置",
-        };
-    }
+    private string DescribePlaybackProxy(DesktopSettings settings) =>
+        SmartRoutingText.Describe(PlaybackProxyDecision.From(settings))
+        + "；" + SmartRoutingText.DescribeMemory(_host.Services.Routes.Count());
 
     private void PlaybackProxyModeBox_SelectionChanged(object sender, SelectionChangedEventArgs e) => CommitPlaybackProxy();
 
@@ -779,7 +773,7 @@ public partial class SettingsView : UserControl, INavigationAware
                 return;
             }
 
-            PlaybackProxyStatus.Text = $"已保存，下一次播放生效：{DescribePlaybackProxy(_host.Services.Settings)}。";
+            PlaybackProxyStatus.Text = $"已保存，下一次搜索 / 播放生效：{DescribePlaybackProxy(_host.Services.Settings)}。";
         }
         catch
         {

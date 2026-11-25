@@ -872,6 +872,83 @@ public class DanmakuTests
     }
 
     [Fact]
+    public async Task Service_ResolveDetailed_TellsFoundNotFoundAndFailedApart()
+    {
+        var found = await new DanmakuService(TencentHttp(paged: false))
+            .ResolveDetailedAsync(new DanmakuQuery("庆余年 第二季", 0, 1, 36), "");
+        Assert.Equal(DanmakuResolveOutcome.Found, found.Outcome);
+        Assert.Equal("tencent", found.Track?.Provider);
+        Assert.Equal("弹幕已加载 · 腾讯视频", DanmakuNotice.ForResult(found));
+
+        // 所有内置来源都正常应答，只是没有这部片
+        var empty = BilibiliHttp();
+        var bilibiliHandler = empty.Handler;
+        empty.Handler = (method, url, body) => url.Contains("qq.com", StringComparison.Ordinal)
+            ? """{"ret":0,"data":{}}"""
+            : url.Contains("bilibili.com", StringComparison.Ordinal)
+                ? bilibiliHandler(method, url, body)
+                : "{}"; // 爱奇艺、优酷、芒果TV、咪咕视频:正常应答,没有结果
+        var missing = await new DanmakuService(empty)
+            .ResolveDetailedAsync(new DanmakuQuery("完全不存在的片子", 0, 1, 10), "");
+        Assert.Null(missing.Track);
+        Assert.Equal(DanmakuResolveOutcome.NotFound, missing.Outcome);
+        Assert.Equal("未找到该集弹幕", DanmakuNotice.ForResult(missing));
+
+        // 来源访问出错（断网）：不能说成“未找到”
+        var dead = new FakeHttp { Handler = (_, _, _) => throw new HttpRequestException("offline") };
+        var failed = await new DanmakuService(dead)
+            .ResolveDetailedAsync(new DanmakuQuery("庆余年 第二季", 0, 1, 36), "");
+        Assert.Null(failed.Track);
+        Assert.Equal(DanmakuResolveOutcome.Failed, failed.Outcome);
+        Assert.Equal(DanmakuNotice.Failed, DanmakuNotice.ForResult(failed));
+
+        // 空标题不发请求，按未找到处理
+        var blank = await new DanmakuService(dead).ResolveDetailedAsync(new DanmakuQuery("  ", 0, 1, 1), "");
+        Assert.Equal(DanmakuResolveOutcome.NotFound, blank.Outcome);
+    }
+
+    [Fact]
+    public async Task Service_TriesAllBuiltInSourcesInPriorityOrder()
+    {
+        var bilibili = BilibiliHttp();
+        var bilibiliHandler = bilibili.Handler;
+        bilibili.Handler = (method, url, body) => url.Contains("qq.com", StringComparison.Ordinal)
+            ? """{"ret":0,"data":{}}"""
+            : url.Contains("bilibili.com", StringComparison.Ordinal)
+                ? bilibiliHandler(method, url, body)
+                : "{}";
+
+        var result = await new DanmakuService(bilibili)
+            .ResolveDetailedAsync(new DanmakuQuery("完全不存在的片子", 0, 1, 10), "");
+
+        Assert.Equal(DanmakuResolveOutcome.NotFound, result.Outcome);
+        string[] markers = ["qq.com", "bilibili.com", "iqiyi.com", "youku.com", "mgtv.com", "migu"];
+        var firstHits = markers
+            .Select(marker => bilibili.Calls.FindIndex(call => new Uri(call.Url).Host.Contains(marker, StringComparison.Ordinal)))
+            .ToList();
+        Assert.All(firstHits, index => Assert.True(index >= 0));
+        Assert.Equal(firstHits.OrderBy(index => index), firstHits);
+
+        Assert.Equal("爱奇艺", DanmakuNotice.ProviderLabel("iqiyi"));
+        Assert.Equal("优酷", DanmakuNotice.ProviderLabel("youku"));
+        Assert.Equal("芒果TV", DanmakuNotice.ProviderLabel("mango"));
+        Assert.Equal("咪咕视频", DanmakuNotice.ProviderLabel("migu"));
+    }
+
+    [Fact]
+    public async Task Service_ResolveDetailed_CancelledGivesNoNotice()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var result = await new DanmakuService(TencentHttp(paged: false))
+            .ResolveDetailedAsync(new DanmakuQuery("庆余年 第二季", 0, 1, 36), "", cts.Token);
+
+        Assert.Null(result.Track);
+        Assert.Equal(DanmakuResolveOutcome.Cancelled, result.Outcome);
+        Assert.Null(DanmakuNotice.ForResult(result));
+    }
+
+    [Fact]
     public async Task Service_NeverThrows()
     {
         var offline = new FakeHttp { Handler = (_, _, _) => throw new HttpRequestException("offline") };

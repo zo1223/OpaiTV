@@ -1,4 +1,5 @@
 import Logger from "@/utils/Logger";
+import { smartFetch } from "@/services/smartRoute";
 import type { M3U8AdRange } from "@/services/m3u8";
 
 const logger = Logger.withTag("AdDetection");
@@ -491,7 +492,7 @@ const isEncryptedPlaylist = (playlist: string): boolean => {
 /** 默认探测器:大小用 HEAD 的 Content-Length,内容用 GET(超过上限放弃)。 */
 export const createDefaultSegmentProbe = (): SegmentProbe => ({
   async size(url, signal) {
-    const response = await fetch(url, { method: "HEAD", signal });
+    const response = await smartFetch(url, { method: "HEAD", signal });
     if (!response?.ok) {
       return null;
     }
@@ -500,7 +501,7 @@ export const createDefaultSegmentProbe = (): SegmentProbe => ({
     return Number.isFinite(size) && size > 0 ? size : null;
   },
   async fetch(url, signal) {
-    const response = await fetch(url, { signal });
+    const response = await smartFetch(url, { signal });
     if (!response?.ok || typeof response.arrayBuffer !== "function") {
       return null;
     }
@@ -671,7 +672,7 @@ export const detectBlackSilenceAdRanges = async (
 // ---------------------------------------------------------------------------
 
 const defaultFetchText = async (url: string, signal: AbortSignal): Promise<string> => {
-  const response = await fetch(url, { signal });
+  const response = await smartFetch(url, { signal });
   if (!response?.ok) {
     throw new Error(`HTTP ${response?.status}`);
   }

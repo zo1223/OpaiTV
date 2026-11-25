@@ -4,7 +4,8 @@ import type { AVPlaybackStatus } from "expo-av";
 import usePlayerStore from "@/stores/playerStore";
 import useDetailStore from "@/stores/detailStore";
 import { useDanmakuStore } from "@/stores/danmakuStore";
-import { danmakuService, episodeNumberFromLabel } from "@/services/danmaku";
+import Toast from "react-native-toast-message";
+import { DANMAKU_NOTICE, danmakuService, episodeNumberFromLabel } from "@/services/danmaku";
 import { DanmakuClock, DanmakuEngine, DanmakuItem, DanmakuTimeline } from "@/services/danmaku/engine";
 import {
   DANMAKU_FIXED_SECONDS,
@@ -19,6 +20,15 @@ const TICK_MS = 250;
 const LOOKAHEAD_SECONDS = 0.6;
 /** 画面上同时最多几条(电视盒子性能有限) */
 const MAX_ITEMS = 40;
+
+/** 弹幕状态轻提示(用全局 Toast,2.5 秒自动消失);提示出不来不能影响播放 */
+export const showDanmakuNotice = (text: string) => {
+  try {
+    Toast.show({ type: "info", text1: text, visibilityTime: 2500 });
+  } catch {
+    // 忽略
+  }
+};
 
 const toCssColor = (color: number) => `#${(color & 0xffffff).toString(16).padStart(6, "0")}`;
 
@@ -114,15 +124,20 @@ const DanmakuLayer = memo(function DanmakuLayer() {
     );
   }, []);
 
-  // 1. 按片名和集数匹配弹幕。换集、换片、换服务器地址时重新匹配;匹配不到或失败就没有弹幕
+  // 1. 按片名和集数匹配弹幕。换集、换片、换服务器地址时重新匹配;匹配不到或失败就没有弹幕,并提示原因
   useEffect(() => {
     setTrack(null);
     if (!title || episodeCount <= 0 || episodeIndex < 0 || episodeIndex >= episodeCount) return;
     let cancelled = false;
     danmakuService
-      .resolve({ title, year, episodeIndex, episodeNumber, episodeCount }, serverUrl)
-      .then((found) => {
-        if (!cancelled) setTrack(found);
+      .resolveDetailed({ title, year, episodeIndex, episodeNumber, episodeCount }, serverUrl)
+      .then((result) => {
+        if (cancelled) return;
+        setTrack(result.track);
+        // 没有弹幕时给一个轻提示,不再静默:区分"没有这一集"和"访问失败"
+        if (!result.track) {
+          showDanmakuNotice(result.outcome === "failed" ? DANMAKU_NOTICE.failed : DANMAKU_NOTICE.notFound);
+        }
       })
       .catch(() => {
         // resolve 本身不抛错,这里只是兜底

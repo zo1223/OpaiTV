@@ -15,6 +15,9 @@ public static class DesktopPaths
     public static string LocalMediaFile => Path.Combine(DataDirectory, "local_media.json");
     /// <summary>搜索记录（标签云），只存本机。</summary>
     public static string SearchHistoryFile => Path.Combine(DataDirectory, "search_history.json");
+
+    /// <summary>直连优先分流：每个站点上次走通的路（直连 / 代理）。只存本机。</summary>
+    public static string RouteMemoryFile => Path.Combine(DataDirectory, "route_memory.json");
     /// <summary>AI/CLI 解析写入的额外视频源（与订阅源合并）。</summary>
     public static string ExtraSourcesFile => Path.Combine(DataDirectory, "extra_sources.json");
     public static string DefaultVodCacheDirectory => Path.Combine(
@@ -58,7 +61,7 @@ public sealed record DesktopSettings(
     /// 弹幕开关，默认关闭。设置页里的弹幕各项都是改了立即生效并保存，不随“保存设置”提交。
     /// </summary>
     bool DanmakuEnabled = false,
-    /// <summary>自定义 danmu_api 服务器根地址；留空使用内置来源（直连腾讯视频、哔哩哔哩的公开接口）。</summary>
+    /// <summary>自定义 danmu_api 服务器根地址；留空使用内置来源（直连腾讯视频、哔哩哔哩、爱奇艺、优酷、芒果TV、咪咕视频的公开接口）。</summary>
     string DanmakuServerUrl = "",
     /// <summary>弹幕不透明度（0.2 ~ 1）。</summary>
     double DanmakuOpacity = DanmakuSettingsRules.DefaultOpacity,

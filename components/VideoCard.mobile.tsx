@@ -128,7 +128,7 @@ const VideoCardMobile = forwardRef<View, VideoCardMobileProps>(
             {/* 继续观看标识 */}
             {isContinueWatching && (
               <View style={styles.continueWatchingBadge}>
-                <Play size={12} color="#ffffff" fill="#ffffff" />
+                <Play size={12} color="#1A1206" fill="#1A1206" />
                 <Text style={styles.continueWatchingText}>继续</Text>
               </View>
             )}
@@ -136,7 +136,7 @@ const VideoCardMobile = forwardRef<View, VideoCardMobileProps>(
             {/* 评分 */}
             {rate && (
               <View style={styles.ratingContainer}>
-                <Star size={10} color="#FFD700" fill="#FFD700" />
+                <Star size={10} color="#E3B26B" fill="#E3B26B" />
                 <Text style={styles.ratingText}>{rate}</Text>
               </View>
             )}
@@ -165,7 +165,7 @@ const VideoCardMobile = forwardRef<View, VideoCardMobileProps>(
           <View style={styles.infoContainer}>
             <ThemedText numberOfLines={2} style={styles.title}>{title}</ThemedText>
             {reason ? (
-              <ThemedText numberOfLines={2} style={{ fontSize: 11, lineHeight: 15, color: "#8fb8ff", marginTop: 2 }}>
+              <ThemedText numberOfLines={2} style={{ fontSize: 11, lineHeight: 15, color: "#8CE8BC", marginTop: 2 }}>
                 {reason}
               </ThemedText>
             ) : null}
@@ -195,8 +195,8 @@ const createMobileStyles = (cardWidth: number, cardHeight: number, spacing: numb
     card: {
       width: cardWidth,
       height: cardHeight,
-      borderRadius: 8,
-      backgroundColor: "#222",
+      borderRadius: 14,
+      backgroundColor: "#1B1F33",
       overflow: "hidden",
     },
     poster: {
@@ -222,13 +222,13 @@ const createMobileStyles = (cardWidth: number, cardHeight: number, spacing: numb
       left: 6,
       flexDirection: 'row',
       alignItems: 'center',
-      backgroundColor: Colors.dark.primary,
+      backgroundColor: "#E3B26B",
       paddingHorizontal: 6,
       paddingVertical: 3,
       borderRadius: 4,
     },
     continueWatchingText: {
-      color: "white",
+      color: "#1A1206",
       marginLeft: 3,
       fontSize: 10,
       fontWeight: "bold",
@@ -245,7 +245,7 @@ const createMobileStyles = (cardWidth: number, cardHeight: number, spacing: numb
       paddingVertical: 2,
     },
     ratingText: {
-      color: "#FFD700",
+      color: "#E3B26B",
       fontSize: 10,
       fontWeight: "bold",
       marginLeft: 2,
@@ -272,7 +272,7 @@ const createMobileStyles = (cardWidth: number, cardHeight: number, spacing: numb
       position: "absolute",
       bottom: 6,
       left: 6,
-      backgroundColor: Colors.dark.primary,
+      backgroundColor: "rgba(31, 122, 85, 0.94)",
       borderRadius: 4,
       paddingHorizontal: 5,
       paddingVertical: 2,

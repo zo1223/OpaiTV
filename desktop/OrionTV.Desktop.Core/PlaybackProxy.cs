@@ -158,6 +158,17 @@ public sealed record PlaybackProxyDecision
 
         return [$":http-proxy={ProxyUri.GetLeftPart(UriPartial.Authority)}"];
     }
+
+    /// <summary>
+    /// 同上，但参考直连优先分流的线路记忆：这个站点已经记为“直连能通”时不追加代理选项，不花代理流量。
+    /// 没记过或记为代理的站点保持原样（强制代理时追加）：播放内核自己联网，没法先直连再换路，
+    /// 所以只在确知直连能通时才省掉代理。
+    /// </summary>
+    public IReadOnlyList<string> LibVlcOptionsFor(Uri mediaUri, RouteMemory? routes)
+    {
+        var options = LibVlcOptionsFor(mediaUri);
+        return options.Count > 0 && routes?.Peek(mediaUri) == NetworkRoute.Direct ? [] : options;
+    }
 }
 
 /// <summary>
@@ -173,6 +184,18 @@ public static class PlaybackProxyRuntime
     {
         get => Volatile.Read(ref _current);
         set => Volatile.Write(ref _current, value ?? (static () => PlaybackProxyDecision.FollowSystem));
+    }
+
+    private static RouteMemory _routes = new();
+
+    /// <summary>
+    /// 直连优先分流的线路记忆（每个站点上次走通的是直连还是代理）。应用启动时由 AppServices 换成落盘到本机的那一份；
+    /// 没接线时是一份只在内存里的空记忆。
+    /// </summary>
+    public static RouteMemory Routes
+    {
+        get => Volatile.Read(ref _routes);
+        set => Volatile.Write(ref _routes, value ?? new RouteMemory());
     }
 }
 

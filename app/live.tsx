@@ -8,7 +8,8 @@ import { probeChannels, labelOf, healthColor, ChannelHealthResult } from "@/serv
 import { ThemedView } from "@/components/ThemedView";
 import { StyledButton } from "@/components/StyledButton";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { normalizePlaybackProxySettings, PlaybackProxySettings, resolvePlaybackUrl } from "@/services/playbackProxy";
+import { normalizePlaybackProxySettings, PlaybackProxySettings } from "@/services/playbackProxy";
+import { resolveSmartPlaybackUrl } from "@/services/smartRoute";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
@@ -136,9 +137,13 @@ export default function LiveScreen() {
   // 播放代理模式在选台(开始一次播放)时读取:设置页切换后,下次选台 / 进入直播页才生效
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const liveProxy = useMemo(() => readPlaybackProxySettings(), [selectedChannelOriginalUrl, reloadToken]);
-  const selectedChannelUrl = selectedChannelOriginalUrl
-    ? resolvePlaybackUrl(selectedChannelOriginalUrl, liveProxy)
-    : null;
+  // 直连优先:该台的主机最近记成“直连可用”就按原地址播,否则(走中转 / 没有记忆)与原来一样走中转。
+  // 与代理模式一样只在选台时定一次:播放中路由记忆变了(例如后台测速)不能让正在播的地址跟着变
+  const selectedChannelUrl = useMemo(
+    () => (selectedChannelOriginalUrl ? resolveSmartPlaybackUrl(selectedChannelOriginalUrl, liveProxy) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedChannelOriginalUrl, reloadToken]
+  );
 
   useEffect(() => {
     // 设置页每次按键都会更新 m3uUrl;旧地址的请求晚返回时不能覆盖新地址的频道列表
@@ -232,7 +237,7 @@ export default function LiveScreen() {
         ? { text: "缓冲中", color: "#e5484d" }
         : realtime.stalls > 0 && realtime.aheadSec < 1
           ? { text: "卡顿", color: "#e6a700" }
-          : { text: "流畅", color: "#00bb5e" }
+          : { text: "流畅", color: "#6FDCA8" }
       : null;
 
     const scanValues = Object.values(health);

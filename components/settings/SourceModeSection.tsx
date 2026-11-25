@@ -79,7 +79,7 @@ const styles = StyleSheet.create({
   },
   hint: {
     fontSize: 13,
-    color: "#888",
+    color: "#9AA1B8",
     marginBottom: 8,
   },
   row: {
@@ -94,7 +94,7 @@ const styles = StyleSheet.create({
   },
   status: {
     fontSize: 12,
-    color: "#888",
+    color: "#9AA1B8",
   },
   modes: {
     flexDirection: "row",

@@ -37,7 +37,7 @@ export const StyledButton = forwardRef<View, StyledButtonProps>(
           borderColor: colors.primary,
         },
         selectedText: {
-          color: Colors.dark.text,
+          color: "#06140E",
         },
       }),
       primary: StyleSheet.create({
@@ -48,14 +48,14 @@ export const StyledButton = forwardRef<View, StyledButtonProps>(
           color: colors.text,
         },
         focusedButton: {
-          backgroundColor: colors.primary,
+          backgroundColor: colors.link,
           borderColor: colors.background,
         },
         selectedButton: {
           backgroundColor: colors.primary,
         },
         selectedText: {
-          color: colors.link,
+          color: "#06140E",
         },
       }),
       ghost: StyleSheet.create({
@@ -78,7 +78,7 @@ export const StyledButton = forwardRef<View, StyledButtonProps>(
       button: {
         paddingHorizontal: 16,
         paddingVertical: 10,
-        borderRadius: 8,
+        borderRadius: 14,
         borderWidth: 2,
         borderColor: "transparent",
         flexDirection: "row",

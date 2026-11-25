@@ -20,10 +20,10 @@ public partial class LiveView : UserControl, INavigationAware, INavigationVisibi
 
     private readonly IAppHost _host;
 
-    private static readonly Brush VerdictGoodBrush = Freeze("#00A862");
+    private static readonly Brush VerdictGoodBrush = Freeze("#6FDCA8");
     private static readonly Brush VerdictFairBrush = Freeze("#E6A700");
     private static readonly Brush VerdictBadBrush = Freeze("#E5484D");
-    private static readonly Brush TranslationActiveBrush = Freeze("#48D597");
+    private static readonly Brush TranslationActiveBrush = Freeze("#8CE8BC");
     private static readonly Brush TranslationErrorBrush = Freeze("#FF6B6B");
     private static readonly Brush TranslationInactiveBrush = Freeze("#F5F5F5");
 

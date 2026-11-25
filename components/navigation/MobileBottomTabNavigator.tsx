@@ -62,7 +62,7 @@ const MobileBottomTabNavigator: React.FC = () => {
           >
             <IconComponent
               size={20}
-              color={isActive ? Colors.dark.primary : '#888'}
+              color={isActive ? Colors.dark.primary : '#9AA1B8'}
               strokeWidth={isActive ? 2.5 : 2}
             />
             <Text style={[
@@ -84,9 +84,9 @@ const createStyles = (spacing: number) => {
   return StyleSheet.create({
     container: {
       flexDirection: 'row',
-      backgroundColor: '#1c1c1e',
+      backgroundColor: '#151828',
       borderTopWidth: 1,
-      borderTopColor: '#333',
+      borderTopColor: '#2A2F47',
       paddingTop: spacing / 2,
       paddingBottom: Platform.OS === 'ios' ? spacing * 2 : spacing,
       paddingHorizontal: spacing,
@@ -108,11 +108,11 @@ const createStyles = (spacing: number) => {
       borderRadius: 8,
     },
     activeTab: {
-      backgroundColor: 'rgba(64, 156, 255, 0.1)',
+      backgroundColor: 'rgba(111, 220, 168, 0.1)',
     },
     tabLabel: {
       fontSize: 11,
-      color: '#888',
+      color: '#9AA1B8',
       marginTop: 2,
       fontWeight: '500',
     },

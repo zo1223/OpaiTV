@@ -8,8 +8,11 @@ import { PlayerControls } from "@/components/PlayerControls";
 import { EpisodeSelectionModal } from "@/components/EpisodeSelectionModal";
 import { SourceSelectionModal } from "@/components/SourceSelectionModal";
 import { SpeedSelectionModal } from "@/components/SpeedSelectionModal";
+import { CastModal } from "@/components/CastModal";
+import { CastOverlay } from "@/components/CastOverlay";
 import { SeekingBar } from "@/components/SeekingBar";
 import { DanmakuOverlay } from "@/components/DanmakuOverlay";
+import { DanmakuToggle } from "@/components/DanmakuToggle";
 // import { NextEpisodeOverlay } from "@/components/NextEpisodeOverlay";
 import VideoLoadingAnimation from "@/components/VideoLoadingAnimation";
 import useDetailStore from "@/stores/detailStore";
@@ -19,6 +22,7 @@ import usePlayerStore, { selectCurrentEpisode } from "@/stores/playerStore";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { useVideoHandlers } from "@/hooks/useVideoHandlers";
 import { useMiniPlayerHandoff } from "@/hooks/useMiniPlayerHandoff";
+import { useCastLifecycle } from "@/hooks/useCastPlayback";
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('PlayScreen');
@@ -136,6 +140,9 @@ export default function PlayScreen() {
   // 迷你播放条交接:进入播放页时收掉迷你条,离开时把正在播的视频交给它。
   // 必须放在下面调用 reset() 的 effect 之前(卸载时清理函数按声明顺序执行,取快照要早于 reset)
   useMiniPlayerHandoff(deviceType);
+
+  // DLNA 投屏:离开播放页或本机换集 / 换源时结束投屏会话。投屏中本机是暂停的,所以上面的迷你条交接不会触发。
+  useCastLifecycle();
 
   useEffect(() => {
     const perfStart = performance.now();
@@ -256,6 +263,12 @@ export default function PlayScreen() {
       <EpisodeSelectionModal />
       <SourceSelectionModal />
       <SpeedSelectionModal />
+
+      {/* DLNA 投屏只给手机 / 平板:TV 端不显示入口(Apple TV 构建也不带 UDP 原生模块) */}
+      {/* 弹幕开关:手机 / 平板常驻在投屏入口下方;投屏中被投屏遮罩盖住(zIndex 更低) */}
+      {deviceType !== "tv" && currentEpisode?.url ? <DanmakuToggle /> : null}
+      {deviceType !== "tv" ? <CastOverlay /> : null}
+      {deviceType !== "tv" ? <CastModal /> : null}
     </ThemedView>
   );
 }

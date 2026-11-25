@@ -41,7 +41,7 @@ const ResponsiveHeader: React.FC<ResponsiveHeaderProps> = ({
 
   return (
     <>
-      {Platform.OS === 'android' && <StatusBar backgroundColor="#1c1c1e" barStyle="light-content" />}
+      {Platform.OS === 'android' && <StatusBar backgroundColor="#0A0B14" barStyle="light-content" />}
       <View style={dynamicStyles.container}>
         <View style={dynamicStyles.content}>
           {/* 左侧区域 */}
@@ -81,10 +81,10 @@ const createStyles = (spacing: number, deviceType: string, insets: any) => {
   
   return StyleSheet.create({
     container: {
-      backgroundColor: '#1c1c1e',
+      backgroundColor: '#0A0B14',
       paddingTop: insets.top,
       borderBottomWidth: 1,
-      borderBottomColor: '#333',
+      borderBottomColor: 'rgba(255,255,255,0.06)',
       shadowColor: '#000',
       shadowOffset: {
         width: 0,

@@ -70,7 +70,7 @@ const styles = StyleSheet.create({
   },
   status: {
     fontSize: 13,
-    color: "#888",
+    color: "#9AA1B8",
     marginBottom: 8,
   },
   inputRow: {
@@ -81,7 +81,7 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 44,
     borderWidth: 1,
-    borderColor: "#444",
+    borderColor: "#2A2F47",
     borderRadius: 8,
     paddingHorizontal: 12,
     color: "#fff",
@@ -98,7 +98,7 @@ const styles = StyleSheet.create({
   },
   hint: {
     fontSize: 12,
-    color: "#888",
+    color: "#9AA1B8",
     marginTop: 8,
   },
 });

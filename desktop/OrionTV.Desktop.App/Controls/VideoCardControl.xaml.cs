@@ -99,7 +99,7 @@ public partial class VideoCardControl : UserControl
         if (!string.IsNullOrWhiteSpace(item.Rate))
         {
             MetaText.Text = $"★ {item.Rate}";
-            MetaText.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xD7, 0x00));
+            MetaText.Foreground = new SolidColorBrush(Color.FromRgb(0xE3, 0xB2, 0x6B));
             MetaBadge.Visibility = Visibility.Visible;
         }
         else if (!string.IsNullOrWhiteSpace(item.Year))

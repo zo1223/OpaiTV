@@ -98,8 +98,8 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       color: 'white',
     },
     inputContainer: {
-      backgroundColor: '#2c2c2e',
-      borderRadius: isMobile ? 8 : isTablet ? 10 : 12,
+      backgroundColor: '#1F2338',
+      borderRadius: 14,
       borderWidth: 2,
       borderColor: 'transparent',
       minHeight: isMobile ? minTouchTarget : isTablet ? 48 : 44,

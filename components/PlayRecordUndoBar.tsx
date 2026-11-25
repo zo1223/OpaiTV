@@ -59,7 +59,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     maxWidth: 520,
-    backgroundColor: "#2c2c2e",
+    backgroundColor: "#1F2338",
     borderRadius: 10,
     paddingLeft: 16,
     paddingRight: 6,
@@ -88,7 +88,7 @@ const styles = StyleSheet.create({
     borderColor: "#fff",
   },
   buttonText: {
-    color: "#4da3ff",
+    color: "#6FDCA8",
     fontSize: 14,
     fontWeight: "600",
   },

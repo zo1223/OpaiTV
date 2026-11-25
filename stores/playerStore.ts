@@ -8,7 +8,8 @@ import { getItemCategoryNames } from "@/services/adultCategoryFilter";
 import { useSettingsStore } from "@/stores/settingsStore";
 import useDetailStore, { episodesSelectorBySource } from "./detailStore";
 import { getSearchResultSourceKey } from "@/services/videoSourceSubscription";
-import { normalizePlaybackProxySettings, PlaybackProxySettings, resolvePlaybackUrl } from "@/services/playbackProxy";
+import { normalizePlaybackProxySettings, PlaybackProxySettings } from "@/services/playbackProxy";
+import { primePlaybackRoute, resolveSmartPlaybackUrl } from "@/services/smartRoute";
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('PlayerStore');
@@ -255,6 +256,11 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     
     logger.info(`[SUCCESS] Final validation passed - detail: ${detail.source_name}, episodes: ${episodes.length}`);
 
+    // 直连优先(仅强制代理模式会发请求):原生播放器自己联网、失败时不会换路,
+    // 所以起播前先把当前集所在主机的路探出来并记住;已有新鲜记忆时不发请求,探测失败不影响起播
+    await primePlaybackRoute(episodes[episodeIndex] || "", playbackProxy);
+    if (isStale()) return;
+
     try {
       const storageStart = performance.now();
       logger.info(`[PERF] Storage operations START`);
@@ -271,14 +277,14 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       const initialPositionFromRecord = playRecord?.play_time ? playRecord.play_time * 1000 : 0;
       const savedPlaybackRate = playerSettings?.playbackRate || 1.0;
       const adRanges = useSettingsStore.getState().autoSkipAdsEnabled
-        ? await getAdRangesFromM3U8(resolvePlaybackUrl(episodes[episodeIndex] || "", playbackProxy))
+        ? await getAdRangesFromM3U8(resolveSmartPlaybackUrl(episodes[episodeIndex] || "", playbackProxy))
         : [];
       
       if (isStale()) return;
 
       const episodesMappingStart = performance.now();
       const mappedEpisodes = episodes.map((ep, index) => ({
-        url: resolvePlaybackUrl(ep, playbackProxy),
+        url: resolveSmartPlaybackUrl(ep, playbackProxy),
         title: `第 ${index + 1} 集`,
       }));
       const episodesMappingEnd = performance.now();
@@ -302,11 +308,11 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     } catch (error) {
       logger.debug("Failed to load play record", error);
       const adRanges = useSettingsStore.getState().autoSkipAdsEnabled
-        ? await getAdRangesFromM3U8(resolvePlaybackUrl(episodes[episodeIndex] || "", playbackProxy))
+        ? await getAdRangesFromM3U8(resolveSmartPlaybackUrl(episodes[episodeIndex] || "", playbackProxy))
         : [];
       if (isStale()) return;
       const mappedEpisodes = episodes.map((ep, index) => ({
-        url: resolvePlaybackUrl(ep, playbackProxy),
+        url: resolveSmartPlaybackUrl(ep, playbackProxy),
         title: `Episode ${index + 1}`,
       }));
 
@@ -693,8 +699,11 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       if (newEpisodes.length > currentEpisodeIndex) {
         // 同一次播放里换源,沿用开始播放时的代理设置
         const playbackProxy = get()._playbackProxy;
+        // 直连优先:新源的主机还没有记忆时先探一次路(强制代理以外的模式不发请求)
+        await primePlaybackRoute(newEpisodes[currentEpisodeIndex] || "", playbackProxy);
+        if (isStale()) return;
         const mappedEpisodes = newEpisodes.map((ep, index) => ({
-          url: resolvePlaybackUrl(ep, playbackProxy),
+          url: resolveSmartPlaybackUrl(ep, playbackProxy),
           title: `第 ${index + 1} 集`,
         }));
         

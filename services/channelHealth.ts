@@ -1,4 +1,5 @@
 import Logger from '@/utils/Logger';
+import { smartFetch } from '@/services/smartRoute';
 
 const logger = Logger.withTag('ChannelHealth');
 
@@ -254,7 +255,7 @@ const measureSegment = async (
   const { signal, cleanup } = linkedSignal(SEGMENT_TIMEOUT_MS, external);
   try {
     const start = Date.now();
-    const response = await fetch(url, {
+    const response = await smartFetch(url, {
       signal,
       headers: { 'User-Agent': ANDROID_UA, Range: `bytes=0-${MAX_PROBE_BYTES - 1}` },
     });
@@ -313,7 +314,7 @@ const probeHls = async (
 
     const { signal, cleanup } = linkedSignal(PROBE_TIMEOUT_MS, external);
     try {
-      const response = await fetch(mediaUrl, { signal, headers: { 'User-Agent': ANDROID_UA } });
+      const response = await smartFetch(mediaUrl, { signal, headers: { 'User-Agent': ANDROID_UA } });
       if (!response.ok) {
         return evaluateChannelHealth({ reachable: true, ttfbMs, throughputBps: 0, requiredBps: declaredBps, resolution });
       }
@@ -357,7 +358,7 @@ export const probeChannel = async (url: string, external?: AbortSignal): Promise
   const { signal, cleanup } = linkedSignal(PROBE_TIMEOUT_MS, external);
   try {
     const start = Date.now();
-    const response = await fetch(url, { signal, headers: { 'User-Agent': ANDROID_UA } });
+    const response = await smartFetch(url, { signal, headers: { 'User-Agent': ANDROID_UA } });
     const ttfbMs = Date.now() - start;
 
     if (!response.ok) {

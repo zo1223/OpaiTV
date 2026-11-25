@@ -25,6 +25,12 @@ jest.mock("expo-av", () => {
 });
 
 jest.mock("expo-keep-awake", () => ({ useKeepAwake: jest.fn() }));
+// 详情页的“相关推荐”会读本机候选池(AsyncStorage);这里是 TV 布局,不渲染那一块,只需要模块能加载
+jest.mock("@react-native-async-storage/async-storage", () => ({
+  getItem: jest.fn(async () => null),
+  setItem: jest.fn(),
+  removeItem: jest.fn(),
+}));
 jest.mock("react-native-toast-message", () => ({ show: jest.fn() }));
 jest.mock("@expo/vector-icons", () => ({ FontAwesome: () => null }));
 

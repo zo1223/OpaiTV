@@ -99,7 +99,7 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
               value={m3uUrl}
               onChangeText={handleUrlChange}
               placeholder="输入 M3U 直播源地址"
-              placeholderTextColor="#888"
+              placeholderTextColor="#9AA1B8"
               autoCapitalize="none"
               autoCorrect={false}
               onFocus={() => {
@@ -142,7 +142,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: 12,
-    color: "#888",
+    color: "#9AA1B8",
     fontStyle: "italic",
   },
   inputContainer: {
@@ -154,7 +154,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 15,
     fontSize: 16,
-    backgroundColor: "#3a3a3c",
+    backgroundColor: "#2A3048",
     color: "white",
     borderColor: "transparent",
   },

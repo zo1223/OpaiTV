@@ -19,7 +19,7 @@ interface PlaybackProxySectionProps {
 
 const INVALID_ADDRESS_MESSAGE = "地址无效:需要以 http:// 或 https:// 开头的中转地址";
 
-// 播放代理模式:系统代理 / 强制代理 / 直连。切换立即保存,下次播放生效(正在播放的视频不受影响)
+// 播放代理模式:系统代理 / 强制代理(直连优先,不通才走中转)/ 直连。切换立即保存,下次播放生效(正在播放的视频不受影响)
 export const PlaybackProxySection: React.FC<PlaybackProxySectionProps> = ({ onFocus }) => {
   const { playbackProxyMode, playbackProxyUrl, setPlaybackProxyMode, setPlaybackProxyUrl } = useSettingsStore();
   const [address, setAddress] = useState(playbackProxyUrl);
@@ -98,8 +98,14 @@ export const PlaybackProxySection: React.FC<PlaybackProxySectionProps> = ({ onFo
       </View>
       {message ? <ThemedText style={styles.message}>{message}</ThemedText> : null}
       <ThemedText style={styles.hint}>
-        强制代理需要中转式地址(例如 https://relay.example/?url= 或带 {"{url}"} 占位符),不支持 host:port 形式的
-        HTTP/SOCKS 代理;直连=不使用上面的代理地址,系统层的代理或 VPN 由系统控制。切换后下次播放生效。
+        强制代理 = 直连优先:搜索、可播性检测、广告识别和播放都先直连(约 5 秒内没有应答就换路),直连不通才走中转,
+        中转流量只花在直连不通的源上。每个源走通的路会记在本机(不上传):上次直连通的下次直接直连,
+        上次走中转才通的下次先走中转,约 1 小时后或失败时重新试一次直连。
+      </ThemedText>
+      <ThemedText style={styles.hint}>
+        直连 = 只直连,不使用上面的代理地址,直连不通也不兜底;系统代理 = 应用不分流,走不走代理由系统的代理或 VPN 决定。
+        中转需要中转式地址(例如 https://relay.example/?url= 或带 {"{url}"} 占位符),不支持 host:port 形式的
+        HTTP/SOCKS 代理。切换后下次搜索 / 播放生效。
       </ThemedText>
     </SettingsSection>
   );
@@ -113,7 +119,7 @@ const styles = StyleSheet.create({
   },
   status: {
     fontSize: 13,
-    color: "#888",
+    color: "#9AA1B8",
     marginBottom: 8,
   },
   modes: {
@@ -132,7 +138,7 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 44,
     borderWidth: 1,
-    borderColor: "#444",
+    borderColor: "#2A2F47",
     borderRadius: 8,
     paddingHorizontal: 12,
     color: "#fff",
@@ -148,7 +154,7 @@ const styles = StyleSheet.create({
   },
   hint: {
     fontSize: 12,
-    color: "#888",
+    color: "#9AA1B8",
     marginTop: 8,
   },
 });

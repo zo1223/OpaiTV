@@ -139,8 +139,8 @@ const ResponsiveVideoCard = forwardRef<View, VideoCardProps>(
       card: {
         width: cardWidth,
         height: cardHeight,
-        borderRadius: responsiveConfig.deviceType === 'mobile' ? 8 : responsiveConfig.deviceType === 'tablet' ? 10 : 8,
-        backgroundColor: "#222",
+        borderRadius: responsiveConfig.deviceType === 'tablet' ? 16 : 14,
+        backgroundColor: "#1B1F33",
         overflow: "hidden",
       },
       infoContainer: {
@@ -155,20 +155,20 @@ const ResponsiveVideoCard = forwardRef<View, VideoCardProps>(
         backgroundColor: "rgba(0,0,0,0.3)",
         borderColor: Colors.dark.primary,
         borderWidth: responsiveConfig.deviceType === 'tv' ? 2 : 0,
-        borderRadius: responsiveConfig.deviceType === 'mobile' ? 8 : responsiveConfig.deviceType === 'tablet' ? 10 : 8,
+        borderRadius: responsiveConfig.deviceType === 'tablet' ? 16 : 14,
         justifyContent: "center",
         alignItems: "center",
       },
       continueWatchingBadge: {
         flexDirection: "row",
         alignItems: "center",
-        backgroundColor: Colors.dark.primary,
+        backgroundColor: "#E3B26B",
         paddingHorizontal: responsiveConfig.deviceType === 'mobile' ? 8 : 10,
         paddingVertical: responsiveConfig.deviceType === 'mobile' ? 4 : 5,
         borderRadius: 5,
       },
       continueWatchingText: {
-        color: "white",
+        color: "#1A1206",
         marginLeft: 5,
         fontSize: responsiveConfig.deviceType === 'mobile' ? 10 : 12,
         fontWeight: "bold",
@@ -193,7 +193,7 @@ const ResponsiveVideoCard = forwardRef<View, VideoCardProps>(
               <View style={dynamicStyles.overlay}>
                 {isContinueWatching && (
                   <View style={dynamicStyles.continueWatchingBadge}>
-                    <Play size={responsiveConfig.deviceType === 'tv' ? 16 : 12} color="#ffffff" fill="#ffffff" />
+                    <Play size={responsiveConfig.deviceType === 'tv' ? 16 : 12} color="#1A1206" fill="#1A1206" />
                     <ThemedText style={dynamicStyles.continueWatchingText}>继续观看</ThemedText>
                   </View>
                 )}
@@ -212,7 +212,7 @@ const ResponsiveVideoCard = forwardRef<View, VideoCardProps>(
                 top: responsiveConfig.spacing / 2,
                 right: responsiveConfig.spacing / 2 
               }]}>
-                <Star size={responsiveConfig.deviceType === 'mobile' ? 10 : 12} color="#FFD700" fill="#FFD700" />
+                <Star size={responsiveConfig.deviceType === 'mobile' ? 10 : 12} color="#E3B26B" fill="#E3B26B" />
                 <ThemedText style={[styles.ratingText, { 
                   fontSize: responsiveConfig.deviceType === 'mobile' ? 10 : 12 
                 }]}>{rate}</ThemedText>
@@ -302,7 +302,7 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
   },
   ratingText: {
-    color: "#FFD700",
+    color: "#E3B26B",
     fontWeight: "bold",
     marginLeft: 4,
   },

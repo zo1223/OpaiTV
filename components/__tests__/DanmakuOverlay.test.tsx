@@ -5,6 +5,8 @@ import { useDanmakuStore } from "@/stores/danmakuStore";
 import usePlayerStore from "@/stores/playerStore";
 import { danmakuService } from "@/services/danmaku";
 import { DEFAULT_DANMAKU_SETTINGS } from "@/services/danmaku/types";
+import Toast from "react-native-toast-message";
+import { DanmakuToggle } from "../DanmakuToggle";
 
 jest.mock("@/stores/playerStore", () => {
   const { create } = jest.requireActual("zustand");
@@ -29,8 +31,17 @@ jest.mock("@/services/storage", () => ({
 }));
 jest.mock("@/services/danmaku", () => ({
   ...jest.requireActual("@/services/danmaku"),
-  danmakuService: { resolve: jest.fn() },
+  danmakuService: {
+    resolve: jest.fn(),
+    // 组件用的是 resolveDetailed;测试里仍只控制 resolve 这一个假函数
+    resolveDetailed(this: any, ...args: any[]) {
+      return Promise.resolve().then(() => this.resolve(...args)).then((track: any) =>
+        track && track.outcome ? track : { track: track ?? null, outcome: track ? "found" : "notFound" }
+      );
+    },
+  },
 }));
+jest.mock("react-native-toast-message", () => ({ __esModule: true, default: { show: jest.fn() } }));
 
 const resolve = danmakuService.resolve as jest.Mock;
 const setStatus = (status: any) => (usePlayerStore as any).setState({ status });
@@ -169,6 +180,78 @@ describe("DanmakuOverlay", () => {
       jest.advanceTimersByTime(300);
     });
     expect(textsOf(tree)).toEqual([]);
+    act(() => tree.unmount());
+  });
+
+  it("匹配不到时提示“未找到该集弹幕”,来源访问失败时提示获取失败,不再静默", async () => {
+    const show = Toast.show as jest.Mock;
+    show.mockClear();
+    useDanmakuStore.setState({ settings: { ...DEFAULT_DANMAKU_SETTINGS, enabled: true }, isLoaded: true });
+    resolve.mockResolvedValue(null);
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<DanmakuOverlay />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(show).toHaveBeenCalledWith(expect.objectContaining({ text1: "未找到该集弹幕" }));
+    act(() => tree.unmount());
+
+    show.mockClear();
+    resolve.mockResolvedValue({ track: null, outcome: "failed" });
+    await act(async () => {
+      tree = renderer.create(<DanmakuOverlay />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(show).toHaveBeenCalledWith(expect.objectContaining({ text1: "弹幕获取失败，请检查网络后重试" }));
+    act(() => tree.unmount());
+  });
+
+  it("播放页弹幕开关:与设置同步,关掉立即卸载弹幕层,打开立即重新匹配", async () => {
+    const show = Toast.show as jest.Mock;
+    show.mockClear();
+    resolve.mockResolvedValue({ provider: "test", title: "", segmentSeconds: 0, loadSegment: async () => [] });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(
+        <>
+          <DanmakuOverlay />
+          <DanmakuToggle />
+        </>
+      );
+    });
+    const toggle = () => tree.root.findAll((node) => node.props?.testID === "danmaku-toggle" && node.props.onPress)[0];
+    const layers = () => tree.root.findAll((node) => node.props?.testID === "danmaku-layer");
+    expect(toggle().props.accessibilityState).toEqual({ checked: false });
+    expect(layers()).toHaveLength(0);
+    expect(resolve).not.toHaveBeenCalled();
+
+    await act(async () => {
+      toggle().props.onPress();
+    });
+    expect(useDanmakuStore.getState().settings.enabled).toBe(true);
+    expect(toggle().props.accessibilityState).toEqual({ checked: true });
+    expect(layers().length).toBeGreaterThan(0);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve.mock.calls[0][0]).toMatchObject({ title: "繁花", episodeIndex: 1, episodeNumber: 2 });
+    expect(show).toHaveBeenLastCalledWith(expect.objectContaining({ text1: "弹幕已开启" }));
+
+    await act(async () => {
+      toggle().props.onPress();
+    });
+    expect(useDanmakuStore.getState().settings.enabled).toBe(false);
+    expect(layers()).toHaveLength(0);
+    expect(show).toHaveBeenLastCalledWith(expect.objectContaining({ text1: "弹幕已关闭" }));
+
+    // 设置页改了开关,播放页按钮跟着变
+    await act(async () => {
+      await useDanmakuStore.getState().update({ enabled: true });
+    });
+    expect(toggle().props.accessibilityState).toEqual({ checked: true });
+    expect(resolve).toHaveBeenCalledTimes(2);
     act(() => tree.unmount());
   });
 });

@@ -73,7 +73,7 @@ export const VideoSourceSection: React.FC<VideoSourceSectionProps> = ({ onChange
           <Switch
             value={isEnabled}
             onValueChange={() => {}} // 禁用Switch的直接交互
-            trackColor={{ false: "#767577", true: "#007AFF" }}
+            trackColor={{ false: "#2A3048", true: "#6FDCA8" }}
             thumbColor={isEnabled ? "#ffffff" : "#f4f3f4"}
             pointerEvents="none"
           />
@@ -127,15 +127,15 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
     paddingVertical: 12,
     paddingHorizontal: 16,
-    backgroundColor: "#2a2a2a",
+    backgroundColor: "#1B1F33",
     borderRadius: 8,
     minHeight: 56,
   },
   resourceFocused: {
-    backgroundColor: "#3a3a3c",
+    backgroundColor: "#2A3048",
     borderWidth: 2,
-    borderColor: "#007AFF",
-    shadowColor: "#007AFF",
+    borderColor: "#6FDCA8",
+    shadowColor: "#6FDCA8",
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.8,
     shadowRadius: 10,

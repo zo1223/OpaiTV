@@ -155,7 +155,7 @@ const styles = StyleSheet.create({
   },
   description: {
     fontSize: 14,
-    color: "#ccc",
+    color: "#C5CADB",
     textAlign: "center",
     marginBottom: 12,
   },
@@ -172,12 +172,12 @@ const styles = StyleSheet.create({
   },
   link: {
     fontSize: 12,
-    color: "#888",
+    color: "#9AA1B8",
     marginTop: 12,
   },
   hint: {
     fontSize: 12,
-    color: "#888",
+    color: "#9AA1B8",
     marginTop: 4,
   },
   notice: {

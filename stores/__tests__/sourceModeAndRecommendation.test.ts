@@ -1,4 +1,5 @@
 import useHomeStore, { computeLocalRecommendations } from "../homeStore";
+import { loadVisibleRecommendationCandidates } from "@/services/relatedCandidates";
 import { useSettingsStore } from "../settingsStore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { api } from "@/services/api";
@@ -114,6 +115,33 @@ describe("source mode and recommendation settings", () => {
       // 关闭的片源不出现在首页推荐里
       api.setSourceModes({ beta: "off" });
       expect((await computeLocalRecommendations()).map((item) => item.title)).toEqual(["三体 第二季", "繁花"]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("hands the detail page only the visible part of the local pool, without any request", async () => {
+    const fetchSpy = jest.spyOn(global, "fetch").mockImplementation(() => {
+      throw new Error("related items must not use the network");
+    });
+    try {
+      await rememberRecommendationCandidates([
+        { id: "2", source: "alpha", title: "三体 第二季", poster: "p2.jpg", type_name: "科幻" },
+        { id: "3", source: "beta", title: "流浪地球", poster: "p3.jpg", type_name: "科幻片" },
+        { id: "5", source: "alpha", title: "成人条目", poster: "p5.jpg", type_name: "伦理片" },
+      ]);
+      const titles = async () => (await loadVisibleRecommendationCandidates()).map((item) => item.title);
+
+      // 18+ 开关关着:成人分类的条目不给详情页
+      expect(await titles()).toEqual(["三体 第二季", "流浪地球"]);
+      // 模式为“关闭”的片源同样不给
+      api.setSourceModes({ beta: "off" });
+      expect(await titles()).toEqual(["三体 第二季"]);
+      // 开关打开后按开关放行(过滤规则本身在 api 里,这里只是照用)
+      api.setSourceModes({});
+      api.setShowAdultContent(true);
+      expect(await titles()).toEqual(["三体 第二季", "流浪地球", "成人条目"]);
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();

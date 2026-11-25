@@ -2,9 +2,10 @@
 //
 // 手机端的播放器是原生的(expo-av → ExoPlayer / AVPlayer),JS 层既不能给它指定 host:port
 // 形式的正向代理,也不能让它绕过系统层的代理或 VPN。所以手机端三档的实际含义是:
-//  - system:按原地址播放,走不走代理由系统网络设置决定(默认)
-//  - forced:把播放地址改写成经过用户填写的“中转地址”(URL 前缀式代理)
-//  - direct:按原地址播放,且不使用应用内填写的代理地址
+//  - system:按原地址请求,走不走代理由系统网络设置决定(默认);应用不做分流
+//  - forced:直连优先,直连不通的源才改走用户填写的“中转地址”(URL 前缀式代理);
+//           分流与每个源的路由记忆在 services/smartRoute,搜索、探测、播放都按它走
+//  - direct:按原地址请求,不使用应用内填写的代理地址,也不兜底
 // 模式只在“开始一次播放”时读取,切换后下次播放生效(见 stores/playerStore)。
 
 export type PlaybackProxyMode = "system" | "forced" | "direct";
@@ -20,9 +21,9 @@ export const PLAYBACK_PROXY_MODE_LABELS: Record<PlaybackProxyMode, string> = {
 };
 
 export const PLAYBACK_PROXY_MODE_HINTS: Record<PlaybackProxyMode, string> = {
-  system: "按原地址播放,是否经过代理由系统网络设置决定",
-  forced: "播放地址经过下面填写的中转地址",
-  direct: "按原地址播放,不使用下面的代理地址",
+  system: "应用不分流,按原地址请求,是否经过代理由系统网络设置决定",
+  forced: "直连优先:能直连的源直接连,直连不通才走下面填写的中转地址,中转流量只花在直连不通的源上",
+  direct: "只直连:按原地址请求,不使用下面的代理地址,直连不通也不兜底",
 };
 
 export interface PlaybackProxySettings {

@@ -17,7 +17,7 @@
         <Border x:Name="CardBorder"
                 Width="138"
                 Height="210"
-                CornerRadius="8"
+                CornerRadius="18"
                 Background="{StaticResource PanelAltBrush}"
                 BorderBrush="Transparent"
                 BorderThickness="2"
@@ -33,7 +33,11 @@
                 </TransformGroup>
             </Border.RenderTransform>
             <Grid>
-                <Grid Background="#FF25292B">
+                <!-- 圆角裁剪：Border 的 ClipToBounds 只按矩形裁，海报四角要按内圆角裁掉（138x210 减去 2px 边框） -->
+                <Grid.Clip>
+                    <RectangleGeometry Rect="0,0,134,206" RadiusX="16" RadiusY="16" />
+                </Grid.Clip>
+                <Grid Background="#FF1B1F33">
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Opacity="0.7">
                         <TextBlock Text="&#xE8B2;"
                                    FontFamily="Segoe MDL2 Assets"
@@ -64,7 +68,7 @@
                         HorizontalAlignment="Left"
                         Margin="8"
                         Background="#B3000000"
-                        CornerRadius="6"
+                        CornerRadius="10"
                         Padding="6,3"
                         Visibility="Collapsed">
                     <TextBlock x:Name="SourceText" Foreground="White" FontSize="11" FontWeight="Bold" />
@@ -75,7 +79,7 @@
                         HorizontalAlignment="Right"
                         Margin="8"
                         Background="#B3000000"
-                        CornerRadius="6"
+                        CornerRadius="10"
                         Padding="6,3"
                         Visibility="Collapsed">
                     <TextBlock x:Name="MetaText" FontSize="11" FontWeight="Bold" Foreground="White" />
@@ -106,7 +110,7 @@
 
         <TextBlock x:Name="ContinueText"
                    Margin="2,2,2,0"
-                   Foreground="{StaticResource PrimaryBrush}"
+                   Foreground="{StaticResource GoldBrush}"
                    FontSize="12"
                    Visibility="Collapsed"
                    TextTrimming="CharacterEllipsis" />

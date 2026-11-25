@@ -24,7 +24,7 @@ export interface DanmakuSectionRef {
 }
 
 // 弹幕设置。开关默认关闭;每一项改动都立即生效并保存(见 stores/danmakuStore),不需要再点"保存设置"。
-// 服务器地址留空时使用内置来源(直连腾讯视频、哔哩哔哩的公开接口),不需要用户部署任何服务。
+// 服务器地址留空时使用内置来源(直连腾讯视频、哔哩哔哩、爱奇艺、优酷、芒果TV、咪咕视频的公开接口),不需要用户部署任何服务。
 export const DanmakuSection = forwardRef<DanmakuSectionRef, DanmakuSectionProps>(({ onFocus }, ref) => {
   const settings = useDanmakuStore((state) => state.settings);
   const update = useDanmakuStore((state) => state.update);
@@ -108,7 +108,7 @@ export const DanmakuSection = forwardRef<DanmakuSectionRef, DanmakuSectionProps>
         <Switch
           value={settings.enabled}
           onValueChange={handleToggle}
-          trackColor={{ false: "#767577", true: Colors.dark.primary }}
+          trackColor={{ false: "#2A3048", true: Colors.dark.primary }}
           thumbColor={settings.enabled ? "#ffffff" : "#f4f3f4"}
           pointerEvents={Platform.isTV ? "none" : "auto"}
         />
@@ -173,7 +173,7 @@ export const DanmakuSection = forwardRef<DanmakuSectionRef, DanmakuSectionProps>
                 setUrlError(false);
               }}
               placeholder="留空即可;高级用户可填自己的 danmu_api 地址,如 http://192.168.1.7:9321"
-              placeholderTextColor="#888"
+              placeholderTextColor="#9AA1B8"
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="url"
@@ -191,7 +191,7 @@ export const DanmakuSection = forwardRef<DanmakuSectionRef, DanmakuSectionProps>
               ? "地址无效,请填写 http(s) 地址;留空则使用内置来源"
               : settings.serverUrl
                 ? "优先使用这个服务器;它匹配不到或访问失败时自动改用内置来源"
-                : "当前使用内置来源(腾讯视频、哔哩哔哩的公开弹幕),不需要任何配置"}
+                : "当前使用内置来源(腾讯视频、哔哩哔哩、爱奇艺、优酷、芒果TV、咪咕视频的公开弹幕),不需要任何配置"}
           </ThemedText>
         </>
       )}
@@ -210,7 +210,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   rowFocused: {
-    backgroundColor: "#007AFF10",
+    backgroundColor: "#6FDCA810",
   },
   info: {
     flex: 1,
@@ -223,7 +223,7 @@ const styles = StyleSheet.create({
   },
   status: {
     fontSize: 13,
-    color: "#888",
+    color: "#9AA1B8",
   },
   statusOn: {
     color: Colors.dark.primary,
@@ -245,7 +245,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 15,
     fontSize: 16,
-    backgroundColor: "#3a3a3c",
+    backgroundColor: "#2A3048",
     color: "white",
     borderColor: "transparent",
   },
@@ -254,7 +254,7 @@ const styles = StyleSheet.create({
   },
   hint: {
     fontSize: 12,
-    color: "#888",
+    color: "#9AA1B8",
     marginTop: 8,
   },
   hintError: {

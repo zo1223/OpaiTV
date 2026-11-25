@@ -149,7 +149,7 @@ const styles = StyleSheet.create({
     color: Colors.dark.text,
   },
   newVersion: {
-    color: Colors.dark.primary || "#00bb5e",
+    color: Colors.dark.primary || "#6FDCA8",
     fontWeight: "bold",
   },
   arrow: {
@@ -170,7 +170,7 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: "100%",
-    backgroundColor: Colors.dark.primary || "#00bb5e",
+    backgroundColor: Colors.dark.primary || "#6FDCA8",
   },
   progressText: {
     fontSize: Platform.isTV ? 16 : 14,

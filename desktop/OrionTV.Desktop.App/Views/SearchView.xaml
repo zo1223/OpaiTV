@@ -29,8 +29,8 @@
                    Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap" Visibility="Collapsed" />
 
         <!-- 搜索记录标签云：点词重搜，× 删除单条，右上角清空。只存本机。 -->
-        <Border x:Name="HistoryPanel" Grid.Row="3" Margin="14,10,14,0" Padding="14,10,14,4" CornerRadius="10"
-                Background="{StaticResource PanelBrush}" Visibility="Collapsed">
+        <Border x:Name="HistoryPanel" Grid.Row="3" Margin="14,10,14,0" Padding="14,10,14,4" CornerRadius="20"
+                Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource GlassBorderBrush}" BorderThickness="1" Visibility="Collapsed">
             <DockPanel>
                 <DockPanel DockPanel.Dock="Top" LastChildFill="False" Margin="0,0,0,8">
                     <TextBlock Text="搜索记录" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"

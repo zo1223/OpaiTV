@@ -26,6 +26,7 @@ import {
   normalizeProxyAddress,
   PlaybackProxyMode,
 } from "@/services/playbackProxy";
+import { configureSmartRoute } from "@/services/smartRoute";
 import { normalizeTmdbApiKey, TMDB_API_KEY_STORAGE_KEY } from "@/services/tmdb";
 
 const logger = Logger.withTag('SettingsStore');
@@ -324,3 +325,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   showModal: () => set({ isModalVisible: true }),
   hideModal: () => set({ isModalVisible: false }),
 }));
+
+// 直连优先分流(services/smartRoute):搜索、可播性探测、广告识别等请求每次现读当前的代理设置
+configureSmartRoute(() => {
+  const { playbackProxyMode, playbackProxyUrl } = useSettingsStore.getState();
+  return { mode: playbackProxyMode, proxyUrl: playbackProxyUrl };
+});

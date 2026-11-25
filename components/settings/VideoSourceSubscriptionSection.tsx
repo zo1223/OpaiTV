@@ -100,7 +100,7 @@ export const VideoSourceSubscriptionSection = forwardRef<
             value={videoSourceSubscriptionUrl}
             onChangeText={handleUrlChange}
             placeholder="输入 Base58 订阅链接或 JSON 订阅地址"
-            placeholderTextColor="#888"
+            placeholderTextColor="#9AA1B8"
             autoCapitalize="none"
             autoCorrect={false}
             onFocus={handleInputFocus}
@@ -129,7 +129,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: 12,
-    color: "#888",
+    color: "#9AA1B8",
     fontStyle: "italic",
   },
   inputContainer: {
@@ -141,7 +141,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 15,
     fontSize: 16,
-    backgroundColor: "#3a3a3c",
+    backgroundColor: "#2A3048",
     color: "white",
     borderColor: "transparent",
   },

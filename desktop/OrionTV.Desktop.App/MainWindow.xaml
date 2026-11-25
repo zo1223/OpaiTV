@@ -7,58 +7,123 @@
         mc:Ignorable="d"
         Title="OpaiTV" Height="820" Width="1280" MinHeight="680" MinWidth="1040"
         Background="{StaticResource AppBackgroundBrush}"
-        FontFamily="Microsoft YaHei UI">
+        FontFamily="{StaticResource AppFont}">
     <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition x:Name="SidebarColumn" Width="210" />
+            <ColumnDefinition x:Name="SidebarColumn" Width="222" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
-        <Border x:Name="Sidebar"
-                Grid.Column="0"
-                Background="{StaticResource PanelBrush}"
-                BorderBrush="{StaticResource BorderBrushDark}"
-                BorderThickness="0,0,1,0">
-            <DockPanel>
-                <Border DockPanel.Dock="Top"
-                        Height="64"
-                        BorderBrush="{StaticResource BorderBrushDark}"
-                        BorderThickness="0,0,0,1">
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0">
-                        <Border Width="30" Height="30" CornerRadius="8" Background="{StaticResource PrimaryBrush}">
-                            <TextBlock Text="&#xE768;"
-                                       FontFamily="Segoe MDL2 Assets"
-                                       FontSize="14"
-                                       Foreground="White"
-                                       HorizontalAlignment="Center"
-                                       VerticalAlignment="Center" />
-                        </Border>
+        <!-- 顶部标题栏（CineFlow 式）：侧栏开关 + 品牌 + 大搜索入口 + 操作按钮。全屏时隐藏。
+             这里的按钮都是已有入口的快捷方式（与侧栏项走同一个处理函数），不新增功能。 -->
+        <Border x:Name="TopBar" Grid.Row="0" Grid.ColumnSpan="2" Height="68">
+            <Border.Background>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                    <GradientStop Color="#1F6FDCA8" Offset="0" />
+                    <GradientStop Color="#000A0B14" Offset="0.38" />
+                    <GradientStop Color="#000A0B14" Offset="0.7" />
+                    <GradientStop Color="#14E3B26B" Offset="1" />
+                </LinearGradientBrush>
+            </Border.Background>
+            <Grid Margin="14,0,14,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="SidebarToggle"
+                            Style="{StaticResource IconButtonStyle}"
+                            Content="&#xE700;"
+                            Margin="0,0,8,0"
+                            ToolTip="收起 / 展开侧栏（展开 → 仅图标 → 隐藏）"
+                            Click="SidebarToggle_Click" />
+                    <Border Width="34" Height="34" CornerRadius="12">
+                        <Border.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                <GradientStop Color="#6FDCA8" Offset="0" />
+                                <GradientStop Color="#E3B26B" Offset="1" />
+                            </LinearGradientBrush>
+                        </Border.Background>
+                        <TextBlock Text="&#xE768;"
+                                   FontFamily="Segoe MDL2 Assets"
+                                   FontSize="15"
+                                   Foreground="{StaticResource OnPrimaryBrush}"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                    </Border>
+                    <StackPanel VerticalAlignment="Center" Margin="12,0,0,0">
                         <TextBlock Text="OpaiTV"
                                    Foreground="{StaticResource TextBrush}"
-                                   FontSize="19"
-                                   FontWeight="Bold"
-                                   VerticalAlignment="Center"
-                                   Margin="10,0,0,0" />
+                                   FontSize="18"
+                                   FontWeight="Bold" />
+                        <TextBlock Text="影视 · 直播 · 本地"
+                                   Foreground="{StaticResource MutedTextBrush}"
+                                   FontSize="11"
+                                   Margin="0,1,0,0" />
                     </StackPanel>
-                </Border>
+                </StackPanel>
 
+                <Button x:Name="TopSearchButton"
+                        Grid.Column="1"
+                        Style="{StaticResource TopSearchPillStyle}"
+                        Content="搜索电影、剧集…"
+                        MaxWidth="620"
+                        Margin="36,0,36,0"
+                        ToolTip="搜索"
+                        Click="TopSearch_Click" />
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="TopFavoritesButton" Style="{StaticResource IconButtonStyle}" Content="&#xEB51;" ToolTip="收藏" Click="TopFavorites_Click" />
+                    <Grid>
+                        <Button x:Name="TopSettingsButton" Style="{StaticResource IconButtonStyle}" Content="&#xE713;" ToolTip="设置" Click="TopSettings_Click" />
+                        <Ellipse x:Name="TopSettingsUpdateDot"
+                                 Width="8"
+                                 Height="8"
+                                 Fill="#FFFF3B30"
+                                 HorizontalAlignment="Right"
+                                 VerticalAlignment="Top"
+                                 Margin="0,9,9,0"
+                                 IsHitTestVisible="False"
+                                 ToolTip="有新版本可更新"
+                                 Visibility="Collapsed" />
+                    </Grid>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 侧栏：悬浮圆角面板，可在 展开 / 仅图标 / 隐藏 三态间切换（顶部栏左侧开关） -->
+        <Border x:Name="Sidebar"
+                Grid.Row="1"
+                Grid.Column="0"
+                Margin="12,4,0,12"
+                CornerRadius="24"
+                Background="{StaticResource PanelBrush}"
+                BorderBrush="{StaticResource GlassBorderBrush}"
+                BorderThickness="1">
+            <DockPanel>
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="0,8">
-                        <TextBlock Text="主要功能" Style="{StaticResource SectionHeaderStyle}" />
-                        <RadioButton x:Name="NavPlayer" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE768;" Content="正在播放" Visibility="Collapsed" Click="Nav_Click" />
-                        <RadioButton x:Name="NavHome" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE80F;" Content="首页" Click="Nav_Click" />
-                        <RadioButton x:Name="NavSearch" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE721;" Content="搜索" Click="Nav_Click" />
-                        <RadioButton x:Name="NavLive" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE714;" Content="直播" Click="Nav_Click" />
-                        <RadioButton x:Name="NavLocalVideo" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE8B7;" Content="本地视频" Click="Nav_Click" />
+                    <StackPanel Margin="0,12">
+                        <TextBlock x:Name="NavHeaderMain" Text="主要功能" Style="{StaticResource SectionHeaderStyle}" />
+                        <RadioButton x:Name="NavPlayer" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE768;" Content="正在播放" ToolTip="正在播放" Visibility="Collapsed" Click="Nav_Click" />
+                        <RadioButton x:Name="NavHome" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE80F;" Content="首页" ToolTip="首页" Click="Nav_Click" />
+                        <RadioButton x:Name="NavSearch" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE721;" Content="搜索" ToolTip="搜索" Click="Nav_Click" />
+                        <RadioButton x:Name="NavLive" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE714;" Content="直播" ToolTip="直播" Click="Nav_Click" />
+                        <RadioButton x:Name="NavLocalVideo" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE8B7;" Content="本地视频" ToolTip="本地视频" Click="Nav_Click" />
 
-                        <TextBlock Text="AI 工具" Style="{StaticResource SectionHeaderStyle}" Margin="14,16,0,6" />
-                        <RadioButton x:Name="NavClaude" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE99A;" Content="Claude Code" Click="Nav_Click" />
-                        <RadioButton x:Name="NavCodex" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE943;" Content="Codex" Click="Nav_Click" />
+                        <TextBlock x:Name="NavHeaderAi" Text="AI 工具" Style="{StaticResource SectionHeaderStyle}" Margin="14,16,0,6" />
+                        <RadioButton x:Name="NavClaude" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE99A;" Content="Claude Code" ToolTip="Claude Code" Click="Nav_Click" />
+                        <RadioButton x:Name="NavCodex" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE943;" Content="Codex" ToolTip="Codex" Click="Nav_Click" />
 
-                        <TextBlock Text="用户" Style="{StaticResource SectionHeaderStyle}" Margin="14,16,0,6" />
-                        <RadioButton x:Name="NavFavorites" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xEB51;" Content="收藏" Click="Nav_Click" />
+                        <TextBlock x:Name="NavHeaderUser" Text="用户" Style="{StaticResource SectionHeaderStyle}" Margin="14,16,0,6" />
+                        <RadioButton x:Name="NavFavorites" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xEB51;" Content="收藏" ToolTip="收藏" Click="Nav_Click" />
                         <Grid>
-                            <RadioButton x:Name="NavSettings" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE713;" Content="设置" Click="Nav_Click" />
+                            <RadioButton x:Name="NavSettings" GroupName="nav" Style="{StaticResource SidebarItemStyle}" Tag="&#xE713;" Content="设置" ToolTip="设置" Click="Nav_Click" />
                             <!-- 更新小红点：有新版本可更新时显示，点“设置”进入现有更新流程 -->
                             <Ellipse x:Name="SettingsUpdateDot"
                                      Width="8"
@@ -76,7 +141,7 @@
             </DockPanel>
         </Border>
 
-        <Grid Grid.Column="1">
+        <Grid Grid.Row="1" Grid.Column="1">
             <ContentControl x:Name="ContentHost">
                 <!-- 页面切换动效（淡入 + 轻微上移）只动这个位移与透明度，不触发布局 -->
                 <ContentControl.RenderTransform>

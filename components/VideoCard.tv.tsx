@@ -167,7 +167,7 @@ const VideoCard = forwardRef<View, VideoCardProps>(
               <View style={styles.overlay}>
                 {isContinueWatching && (
                   <View style={styles.continueWatchingBadge}>
-                    <Play size={16} color="#ffffff" fill="#ffffff" />
+                    <Play size={16} color="#1A1206" fill="#1A1206" />
                     <ThemedText style={styles.continueWatchingText}>继续观看</ThemedText>
                   </View>
                 )}
@@ -183,7 +183,7 @@ const VideoCard = forwardRef<View, VideoCardProps>(
 
             {rate && (
               <View style={styles.ratingContainer}>
-                <Star size={12} color="#FFD700" fill="#FFD700" />
+                <Star size={12} color="#E3B26B" fill="#E3B26B" />
                 <ThemedText style={styles.ratingText}>{rate}</ThemedText>
               </View>
             )}
@@ -206,7 +206,7 @@ const VideoCard = forwardRef<View, VideoCardProps>(
           <View style={styles.infoContainer}>
             <ThemedText numberOfLines={1}>{title}</ThemedText>
             {reason ? (
-              <ThemedText numberOfLines={1} style={{ fontSize: 13, lineHeight: 18, color: "#8fb8ff" }}>
+              <ThemedText numberOfLines={1} style={{ fontSize: 13, lineHeight: 18, color: "#8CE8BC" }}>
                 {reason}
               </ThemedText>
             ) : null}
@@ -246,8 +246,8 @@ const styles = StyleSheet.create({
     marginTop: 10,
     width: CARD_WIDTH,
     height: CARD_HEIGHT,
-    borderRadius: 8,
-    backgroundColor: "#222",
+    borderRadius: 14,
+    backgroundColor: "#1B1F33",
     overflow: "hidden",
   },
   poster: {
@@ -259,7 +259,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.3)",
     borderColor: Colors.dark.primary,
     borderWidth: 2,
-    borderRadius: 8,
+    borderRadius: 14,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -290,7 +290,7 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
   },
   ratingText: {
-    color: "#FFD700",
+    color: "#E3B26B",
     fontSize: 12,
     fontWeight: "bold",
     marginLeft: 4,
@@ -335,7 +335,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     bottom: 8,
     left: 8,
-    backgroundColor: Colors.dark.primary,
+    backgroundColor: "rgba(31, 122, 85, 0.94)",
     borderRadius: 6,
     paddingHorizontal: 6,
     paddingVertical: 3,
@@ -368,13 +368,13 @@ const styles = StyleSheet.create({
   continueWatchingBadge: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: Colors.dark.primary,
+    backgroundColor: "#E3B26B",
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 5,
   },
   continueWatchingText: {
-    color: "white",
+    color: "#1A1206",
     marginLeft: 5,
     fontSize: 12,
     fontWeight: "bold",

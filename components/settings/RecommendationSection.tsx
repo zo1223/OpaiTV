@@ -61,7 +61,7 @@ export const RecommendationSection: React.FC<RecommendationSectionProps> = ({ on
         <Switch
           value={recommendationsEnabled}
           onValueChange={handleToggle}
-          trackColor={{ false: "#767577", true: Colors.dark.primary }}
+          trackColor={{ false: "#2A3048", true: Colors.dark.primary }}
           thumbColor={recommendationsEnabled ? "#ffffff" : "#f4f3f4"}
           pointerEvents={Platform.isTV ? "none" : "auto"}
         />
@@ -88,9 +88,9 @@ const styles = StyleSheet.create({
   },
   status: {
     fontSize: 13,
-    color: "#888",
+    color: "#9AA1B8",
   },
   statusOn: {
-    color: "#888",
+    color: "#9AA1B8",
   },
 });

@@ -12,7 +12,7 @@ namespace OrionTV.Desktop.App;
 public sealed class LiveChannelViewModel : INotifyPropertyChanged
 {
     private static readonly Brush UnknownBrush = Frozen("#5A5F66");
-    private static readonly Brush GoodBrush = Frozen("#00A862");
+    private static readonly Brush GoodBrush = Frozen("#6FDCA8");
     private static readonly Brush FairBrush = Frozen("#E6A700");
     private static readonly Brush BadBrush = Frozen("#E5484D");
 

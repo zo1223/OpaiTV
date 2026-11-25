@@ -6,7 +6,7 @@
         MinHeight="480" MinWidth="520"
         WindowStartupLocation="CenterOwner"
         Background="{StaticResource AppBackgroundBrush}"
-        FontFamily="Microsoft YaHei UI"
+        FontFamily="{StaticResource AppFont}"
         ResizeMode="CanResizeWithGrip"
         ShowInTaskbar="False">
     <Grid Margin="22,18">

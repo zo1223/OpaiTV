@@ -3,6 +3,7 @@ import { useSettingsStore } from "../settingsStore";
 import useDetailStore from "../detailStore";
 import usePlayerStore from "../playerStore";
 import { clearTmdbCache, TMDB_API_KEY_STORAGE_KEY } from "@/services/tmdb";
+import { __resetRouteMemoryForTests, getRememberedRoute } from "@/services/smartRoute";
 
 jest.mock("@react-native-async-storage/async-storage", () => ({
   getItem: jest.fn(),
@@ -75,6 +76,7 @@ describe("playback proxy mode and TMDB key (stores)", () => {
     (global as unknown as { fetch: unknown }).fetch = fetchMock;
     Toast.show.mockClear();
     clearTmdbCache();
+    __resetRouteMemoryForTests();
     useSettingsStore.setState({ playbackProxyMode: "system", playbackProxyUrl: "", tmdbApiKey: "" });
     useDetailStore.setState({ detail: null, searchResults: [], tmdbMeta: null });
     usePlayerStore.getState().reset();
@@ -153,13 +155,49 @@ describe("playback proxy mode and TMDB key (stores)", () => {
       expect(await load()).toEqual([EPISODE]);
     });
 
-    it("plays through the relay in forced mode", async () => {
+    // 直连优先:强制代理下起播前先探一次直连,直连不通才把播放地址改成中转地址
+    const directDown = () =>
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url === EPISODE) throw new TypeError("Network request failed");
+        return { ok: true, status: 200 };
+      });
+
+    it("sends no probe in system and direct mode", async () => {
+      await useSettingsStore.getState().setPlaybackProxyUrl(RELAY);
+      await load();
+      usePlayerStore.getState().reset();
+      await useSettingsStore.getState().setPlaybackProxyMode("direct");
+      await load();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(getRememberedRoute(EPISODE)).toBeNull();
+    });
+
+    it("plays through the relay in forced mode when the source cannot be reached directly", async () => {
+      directDown();
       await useSettingsStore.getState().setPlaybackProxyUrl(RELAY);
       await useSettingsStore.getState().setPlaybackProxyMode("forced");
       expect(await load()).toEqual([`${RELAY}${encodeURIComponent(EPISODE)}`]);
+      expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([EPISODE, `${RELAY}${encodeURIComponent(EPISODE)}`]);
+      expect(getRememberedRoute(EPISODE)?.route).toBe("proxy");
+
+      // 记住了“走中转”:下一次起播不再试直连
+      fetchMock.mockClear();
+      usePlayerStore.getState().reset();
+      expect(await load()).toEqual([`${RELAY}${encodeURIComponent(EPISODE)}`]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("plays the original URL in forced mode when the source answers directly (no relay traffic)", async () => {
+      fetchMock.mockResolvedValue({ ok: true, status: 200 });
+      await useSettingsStore.getState().setPlaybackProxyUrl(RELAY);
+      await useSettingsStore.getState().setPlaybackProxyMode("forced");
+      expect(await load()).toEqual([EPISODE]);
+      expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([EPISODE]);
+      expect(getRememberedRoute(EPISODE)?.route).toBe("direct");
     });
 
     it("applies a mode switch to the next playback only", async () => {
+      directDown();
       await useSettingsStore.getState().setPlaybackProxyUrl(RELAY);
       expect(await load()).toEqual([EPISODE]);
 

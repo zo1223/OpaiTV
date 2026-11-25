@@ -172,7 +172,7 @@ export const HomeHeroBanner: React.FC<HomeHeroBannerProps> = ({
       <Animated.View style={[StyleSheet.absoluteFill, { opacity: fade }]}>
         <Image source={imageSource} style={StyleSheet.absoluteFill} resizeMode="cover" blurRadius={14} />
         <LinearGradient
-          colors={["rgba(21,23,24,0.35)", "rgba(21,23,24,0.92)"]}
+          colors={["rgba(10,11,20,0.35)", "rgba(10,11,20,0.92)"]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={StyleSheet.absoluteFill}
@@ -205,7 +205,7 @@ export const HomeHeroBanner: React.FC<HomeHeroBannerProps> = ({
                 accessibilityLabel={`播放 ${current.title}`}
                 style={({ pressed }) => [styles.playButton, pressed && styles.pressed]}
               >
-                <Play size={16} color="#fff" fill="#fff" />
+                <Play size={16} color="#06140E" fill="#06140E" />
                 <Text style={styles.playText}>播放</Text>
               </Pressable>
               <Pressable
@@ -242,9 +242,11 @@ export const HomeHeroBanner: React.FC<HomeHeroBannerProps> = ({
 
 const styles = StyleSheet.create({
   container: {
-    borderRadius: 12,
+    borderRadius: 28,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.08)",
     overflow: "hidden",
-    backgroundColor: "#1c1c1e",
+    backgroundColor: "#151828",
     marginBottom: 12,
   },
   row: {
@@ -254,8 +256,8 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   poster: {
-    borderRadius: 8,
-    backgroundColor: "#25292b",
+    borderRadius: 14,
+    backgroundColor: "#1B1F33",
   },
   info: {
     flex: 1,
@@ -264,16 +266,17 @@ const styles = StyleSheet.create({
   },
   title: {
     color: "#fff",
-    fontSize: 20,
-    fontWeight: "bold",
+    fontSize: 22,
+    fontWeight: "800",
+    letterSpacing: 0.3,
   },
   meta: {
-    color: "#d0d0d0",
+    color: "#C5CADB",
     fontSize: 12,
     marginTop: 6,
   },
   desc: {
-    color: "#ccc",
+    color: "#C5CADB",
     fontSize: 12,
     lineHeight: 17,
     marginTop: 6,
@@ -292,7 +295,7 @@ const styles = StyleSheet.create({
     minHeight: 40,
   },
   playText: {
-    color: "#fff",
+    color: "#06140E",
     fontSize: 15,
     fontWeight: "bold",
     marginLeft: 6,

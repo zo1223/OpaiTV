@@ -51,17 +51,17 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
 
   return StyleSheet.create({
     baseCard: {
-      backgroundColor: '#1c1c1e',
-      borderRadius: isMobile ? 8 : isTablet ? 10 : 12,
+      backgroundColor: '#151828',
+      borderRadius: 20,
       marginBottom: spacing,
     },
 
     // Variants
     default: {
-      backgroundColor: '#1c1c1e',
+      backgroundColor: '#151828',
     },
     elevated: {
-      backgroundColor: '#1c1c1e',
+      backgroundColor: '#151828',
       shadowColor: '#000',
       shadowOffset: {
         width: 0,
@@ -74,7 +74,7 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
     outlined: {
       backgroundColor: 'transparent',
       borderWidth: 1,
-      borderColor: '#333',
+      borderColor: '#2A2F47',
     },
 
     // Padding variants

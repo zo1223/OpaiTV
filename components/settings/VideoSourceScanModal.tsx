@@ -159,7 +159,7 @@ const styles = StyleSheet.create({
   },
   description: {
     fontSize: 14,
-    color: "#ccc",
+    color: "#C5CADB",
     textAlign: "center",
     marginTop: 12,
   },

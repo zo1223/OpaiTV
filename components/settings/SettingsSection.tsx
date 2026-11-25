@@ -54,13 +54,13 @@ const styles = StyleSheet.create({
   section: {
     padding: 20,
     marginBottom: 16,
-    borderRadius: 12,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "#333",
+    borderColor: "#2A2F47",
   },
   sectionFocused: {
     borderColor: Colors.dark.primary,
-    backgroundColor: "#007AFF10",
+    backgroundColor: "#6FDCA810",
   },
   sectionPressable: {
     width: "100%",

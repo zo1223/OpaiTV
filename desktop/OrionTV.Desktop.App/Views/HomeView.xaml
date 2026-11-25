@@ -13,7 +13,7 @@
         <!-- 顶部标题 + 图标按钮 -->
         <DockPanel Grid.Row="0" Margin="22,20,18,8">
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBlock Text="首页" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}" />
+                <TextBlock Text="首页" FontSize="26" FontWeight="Bold" Foreground="{StaticResource TextBrush}" />
                 <Button x:Name="LiveLink"
                         Content="直播"
                         Background="Transparent"
@@ -67,7 +67,7 @@
                 VerticalAlignment="Bottom"
                 Margin="0,0,0,24"
                 Padding="18,10,10,10"
-                CornerRadius="10"
+                CornerRadius="18"
                 Background="{StaticResource PanelAltBrush}"
                 BorderBrush="{StaticResource BorderBrushDark}"
                 BorderThickness="1"

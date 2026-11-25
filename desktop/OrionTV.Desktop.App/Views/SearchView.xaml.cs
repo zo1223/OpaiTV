@@ -108,7 +108,7 @@ public partial class SearchView : UserControl, INavigationAware, IKeyboardFocusT
         row.Children.Add(remove);
         return new Border
         {
-            CornerRadius = new CornerRadius(15),
+            CornerRadius = new CornerRadius(16),
             Background = (Brush)FindResource("InputBrush"),
             Margin = new Thickness(0, 0, 8, 8),
             Padding = new Thickness(12, 5, 8, 5),
@@ -236,7 +236,7 @@ public partial class SearchView : UserControl, INavigationAware, IKeyboardFocusT
             };
             ProgressSources.Children.Add(new Border
             {
-                CornerRadius = new CornerRadius(10),
+                CornerRadius = new CornerRadius(16),
                 Background = (Brush)FindResource("InputBrush"),
                 Margin = new Thickness(0, 0, 6, 6),
                 Padding = new Thickness(8, 2, 8, 2),

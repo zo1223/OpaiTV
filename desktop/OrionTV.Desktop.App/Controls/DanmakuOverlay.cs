@@ -58,6 +58,9 @@ public sealed class DanmakuOverlay : FrameworkElement
         SizeChanged += (_, _) => ApplyLayoutOptions();
     }
 
+    /// <summary>画弹幕时出错、本集弹幕被停掉时触发（界面线程）。</summary>
+    public event EventHandler? RenderFailed;
+
     /// <summary>当前是否有弹幕来源。</summary>
     public bool HasTrack => _session is not null;
 
@@ -209,8 +212,9 @@ public sealed class DanmakuOverlay : FrameworkElement
         }
         catch
         {
-            // 弹幕出任何问题都不能影响播放：这一集不再显示弹幕
+            // 弹幕出任何问题都不能影响播放：这一集不再显示弹幕，并告诉播放页（由它提示用户，不再静默）
             SetTrack(null);
+            RenderFailed?.Invoke(this, EventArgs.Empty);
         }
     }
 

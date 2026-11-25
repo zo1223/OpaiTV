@@ -151,7 +151,7 @@ export const FavoritesDrawer: React.FC = () => {
               accessibilityLabel="关闭"
               testID="favorites-drawer-close"
             >
-              <X size={20} color="#ccc" />
+              <X size={20} color="#C5CADB" />
             </TouchableOpacity>
           </View>
           {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -180,9 +180,12 @@ const styles = StyleSheet.create({
   },
   panel: {
     height: "100%",
-    backgroundColor: "#1c1c1e",
+    backgroundColor: "#151828",
     borderLeftWidth: 1,
-    borderLeftColor: "#333",
+    borderLeftColor: "rgba(255,255,255,0.08)",
+    borderTopLeftRadius: 28,
+    borderBottomLeftRadius: 28,
+    overflow: "hidden",
     paddingTop: 36,
   },
   header: {
@@ -192,20 +195,21 @@ const styles = StyleSheet.create({
     paddingRight: 8,
     paddingBottom: 8,
     borderBottomWidth: 1,
-    borderBottomColor: "#2c2c2e",
+    borderBottomColor: "#1F2338",
   },
   headerTitle: {
     flex: 1,
     color: "#fff",
     fontSize: 18,
-    fontWeight: "bold",
+    fontWeight: "800",
+    letterSpacing: 0.3,
   },
   viewAll: {
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
   viewAllText: {
-    color: "#4da3ff",
+    color: "#6FDCA8",
     fontSize: 14,
   },
   listContent: {
@@ -226,8 +230,8 @@ const styles = StyleSheet.create({
   cover: {
     width: 48,
     height: 68,
-    borderRadius: 6,
-    backgroundColor: "#2c2c2e",
+    borderRadius: 10,
+    backgroundColor: "#1F2338",
   },
   rowText: {
     flex: 1,
@@ -239,7 +243,7 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
   meta: {
-    color: "#888",
+    color: "#9AA1B8",
     fontSize: 12,
     marginTop: 4,
   },
@@ -250,7 +254,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   empty: {
-    color: "#888",
+    color: "#9AA1B8",
     textAlign: "center",
     marginTop: 48,
   },

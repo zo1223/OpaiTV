@@ -29,9 +29,9 @@
                         <Rectangle IsHitTestVisible="False">
                             <Rectangle.Fill>
                                 <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                                    <GradientStop Color="#99151718" Offset="0" />
-                                    <GradientStop Color="#80151718" Offset="0.45" />
-                                    <GradientStop Color="#FF151718" Offset="1" />
+                                    <GradientStop Color="#990A0B14" Offset="0" />
+                                    <GradientStop Color="#800A0B14" Offset="0.45" />
+                                    <GradientStop Color="#FF0A0B14" Offset="1" />
                                 </LinearGradientBrush>
                             </Rectangle.Fill>
                         </Rectangle>
@@ -42,8 +42,12 @@
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
 
-                            <Border Grid.Column="0" Width="180" Height="260" CornerRadius="10" Background="{StaticResource PanelAltBrush}" ClipToBounds="True" VerticalAlignment="Bottom">
-                                <Image x:Name="PosterImage" Stretch="UniformToFill" />
+                            <Border Grid.Column="0" Width="180" Height="260" CornerRadius="18" Background="{StaticResource PanelAltBrush}" ClipToBounds="True" VerticalAlignment="Bottom">
+                                <Image x:Name="PosterImage" Stretch="UniformToFill">
+                                    <Image.Clip>
+                                        <RectangleGeometry Rect="0,0,180,260" RadiusX="18" RadiusY="18" />
+                                    </Image.Clip>
+                                </Image>
                             </Border>
 
                             <StackPanel Grid.Column="1" Margin="24,0,0,0" VerticalAlignment="Bottom">

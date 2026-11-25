@@ -8,7 +8,7 @@
         Topmost="True" ShowInTaskbar="False" ShowActivated="False"
         WindowStartupLocation="Manual"
         Background="{StaticResource PanelBrush}"
-        FontFamily="Microsoft YaHei UI">
+        FontFamily="{StaticResource AppFont}">
     <!-- 迷你播放窗口（灵动岛）：上面是画面（点一下回到全屏播放页），下面是片名 / 进度 / 播放暂停 / 收起 / 关闭。
          控件都放在画面之外的信息栏里，不盖在原生视频画面上（避开 LibVLCSharp 的 airspace）。 -->
     <Border BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1">

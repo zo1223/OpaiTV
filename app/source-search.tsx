@@ -310,7 +310,7 @@ const createStyles = (deviceType: string, spacing: number) => {
     searchInput: {
       flex: 1,
       height: isMobile ? 44 : 50,
-      backgroundColor: "#2c2c2e",
+      backgroundColor: "#1F2338",
       borderRadius: 8,
       color: "white",
       fontSize: isMobile ? 15 : 18,

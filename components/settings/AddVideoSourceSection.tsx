@@ -147,7 +147,7 @@ export const AddVideoSourceSection = forwardRef<AddVideoSourceSectionRef, AddVid
               setMessage(null);
             }}
             placeholder="粘贴苹果CMS接口地址(JSON 或 XML),或其他设备导出的同步链接(opaitv-sync://...)"
-            placeholderTextColor="#888"
+            placeholderTextColor="#9AA1B8"
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="url"
@@ -234,7 +234,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 15,
     fontSize: 16,
-    backgroundColor: "#3a3a3c",
+    backgroundColor: "#2A3048",
     color: "white",
     borderColor: "transparent",
   },
@@ -257,7 +257,7 @@ const styles = StyleSheet.create({
   },
   summary: {
     fontSize: 12,
-    color: "#888",
+    color: "#9AA1B8",
     marginTop: 12,
   },
   sourceRow: {
@@ -275,6 +275,6 @@ const styles = StyleSheet.create({
   },
   sourceApi: {
     fontSize: 12,
-    color: "#888",
+    color: "#9AA1B8",
   },
 });

@@ -44,7 +44,7 @@
                         <!-- 频道名提示 -->
                         <Border x:Name="ChannelTitleBadge"
                                 VerticalAlignment="Top" HorizontalAlignment="Left"
-                                Background="#99000000" CornerRadius="6" Padding="12,6" Margin="16"
+                                Background="#99000000" CornerRadius="12" Padding="12,6" Margin="16"
                                 Visibility="Collapsed">
                             <TextBlock x:Name="ChannelTitleText" Foreground="White" FontSize="15" FontWeight="SemiBold" />
                         </Border>
@@ -52,11 +52,11 @@
                         <!-- 实时数据浮层（按 I 或控制栏按钮切换） -->
                         <Border x:Name="StatsOverlay"
                                 VerticalAlignment="Top" HorizontalAlignment="Right"
-                                Background="#B0000000" CornerRadius="6" Padding="12,8" Margin="16"
+                                Background="#B0000000" CornerRadius="12" Padding="12,8" Margin="16"
                                 Visibility="Collapsed">
                             <StackPanel MinWidth="150">
                                 <TextBlock Text="实时数据" Foreground="White" FontSize="12" FontWeight="Bold" Margin="0,0,0,4" />
-                                <TextBlock x:Name="StatsVerdictText" Foreground="#00A862" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,4" Text="—" />
+                                <TextBlock x:Name="StatsVerdictText" Foreground="#6FDCA8" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,4" Text="—" />
                                 <TextBlock x:Name="StatsBitrateText" Foreground="#DDDDDD" FontSize="12" Text="码率 —" />
                                 <TextBlock x:Name="StatsFpsText" Foreground="#DDDDDD" FontSize="12" Text="帧率 —" />
                                 <TextBlock x:Name="StatsDropText" Foreground="#DDDDDD" FontSize="12" Text="丢帧 —" />
@@ -67,15 +67,15 @@
                         <!-- OpenAI 英语直播实时翻译状态 -->
                         <Border x:Name="TranslationStatusBadge"
                                 VerticalAlignment="Top" HorizontalAlignment="Center"
-                                Background="#B0000000" CornerRadius="6" Padding="12,7" Margin="16"
+                                Background="#B0000000" CornerRadius="12" Padding="12,7" Margin="16"
                                 Visibility="Collapsed" IsHitTestVisible="False">
-                            <TextBlock x:Name="TranslationStatusText" Foreground="#48D597" FontSize="13" FontWeight="SemiBold" />
+                            <TextBlock x:Name="TranslationStatusText" Foreground="#8CE8BC" FontSize="13" FontWeight="SemiBold" />
                         </Border>
 
                         <!-- 中文字幕；置于控制栏上方，普通窗口和全屏共用。 -->
                         <Border x:Name="TranslationSubtitlePanel"
                                 VerticalAlignment="Bottom" HorizontalAlignment="Center"
-                                MaxWidth="980" Background="#B3000000" CornerRadius="8"
+                                MaxWidth="980" Background="#B3000000" CornerRadius="14"
                                 Padding="18,9" Margin="70,0,70,78"
                                 Visibility="Collapsed" IsHitTestVisible="False">
                             <TextBlock x:Name="TranslationSubtitleText"
@@ -149,8 +149,8 @@
                         </Border>
 
                         <!-- 全屏时的频道浮层 -->
-                        <Border x:Name="FsChannelPanel" HorizontalAlignment="Right" Width="320" Background="#F2151718"
-                                BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1,0,0,0" Visibility="Collapsed"
+                        <Border x:Name="FsChannelPanel" HorizontalAlignment="Right" Width="320" Background="#F20A0B14"
+                                BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1,0,0,0" CornerRadius="24,0,0,24" Visibility="Collapsed"
                                 MouseEnter="Bar_MouseEnter" MouseLeave="Bar_MouseLeave">
                             <DockPanel Margin="12">
                                 <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">

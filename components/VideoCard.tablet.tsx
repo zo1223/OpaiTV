@@ -127,7 +127,7 @@ const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
               <View style={styles.pressOverlay}>
                 {isContinueWatching && (
                   <View style={styles.continueWatchingBadge}>
-                    <Play size={16} color="#ffffff" fill="#ffffff" />
+                    <Play size={16} color="#1A1206" fill="#1A1206" />
                     <Text style={styles.continueWatchingText}>继续观看</Text>
                   </View>
                 )}
@@ -144,7 +144,7 @@ const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
             {/* 评分 */}
             {rate && (
               <View style={styles.ratingContainer}>
-                <Star size={12} color="#FFD700" fill="#FFD700" />
+                <Star size={12} color="#E3B26B" fill="#E3B26B" />
                 <Text style={styles.ratingText}>{rate}</Text>
               </View>
             )}
@@ -173,7 +173,7 @@ const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
           <View style={styles.infoContainer}>
             <ThemedText numberOfLines={2} style={styles.title}>{title}</ThemedText>
             {reason ? (
-              <ThemedText numberOfLines={2} style={{ fontSize: 11, lineHeight: 15, color: "#8fb8ff", marginTop: 2 }}>
+              <ThemedText numberOfLines={2} style={{ fontSize: 11, lineHeight: 15, color: "#8CE8BC", marginTop: 2 }}>
                 {reason}
               </ThemedText>
             ) : null}
@@ -206,8 +206,8 @@ const createTabletStyles = (cardWidth: number, cardHeight: number, spacing: numb
     card: {
       width: cardWidth,
       height: cardHeight,
-      borderRadius: 10,
-      backgroundColor: "#222",
+      borderRadius: 16,
+      backgroundColor: "#1B1F33",
       overflow: "hidden",
     },
     cardPressed: {
@@ -224,7 +224,7 @@ const createTabletStyles = (cardWidth: number, cardHeight: number, spacing: numb
       backgroundColor: "rgba(0,0,0,0.4)",
       justifyContent: "center",
       alignItems: "center",
-      borderRadius: 10,
+      borderRadius: 16,
     },
     progressContainer: {
       position: "absolute",
@@ -241,13 +241,13 @@ const createTabletStyles = (cardWidth: number, cardHeight: number, spacing: numb
     continueWatchingBadge: {
       flexDirection: "row",
       alignItems: "center",
-      backgroundColor: Colors.dark.primary,
+      backgroundColor: "#E3B26B",
       paddingHorizontal: 12,
       paddingVertical: 6,
       borderRadius: 6,
     },
     continueWatchingText: {
-      color: "white",
+      color: "#1A1206",
       marginLeft: 6,
       fontSize: 14,
       fontWeight: "bold",
@@ -264,7 +264,7 @@ const createTabletStyles = (cardWidth: number, cardHeight: number, spacing: numb
       paddingVertical: 3,
     },
     ratingText: {
-      color: "#FFD700",
+      color: "#E3B26B",
       fontSize: 11,
       fontWeight: "bold",
       marginLeft: 3,
@@ -291,7 +291,7 @@ const createTabletStyles = (cardWidth: number, cardHeight: number, spacing: numb
       position: "absolute",
       bottom: 8,
       left: 8,
-      backgroundColor: Colors.dark.primary,
+      backgroundColor: "rgba(31, 122, 85, 0.94)",
       borderRadius: 6,
       paddingHorizontal: 6,
       paddingVertical: 3,

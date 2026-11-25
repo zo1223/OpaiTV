@@ -50,9 +50,29 @@
                 <!-- 跳过广告提示 -->
                 <Border x:Name="AdSkipBadge"
                         VerticalAlignment="Top" HorizontalAlignment="Center"
-                        Background="#CC00A862" CornerRadius="15" Padding="14,7" Margin="0,64,0,0"
+                        Background="#CC6FDCA8" CornerRadius="15" Padding="14,7" Margin="0,64,0,0"
                         Visibility="Collapsed">
-                    <TextBlock Text="已跳过广告" Foreground="White" FontSize="14" FontWeight="SemiBold" />
+                    <TextBlock Text="已跳过广告" Foreground="#06140E" FontSize="14" FontWeight="SemiBold" />
+                </Border>
+
+                <!-- 投屏中：当前设备与状态（面板关着也看得到），点一下打开投屏面板 -->
+                <Border x:Name="CastBadge"
+                        VerticalAlignment="Top" HorizontalAlignment="Center"
+                        Background="#CC1F6FEB" CornerRadius="15" Padding="14,7" Margin="0,104,0,0"
+                        Cursor="Hand" ToolTip="打开投屏控制"
+                        MouseLeftButtonDown="CastBadge_MouseLeftButtonDown"
+                        Visibility="Collapsed">
+                    <TextBlock x:Name="CastBadgeText" Foreground="White" FontSize="14" FontWeight="SemiBold"
+                               MaxWidth="560" TextTrimming="CharacterEllipsis" />
+                </Border>
+
+                <!-- 弹幕状态轻提示：已开启/已关闭、未找到该集弹幕、获取失败；几秒后自动消失，不接收鼠标 -->
+                <Border x:Name="DanmakuNoticeBadge"
+                        VerticalAlignment="Bottom" HorizontalAlignment="Center"
+                        Background="#CC0A0B14" CornerRadius="15" Padding="14,7" Margin="0,0,0,92"
+                        IsHitTestVisible="False" Visibility="Collapsed">
+                    <TextBlock x:Name="DanmakuNoticeText" Foreground="White" FontSize="14"
+                               MaxWidth="560" TextTrimming="CharacterEllipsis" />
                 </Border>
 
                 <!-- 顶部标题栏 -->
@@ -113,6 +133,31 @@
                             <Slider x:Name="VolumeSlider" Width="80" VerticalAlignment="Center" Minimum="0" Maximum="100" Value="100"
                                     ValueChanged="VolumeSlider_ValueChanged" />
                             <Button x:Name="MiniPlayerButton" Style="{StaticResource IconButtonStyle}" FontSize="16" Content="&#xE8A7;" Click="MiniPlayerButton_Click" ToolTip="小窗播放（离开播放页，在置顶小窗口里接着播）" />
+                            <ToggleButton x:Name="DanmakuButton" Width="38" Height="38" Margin="2,0" Cursor="Hand"
+                                          Focusable="False"
+                                          Click="DanmakuButton_Click" ToolTip="弹幕 开/关">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="Chrome" Background="Transparent" CornerRadius="6"
+                                                BorderThickness="1.5" BorderBrush="#66FFFFFF" Margin="5">
+                                            <TextBlock x:Name="Label" Text="弹" Foreground="#99FFFFFF"
+                                                       FontSize="14" FontWeight="Bold"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsChecked" Value="True">
+                                                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource PrimaryBrush}" />
+                                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource PrimaryBrush}" />
+                                                <Setter TargetName="Label" Property="Foreground" Value="White" />
+                                            </Trigger>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Chrome" Property="BorderBrush" Value="White" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <Button x:Name="CastButton" Style="{StaticResource IconButtonStyle}" FontSize="16" Content="&#xE7F4;" Click="CastButton_Click" ToolTip="投屏到电视（DLNA）" />
                         </StackPanel>
 
                         <Button x:Name="FullscreenButton" Grid.Column="5" Style="{StaticResource IconButtonStyle}" Content="&#xE740;" Click="FullscreenButton_Click" ToolTip="全屏 (F / 双击)" />
@@ -120,8 +165,8 @@
                 </Border>
 
                 <!-- 选集侧栏 -->
-                <Border x:Name="SidePanel" HorizontalAlignment="Right" Width="320" Background="#F2151718"
-                        BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1,0,0,0" Visibility="Collapsed"
+                <Border x:Name="SidePanel" HorizontalAlignment="Right" Width="320" Background="#F20A0B14"
+                        BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1,0,0,0" CornerRadius="24,0,0,24" Visibility="Collapsed"
                         MouseEnter="Bar_MouseEnter" MouseLeave="Bar_MouseLeave">
                     <DockPanel Margin="14">
                         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
@@ -137,8 +182,8 @@
                 </Border>
 
                 <!-- 历史播放的当前集实时换源侧栏 -->
-                <Border x:Name="SourceSwitchPanel" HorizontalAlignment="Right" Width="420" Background="#F2151718"
-                        BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1,0,0,0" Visibility="Collapsed"
+                <Border x:Name="SourceSwitchPanel" HorizontalAlignment="Right" Width="420" Background="#F20A0B14"
+                        BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1,0,0,0" CornerRadius="24,0,0,24" Visibility="Collapsed"
                         MouseEnter="Bar_MouseEnter" MouseLeave="Bar_MouseLeave">
                     <DockPanel Margin="14">
                         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
@@ -163,6 +208,65 @@
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel x:Name="SourceSwitchList" />
                         </ScrollViewer>
+                    </DockPanel>
+                </Border>
+
+                <!-- 投屏（DLNA）侧栏：未投屏时是设备列表，投屏中是设备、状态与控制 -->
+                <Border x:Name="CastPanel" HorizontalAlignment="Right" Width="360" Background="#F20A0B14"
+                        BorderBrush="{StaticResource BorderBrushDark}" BorderThickness="1,0,0,0" CornerRadius="24,0,0,24" Visibility="Collapsed"
+                        MouseEnter="Bar_MouseEnter" MouseLeave="Bar_MouseLeave">
+                    <DockPanel Margin="14">
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButtonStyle}" Content="&#xE711;"
+                                    Click="CastButton_Click" ToolTip="关闭" />
+                            <TextBlock Text="投屏" Foreground="{StaticResource TextBrush}" FontSize="16"
+                                       FontWeight="Bold" VerticalAlignment="Center" />
+                        </DockPanel>
+
+                        <StackPanel x:Name="CastSessionSection" DockPanel.Dock="Top" Visibility="Collapsed">
+                            <TextBlock x:Name="CastDeviceNameText" Foreground="{StaticResource TextBrush}" FontSize="15"
+                                       FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <TextBlock x:Name="CastStateText" Foreground="{StaticResource SoftTextBrush}" FontSize="13"
+                                       Margin="0,4,0,0" TextWrapping="Wrap" />
+                            <TextBlock x:Name="CastErrorText" Foreground="#FFFF8A80" FontSize="12" Margin="0,4,0,0"
+                                       TextWrapping="Wrap" Visibility="Collapsed" />
+                            <Slider x:Name="CastSeekSlider" Minimum="0" Maximum="1000" IsMoveToPointEnabled="True"
+                                    Margin="0,14,0,4"
+                                    ValueChanged="CastSeekSlider_ValueChanged"
+                                    Thumb.DragStarted="CastSeekSlider_DragStarted"
+                                    Thumb.DragCompleted="CastSeekSlider_DragCompleted" />
+                            <TextBlock x:Name="CastTimeText" Foreground="{StaticResource MutedTextBrush}" FontSize="12"
+                                       HorizontalAlignment="Center" />
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0">
+                                <Button Style="{StaticResource SecondaryButtonStyle}" Height="36" Padding="12,0"
+                                        Content="-30 秒" Click="CastBackButton_Click" />
+                                <Button x:Name="CastPlayPauseButton" Style="{StaticResource PrimaryButtonStyle}" Height="36"
+                                        MinWidth="92" Padding="12,0" Margin="8,0" Content="暂停"
+                                        Click="CastPlayPauseButton_Click" />
+                                <Button Style="{StaticResource SecondaryButtonStyle}" Height="36" Padding="12,0"
+                                        Content="+30 秒" Click="CastForwardButton_Click" />
+                            </StackPanel>
+                            <Button Style="{StaticResource SecondaryButtonStyle}" Height="38" Margin="0,14,0,0"
+                                    Content="停止投屏，回到本机播放" Click="CastStopButton_Click" />
+                        </StackPanel>
+
+                        <DockPanel x:Name="CastDevicesSection">
+                            <TextBlock x:Name="CastNoticeText" DockPanel.Dock="Top" Foreground="{StaticResource SoftTextBrush}"
+                                       FontSize="13" TextWrapping="Wrap" Margin="0,0,0,10" Visibility="Collapsed" />
+                            <DockPanel DockPanel.Dock="Top" LastChildFill="True" Margin="0,0,0,10">
+                                <Button x:Name="CastRescanButton" DockPanel.Dock="Right"
+                                        Style="{StaticResource SecondaryButtonStyle}" Height="36" Padding="12,0"
+                                        Content="重新搜索" Click="CastRescanButton_Click" />
+                                <TextBlock x:Name="CastSearchText" Foreground="{StaticResource MutedTextBrush}"
+                                           FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,10,0" />
+                            </DockPanel>
+                            <ProgressBar x:Name="CastSearchProgress" DockPanel.Dock="Top" Height="3" Margin="0,0,0,10"
+                                         IsIndeterminate="True" Foreground="{StaticResource PrimaryBrush}"
+                                         Visibility="Collapsed" />
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="CastDeviceList" />
+                            </ScrollViewer>
+                        </DockPanel>
                     </DockPanel>
                 </Border>
             </Grid>

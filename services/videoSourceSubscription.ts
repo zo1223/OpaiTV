@@ -1,6 +1,7 @@
 import type { ApiSite, SearchResult, VideoDetail } from "./api";
 import { parseAppleCmsXml } from "./appleCmsXml";
 import { normalizeApiBaseUrl } from "./settingsNormalization";
+import { smartFetch } from "./smartRoute";
 
 const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 const BASE58_MAP = BASE58_ALPHABET.split("").reduce<Record<string, number>>((acc, char, index) => {
@@ -214,7 +215,7 @@ export const fetchVideoSourceSubscription = async (subscriptionUrl: string): Pro
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SUBSCRIPTION_REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(subscriptionUrl, { signal: controller.signal });
+    const response = await smartFetch(subscriptionUrl, { signal: controller.signal });
     if (!response.ok) {
       throw new Error(`VIDEO_SOURCE_SUBSCRIPTION_FETCH_FAILED:${response.status}`);
     }
@@ -349,7 +350,7 @@ const readAppleCmsVodData = async (
     .filter(Boolean);
   let fullList: any[] = [];
   try {
-    const fullResponse = await fetch(buildAppleCmsUrl(source.api, { ac: "videolist", ids: wantedIds.join(",") }), {
+    const fullResponse = await smartFetch(buildAppleCmsUrl(source.api, { ac: "videolist", ids: wantedIds.join(",") }), {
       signal,
     });
     if (fullResponse.ok) {
@@ -411,7 +412,7 @@ export const searchAppleCmsSource = async (
   query: string,
   signal?: AbortSignal
 ): Promise<SearchResult[]> => {
-  const response = await fetch(buildAppleCmsUrl(source.api, { ac: "detail", wd: query }), { signal });
+  const response = await smartFetch(buildAppleCmsUrl(source.api, { ac: "detail", wd: query }), { signal });
   if (!response.ok) {
     throw new Error(`APPLE_CMS_SEARCH_FAILED:${response.status}`);
   }
@@ -427,7 +428,7 @@ export const getAppleCmsSourceResult = async (
   id: string,
   signal?: AbortSignal
 ): Promise<SearchResult[]> => {
-  const response = await fetch(buildAppleCmsUrl(source.api, { ac: "detail", ids: id }), { signal });
+  const response = await smartFetch(buildAppleCmsUrl(source.api, { ac: "detail", ids: id }), { signal });
   if (!response.ok) {
     throw new Error(`APPLE_CMS_DETAIL_FAILED:${response.status}`);
   }
@@ -445,7 +446,7 @@ export const fetchAppleCmsSourcePage = async (
   signal?: AbortSignal
 ): Promise<SearchResult[]> => {
   const page = Math.floor(pageStart / pageSize) + 1;
-  const response = await fetch(buildAppleCmsUrl(source.api, { ac: "detail", pg: String(page) }), { signal });
+  const response = await smartFetch(buildAppleCmsUrl(source.api, { ac: "detail", pg: String(page) }), { signal });
   if (!response.ok) {
     throw new Error(`APPLE_CMS_PAGE_FAILED:${response.status}`);
   }
@@ -681,7 +682,7 @@ const fetchAppleCmsFilteredCategoryResults = async (
   pageSize: number,
   signal?: AbortSignal
 ) => {
-  const response = await fetch(
+  const response = await smartFetch(
     buildAppleCmsUrl(source.api, { ac: "detail", t: categoryId, pg: String(page) }),
     { signal }
   );
@@ -745,7 +746,7 @@ export const fetchAppleCmsCategories = async (
   source: VideoSourceSubscriptionSource,
   signal?: AbortSignal
 ): Promise<VideoSourceCategory[]> => {
-  const response = await fetch(buildAppleCmsUrl(source.api, { ac: "list" }), { signal });
+  const response = await smartFetch(buildAppleCmsUrl(source.api, { ac: "list" }), { signal });
   if (!response.ok) {
     throw new Error(`APPLE_CMS_CATEGORIES_FAILED:${response.status}`);
   }
@@ -766,7 +767,7 @@ export const fetchAppleCmsCategoryVideos = async (
   pageSize: number,
   signal?: AbortSignal
 ): Promise<VideoSourceCategoryVideosResponse> => {
-  const response = await fetch(
+  const response = await smartFetch(
     buildAppleCmsUrl(source.api, { ac: "detail", t: categoryId, pg: String(page) }),
     { signal }
   );
@@ -793,7 +794,7 @@ export const getAppleCmsDetail = async (
 ): Promise<VideoDetail> => {
   // Always query `source.api` (like getAppleCmsSourceResult): a subscription's `detail`
   // field is usually the source's website address, which does not answer `ac=detail&ids=`.
-  const response = await fetch(buildAppleCmsUrl(source.api, { ac: "detail", ids: id }), { signal });
+  const response = await smartFetch(buildAppleCmsUrl(source.api, { ac: "detail", ids: id }), { signal });
   if (!response.ok) {
     throw new Error(`APPLE_CMS_DETAIL_FAILED:${response.status}`);
   }

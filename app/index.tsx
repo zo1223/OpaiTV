@@ -269,7 +269,8 @@ export default function HomeScreen() {
     },
     headerTitle: {
       fontSize: deviceType === "mobile" ? 24 : deviceType === "tablet" ? 28 : 32,
-      fontWeight: "bold",
+      fontWeight: "800",
+      letterSpacing: 0.5,
       paddingTop: 16,
     },
     rightHeaderButtons: {
@@ -289,7 +290,7 @@ export default function HomeScreen() {
     categoryButton: {
       paddingHorizontal: deviceType === "tv" ? spacing / 4 : spacing / 2,
       paddingVertical: spacing / 2,
-      borderRadius: deviceType === "mobile" ? 6 : 8,
+      borderRadius: 999,
       marginHorizontal: deviceType === "tv" ? spacing / 4 : spacing / 2, // TV端使用更小的间距
     },
     categoryText: {

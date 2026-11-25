@@ -55,7 +55,9 @@
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.WAKE_LOCK"
+        "android.permission.WAKE_LOCK",
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
       ],
       "intentFilters": [
         {
@@ -78,6 +80,12 @@
       "requireFullScreen": false,
       "config": {
         "usesNonExemptEncryption": false
+      },
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "允许 $(PRODUCT_NAME) 访问本地网络,用于搜索同一 Wi-Fi 下的电视并把视频投屏过去"
+      },
+      "entitlements": {
+        "com.apple.developer.networking.multicast": true
       }
     },
     "scheme": "oriontv",

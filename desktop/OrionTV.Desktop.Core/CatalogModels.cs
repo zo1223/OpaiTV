@@ -360,9 +360,13 @@ public static class PlaybackMediaOptions
 
     /// <summary>按当前的播放代理模式（<see cref="PlaybackProxyRuntime"/>）生成选项；每次起播现读一次。</summary>
     public static IReadOnlyList<string> ForUri(Uri uri, int networkCachingMs = 1500) =>
-        ForUri(uri, networkCachingMs, PlaybackProxyRuntime.Current());
+        ForUri(uri, networkCachingMs, PlaybackProxyRuntime.Current(), PlaybackProxyRuntime.Routes);
 
-    public static IReadOnlyList<string> ForUri(Uri uri, int networkCachingMs, PlaybackProxyDecision proxy)
+    public static IReadOnlyList<string> ForUri(Uri uri, int networkCachingMs, PlaybackProxyDecision proxy) =>
+        ForUri(uri, networkCachingMs, proxy, routes: null);
+
+    /// <param name="routes">直连优先分流的线路记忆；已记为直连能通的站点不追加代理选项。</param>
+    public static IReadOnlyList<string> ForUri(Uri uri, int networkCachingMs, PlaybackProxyDecision proxy, RouteMemory? routes)
     {
         if (uri.IsFile)
         {
@@ -382,7 +386,8 @@ public static class PlaybackMediaOptions
         }
 
         // 强制代理时追加 :http-proxy；系统代理、直连以及本机回环地址不追加，选项与原来完全一致。
-        options.AddRange(proxy.LibVlcOptionsFor(uri));
+        // 直连优先：这个站点已经记为直连能通时也不追加。
+        options.AddRange(proxy.LibVlcOptionsFor(uri, routes));
         return options;
     }
 

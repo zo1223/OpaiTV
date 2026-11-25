@@ -300,5 +300,5 @@ public partial class HeroBannerControl : UserControl
 
     // Border 的 ClipToBounds 只按矩形裁剪：这里按圆角裁，海报背景才不会露出直角
     private void Root_SizeChanged(object sender, SizeChangedEventArgs e) =>
-        Root.Clip = new RectangleGeometry(new Rect(0, 0, Root.ActualWidth, Root.ActualHeight), 12, 12);
+        Root.Clip = new RectangleGeometry(new Rect(0, 0, Root.ActualWidth, Root.ActualHeight), 28, 28);
 }

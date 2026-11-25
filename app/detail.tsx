@@ -1,5 +1,5 @@
 import React, { useCallback, useContext, useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, Image, ScrollView, ActivityIndicator, TouchableOpacity } from "react-native";
+import { View, Text, StyleSheet, Image, ScrollView, ActivityIndicator, TouchableOpacity, BackHandler } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { SafeAreaInsetsContext } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -23,6 +23,8 @@ import {
 } from "@/services/channelHealth";
 import { getSearchResultSourceKey } from "@/services/videoSourceSubscription";
 import { resolveDirectPlayParams } from "@/services/directPlay";
+import { DetailRelatedRow } from "@/components/DetailRelatedRow";
+import type { RelatedItem } from "@/services/relatedItems";
 import { Colors } from "@/constants/Colors";
 
 // 沉浸式详情页主按钮要播的那一集:有观看记录时接着上次那一集和进度,否则第一集
@@ -34,9 +36,24 @@ interface PrimaryPlayTarget {
 
 const FIRST_EPISODE: PrimaryPlayTarget = { episodeIndex: 0, resumed: false };
 
+// 这个页面当前显示的是哪一部:路由参数,或者从“相关推荐”点进去的那一部
+interface DetailTarget {
+  q: string;
+  source?: string;
+  id?: string;
+}
+
 export default function DetailScreen() {
-  const { q, source, id } = useLocalSearchParams<{ q: string; source?: string; id?: string }>();
+  const params = useLocalSearchParams<{ q: string; source?: string; id?: string }>();
   const router = useRouter();
+  // 从“相关推荐”一路点进来的轨迹(最后一项是正在显示的)。在同一个页面里换内容而不是再压一层详情页:
+  // 详情 store 是全局的,压一层的话返回时上一层会显示成后一部的数据。返回先按轨迹退回上一部,退完才离开页面。
+  const [relatedTrail, setRelatedTrail] = useState<DetailTarget[]>([]);
+  const { q, source, id }: Partial<DetailTarget> =
+    relatedTrail.length > 0 ? relatedTrail[relatedTrail.length - 1] : params;
+  const routeQ = params.q;
+  const routeSource = params.source;
+  const routeId = params.id;
 
   // 响应式布局配置
   const responsiveConfig = useResponsiveLayout();
@@ -96,6 +113,29 @@ export default function DetailScreen() {
   }, [abort, init, q, source, id]);
 
   useEffect(() => () => scanAbortRef.current?.abort(), []);
+
+  // 路由参数换了(从别处重新进入这个页面)就丢掉轨迹,按新参数显示
+  useEffect(() => {
+    setRelatedTrail((trail) => (trail.length > 0 ? [] : trail));
+  }, [routeQ, routeSource, routeId]);
+
+  // 轨迹非空时,系统返回键(安卓)同样先退回上一部
+  const hasRelatedTrail = relatedTrail.length > 0;
+  useEffect(() => {
+    if (!hasRelatedTrail) return;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      setRelatedTrail((trail) => trail.slice(0, -1));
+      return true;
+    });
+    return () => subscription.remove();
+  }, [hasRelatedTrail]);
+
+  const handleOpenRelated = useCallback((item: RelatedItem) => {
+    // 与首页卡片进详情页的参数规则相同:豆瓣条目只按标题找,片源条目带 source + id
+    const next: DetailTarget =
+      item.source === "douban" ? { q: item.title } : { q: item.title, source: item.source, id: String(item.id) };
+    setRelatedTrail((trail) => [...trail, next]);
+  }, []);
 
   useEffect(() => {
     scanAbortRef.current?.abort();
@@ -179,6 +219,10 @@ export default function DetailScreen() {
     handlePlay(primaryEpisodeIndex, primaryInRange ? primaryTarget.position : undefined);
   };
   const handleBack = () => {
+    if (relatedTrail.length > 0) {
+      setRelatedTrail((trail) => trail.slice(0, -1));
+      return;
+    }
     if (router.canGoBack()) {
       router.back();
     }
@@ -251,7 +295,7 @@ export default function DetailScreen() {
             />
             {/* 上沿压暗保证返回按钮与状态栏可读,下半部渐变到页面背景色 */}
             <LinearGradient
-              colors={["rgba(0,0,0,0.45)", "rgba(0,0,0,0)", "rgba(21,23,24,0.82)", Colors.dark.background]}
+              colors={["rgba(0,0,0,0.45)", "rgba(0,0,0,0)", "rgba(10,11,20,0.82)", Colors.dark.background]}
               locations={[0, 0.3, 0.72, 1]}
               style={StyleSheet.absoluteFill}
               pointerEvents="none"
@@ -280,7 +324,7 @@ export default function DetailScreen() {
                   disabled={episodeCount === 0}
                   style={dynamicStyles.heroPlayButton}
                 >
-                  <FontAwesome name="play" size={16} color="#fff" />
+                  <FontAwesome name="play" size={16} color="#06140E" />
                   <Text style={dynamicStyles.heroPlayText}>{primaryLabel}</Text>
                 </StyledButton>
                 <StyledButton
@@ -365,6 +409,14 @@ export default function DetailScreen() {
               ))}
             </View>
           </View>
+
+          {/* 相关推荐:集数下方,只用本机候选池,没有可推荐的不显示 */}
+          <DetailRelatedRow
+            current={detail}
+            onSelect={handleOpenRelated}
+            spacing={spacing}
+            isTablet={deviceType === 'tablet'}
+          />
         </ScrollView>
       );
     } else {
@@ -515,7 +567,7 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       width: '100%',
       height: isTablet ? 480 : 440,
       justifyContent: 'flex-end',
-      backgroundColor: '#1c1f20',
+      backgroundColor: '#151828',
     },
     heroPoster: {
       ...StyleSheet.absoluteFillObject,
@@ -529,7 +581,8 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
     heroTitle: {
       fontSize: isTablet ? 30 : 26,
       lineHeight: isTablet ? 38 : 32,
-      fontWeight: 'bold',
+      fontWeight: '800',
+      letterSpacing: 0.3,
       color: '#fff',
       marginBottom: 6,
     },
@@ -552,12 +605,13 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       flex: 1,
       minHeight: 48,
       borderRadius: 24,
+      backgroundColor: '#6FDCA8',
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
     },
     heroPlayText: {
-      color: '#fff',
+      color: '#06140E',
       fontSize: 16,
       fontWeight: 'bold',
       marginLeft: 8,
@@ -591,7 +645,7 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
     mobilePoster: {
       width: '100%',
       height: 280,
-      borderRadius: 8,
+      borderRadius: 20,
       alignSelf: 'center',
       marginBottom: spacing,
     },
@@ -611,7 +665,7 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
     poster: {
       width: isTV ? 200 : 160,
       height: isTV ? 300 : 240,
-      borderRadius: 8,
+      borderRadius: 14,
     },
     infoContainer: {
       flex: 1,
