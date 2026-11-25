@@ -183,6 +183,67 @@
                     </DockPanel>
                 </Border>
 
+                <!-- 弹幕：默认关闭。每一项改了立即生效并保存，不随“保存设置”提交。
+                     服务器地址留空时用内置来源（直连腾讯视频、哔哩哔哩的公开弹幕），不需要用户部署任何服务 -->
+                <Border Style="{StaticResource CardPanelStyle}">
+                    <StackPanel>
+                        <DockPanel>
+                            <ToggleButton x:Name="DanmakuToggle" DockPanel.Dock="Right" Style="{StaticResource SwitchStyle}"
+                                          VerticalAlignment="Center" Margin="14,0,0,0"
+                                          Checked="DanmakuToggle_Changed" Unchecked="DanmakuToggle_Changed" />
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="弹幕" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" />
+                                <TextBlock x:Name="DanmakuStatus" Foreground="{StaticResource MutedTextBrush}"
+                                           FontSize="12" Margin="0,5,0,0" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </DockPanel>
+
+                        <StackPanel x:Name="DanmakuOptionsPanel" Margin="0,14,0,0" Visibility="Collapsed">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="12" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="12" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="透明度" Foreground="{StaticResource SoftTextBrush}" FontSize="13" Margin="0,0,0,7" />
+                                    <ComboBox x:Name="DanmakuOpacityBox" Height="36" FontSize="14" SelectionChanged="DanmakuOption_SelectionChanged">
+                                        <ComboBoxItem Content="40%" Tag="0.4" />
+                                        <ComboBoxItem Content="60%" Tag="0.6" />
+                                        <ComboBoxItem Content="80%" Tag="0.8" />
+                                        <ComboBoxItem Content="100%" Tag="1" />
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="滚动速度" Foreground="{StaticResource SoftTextBrush}" FontSize="13" Margin="0,0,0,7" />
+                                    <ComboBox x:Name="DanmakuSpeedBox" Height="36" FontSize="14" SelectionChanged="DanmakuOption_SelectionChanged">
+                                        <ComboBoxItem Content="慢" Tag="slow" />
+                                        <ComboBoxItem Content="标准" Tag="normal" />
+                                        <ComboBoxItem Content="快" Tag="fast" />
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="4">
+                                    <TextBlock Text="字号" Foreground="{StaticResource SoftTextBrush}" FontSize="13" Margin="0,0,0,7" />
+                                    <ComboBox x:Name="DanmakuFontSizeBox" Height="36" FontSize="14" SelectionChanged="DanmakuOption_SelectionChanged">
+                                        <ComboBoxItem Content="小" Tag="small" />
+                                        <ComboBoxItem Content="标准" Tag="normal" />
+                                        <ComboBoxItem Content="大" Tag="large" />
+                                    </ComboBox>
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Text="弹幕服务器地址（可选）" Foreground="{StaticResource SoftTextBrush}" FontSize="13" Margin="0,14,0,7" />
+                            <TextBox x:Name="DanmakuServerBox"
+                                     Tag="留空即可；高级用户可填自己的 danmu_api 地址，如 http://192.168.1.7:9321"
+                                     LostFocus="DanmakuServerBox_LostFocus" KeyDown="DanmakuServerBox_KeyDown" />
+                            <TextBlock x:Name="DanmakuServerHint" Foreground="{StaticResource MutedTextBrush}"
+                                       FontSize="12" Margin="0,8,0,0" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
                 <Border Style="{StaticResource CardPanelStyle}">
                     <StackPanel>
                         <TextBlock Text="点播下载目录" Foreground="{StaticResource TextBrush}" FontSize="15" FontWeight="SemiBold" />

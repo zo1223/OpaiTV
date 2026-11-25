@@ -51,7 +51,19 @@ public sealed record DesktopSettings(
     /// 成人内容(18+)开关，默认关闭；关闭时成人源及其内容在所有取数入口被过滤。
     /// 设置页切换后立即生效并保存，不随“保存设置”提交。
     /// </summary>
-    bool ShowAdultContent = false);
+    bool ShowAdultContent = false,
+    /// <summary>
+    /// 弹幕开关，默认关闭。设置页里的弹幕各项都是改了立即生效并保存，不随“保存设置”提交。
+    /// </summary>
+    bool DanmakuEnabled = false,
+    /// <summary>自定义 danmu_api 服务器根地址；留空使用内置来源（直连腾讯视频、哔哩哔哩的公开接口）。</summary>
+    string DanmakuServerUrl = "",
+    /// <summary>弹幕不透明度（0.2 ~ 1）。</summary>
+    double DanmakuOpacity = DanmakuSettingsRules.DefaultOpacity,
+    /// <summary>弹幕滚动速度：slow | normal | fast。</summary>
+    string DanmakuSpeed = DanmakuSettingsRules.DefaultSpeed,
+    /// <summary>弹幕字号：small | normal | large。</summary>
+    string DanmakuFontSize = DanmakuSettingsRules.DefaultFontSize);
 
 public static class VodCacheSettings
 {
@@ -87,6 +99,10 @@ public static class DesktopSettingsMigration
             VodPrebufferSeconds = VodCacheSettings.NormalizePrebufferSeconds(settings.VodPrebufferSeconds),
             VodCacheDirectory = VodCacheSettings.ResolveDirectory(settings.VodCacheDirectory),
             VodCacheRetention = VodCacheSettings.NormalizeRetention(settings.VodCacheRetention),
+            DanmakuServerUrl = DanmakuSettingsRules.NormalizeServerUrl(settings.DanmakuServerUrl),
+            DanmakuOpacity = DanmakuSettingsRules.NormalizeOpacity(settings.DanmakuOpacity),
+            DanmakuSpeed = DanmakuSettingsRules.NormalizeSpeed(settings.DanmakuSpeed),
+            DanmakuFontSize = DanmakuSettingsRules.NormalizeFontSize(settings.DanmakuFontSize),
         };
 }
 

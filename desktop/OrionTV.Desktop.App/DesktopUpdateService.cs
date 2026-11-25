@@ -21,8 +21,22 @@ public sealed record DesktopUpdateInfo(
     string ReleaseNotes,
     DateTimeOffset? PublishedAt);
 
+public enum DesktopInstallKind
+{
+    /// <summary>Installed by the Inno Setup installer (updates run the installer).</summary>
+    Installed,
+
+    /// <summary>Extracted from the self-contained zip (updates overwrite the running folder in place).</summary>
+    Portable,
+}
+
 public sealed partial class DesktopUpdateService : IDisposable
 {
+    internal const string AppExecutableName = "OpaiTV.exe";
+    internal const string AppAssemblyName = "OpaiTV.dll";
+    private const string InstallerUninstallerName = "unins000.exe";
+    private const string PortableStagingDirectoryName = "portable";
+
     private const string ReleasesApiUrl = "https://api.github.com/repos/zo1223/OpaiTV/releases?per_page=20";
     private const long MaximumInstallerSize = 1024L * 1024 * 1024;
     private static readonly TimeSpan AutomaticCheckInterval = TimeSpan.FromHours(12);
@@ -114,13 +128,53 @@ public sealed partial class DesktopUpdateService : IDisposable
             throw new InvalidDataException("The release reports an invalid installer size.");
         }
 
-        var expectedHash = await DownloadChecksumAsync(update, cancellationToken).ConfigureAwait(false);
-        var versionDirectory = Path.Combine(_updateDirectory, update.VersionText);
+        return await DownloadFileAsync(
+            update.InstallerUri,
+            update.ChecksumUri,
+            update.VersionText,
+            update.InstallerName,
+            update.InstallerSize,
+            progress,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Downloads the self-contained zip that belongs to the same release as <paramref name="update"/>.
+    /// The zip is verified against its published SHA-256 file before it is returned.
+    /// </summary>
+    public async Task<string> DownloadAndVerifyPortableAsync(
+        DesktopUpdateInfo update,
+        IProgress<int>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        var archiveName = GetPortableArchiveName(update);
+        return await DownloadFileAsync(
+            new Uri(update.InstallerUri, archiveName),
+            new Uri(update.InstallerUri, archiveName + ".sha256"),
+            update.VersionText,
+            archiveName,
+            expectedSize: null,
+            progress,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<string> DownloadFileAsync(
+        Uri fileUri,
+        Uri checksumUri,
+        string versionText,
+        string fileName,
+        long? expectedSize,
+        IProgress<int>? progress,
+        CancellationToken cancellationToken)
+    {
+        var expectedHash = await DownloadChecksumAsync(checksumUri, cancellationToken).ConfigureAwait(false);
+        var versionDirectory = Path.Combine(_updateDirectory, versionText);
         Directory.CreateDirectory(versionDirectory);
-        var destination = Path.Combine(versionDirectory, update.InstallerName);
+        var destination = Path.Combine(versionDirectory, fileName);
 
         if (File.Exists(destination)
-            && new FileInfo(destination).Length == update.InstallerSize
+            && (expectedSize is null || new FileInfo(destination).Length == expectedSize.Value)
             && await HasExpectedHashAsync(destination, expectedHash, cancellationToken).ConfigureAwait(false))
         {
             progress?.Report(100);
@@ -132,14 +186,14 @@ public sealed partial class DesktopUpdateService : IDisposable
         {
             progress?.Report(0);
             using var response = await _http.GetAsync(
-                update.InstallerUri,
+                fileUri,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
             var contentLength = response.Content.Headers.ContentLength;
             if (contentLength is > MaximumInstallerSize
-                || (contentLength.HasValue && contentLength.Value != update.InstallerSize))
+                || (expectedSize.HasValue && contentLength.HasValue && contentLength.Value != expectedSize.Value))
             {
                 throw new InvalidDataException("The downloaded installer size does not match the release metadata.");
             }
@@ -153,23 +207,28 @@ public sealed partial class DesktopUpdateService : IDisposable
                              bufferSize: 128 * 1024,
                              FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
+                var maximumSize = expectedSize ?? MaximumInstallerSize;
+                var progressTotal = expectedSize ?? contentLength ?? 0;
                 var buffer = new byte[128 * 1024];
                 long written = 0;
                 int read;
                 while ((read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
                 {
                     written += read;
-                    if (written > update.InstallerSize || written > MaximumInstallerSize)
+                    if (written > maximumSize || written > MaximumInstallerSize)
                     {
                         throw new InvalidDataException("The downloaded installer is larger than expected.");
                     }
 
                     await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                    progress?.Report((int)(written * 100 / update.InstallerSize));
+                    if (progressTotal > 0)
+                    {
+                        progress?.Report((int)Math.Min(100, written * 100 / progressTotal));
+                    }
                 }
 
                 await output.FlushAsync(cancellationToken).ConfigureAwait(false);
-                if (written != update.InstallerSize)
+                if (written == 0 || (expectedSize.HasValue && written != expectedSize.Value))
                 {
                     throw new InvalidDataException("The downloaded installer is incomplete.");
                 }
@@ -248,6 +307,182 @@ public sealed partial class DesktopUpdateService : IDisposable
         if (process is null)
         {
             throw new InvalidOperationException("The update installer could not be started.");
+        }
+    }
+
+    /// <summary>Directory that holds the running OpaiTV.exe.</summary>
+    public static string CurrentAppDirectory =>
+        TrimDirectory(Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory);
+
+    public static DesktopInstallKind CurrentInstallKind => DetectInstallKind(
+        CurrentAppDirectory,
+        [
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetEnvironmentVariable("ProgramW6432"),
+        ],
+        File.Exists(Path.Combine(CurrentAppDirectory, InstallerUninstallerName)));
+
+    /// <summary>
+    /// Decides whether the app folder is an installer-managed install or a portable (unzipped) copy.
+    /// A folder below Program Files, or one that contains the Inno Setup uninstaller (custom install
+    /// directory), is installer-managed; everything else is portable.
+    /// </summary>
+    public static DesktopInstallKind DetectInstallKind(
+        string appDirectory,
+        IEnumerable<string?> programFilesRoots,
+        bool hasInstallerUninstaller)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(appDirectory);
+        ArgumentNullException.ThrowIfNull(programFilesRoots);
+        if (hasInstallerUninstaller)
+        {
+            return DesktopInstallKind.Installed;
+        }
+
+        var directory = NormalizeWindowsPath(appDirectory);
+        foreach (var root in programFilesRoots)
+        {
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                continue;
+            }
+
+            var normalizedRoot = NormalizeWindowsPath(root);
+            if (directory.Equals(normalizedRoot, StringComparison.OrdinalIgnoreCase)
+                || directory.StartsWith(normalizedRoot + "\\", StringComparison.OrdinalIgnoreCase))
+            {
+                return DesktopInstallKind.Installed;
+            }
+        }
+
+        return DesktopInstallKind.Portable;
+    }
+
+    /// <summary>Name of the self-contained zip published next to the installer of the same release.</summary>
+    public static string GetPortableArchiveName(DesktopUpdateInfo update)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        var match = InstallerNameRegex().Match(update.InstallerName);
+        if (!match.Success
+            || !TryParseVersion(match.Groups["version"].Value, out var installerVersion)
+            || installerVersion != update.Version)
+        {
+            throw new InvalidDataException("The installer name does not match the release version.");
+        }
+
+        return $"OpaiTV-{match.Groups["version"].Value}-win-x64-self-contained.zip";
+    }
+
+    /// <summary>
+    /// Extracts the verified portable zip into a fresh staging folder and checks that it really
+    /// contains the expected version. Returns the folder that holds the new OpaiTV.exe.
+    /// </summary>
+    public string StagePortableUpdate(string archivePath, DesktopUpdateInfo update)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(archivePath);
+        ArgumentNullException.ThrowIfNull(update);
+        var staging = Path.Combine(_updateDirectory, update.VersionText, PortableStagingDirectoryName);
+        if (Directory.Exists(staging))
+        {
+            Directory.Delete(staging, recursive: true);
+        }
+
+        Directory.CreateDirectory(staging);
+        try
+        {
+            ZipFile.ExtractToDirectory(archivePath, staging, overwriteFiles: true);
+            var root = FindStagedAppRoot(staging)
+                ?? throw new InvalidDataException("The portable package does not contain OpaiTV.exe.");
+            var stagedVersion = ReadStagedVersion(root);
+            if (stagedVersion is null || stagedVersion != update.Version)
+            {
+                throw new InvalidDataException("The portable package version does not match the release version.");
+            }
+
+            return root;
+        }
+        catch
+        {
+            TryDeleteDirectory(staging);
+            throw;
+        }
+    }
+
+    /// <summary>Throws when files cannot be created in <paramref name="directory"/>.</summary>
+    public static void EnsureDirectoryWritable(string directory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
+        var probe = Path.Combine(directory, $".opaitv-update-probe-{Guid.NewGuid():N}");
+        try
+        {
+            using (File.Create(probe))
+            {
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new UnauthorizedAccessException("The application directory is not writable.", exception);
+        }
+
+        TryDelete(probe);
+    }
+
+    /// <summary>
+    /// Starts the freshly staged OpaiTV.exe as a helper. It waits for this process to exit, copies the
+    /// staged files over <paramref name="targetDirectory"/> and then restarts the app from there.
+    /// </summary>
+    public static void LaunchPortableUpdater(string stagedAppDirectory, string targetDirectory, int processId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stagedAppDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetDirectory);
+        var helper = Path.Combine(stagedAppDirectory, AppExecutableName);
+        if (!File.Exists(helper))
+        {
+            throw new FileNotFoundException("The staged update executable was not found.", helper);
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = helper,
+            WorkingDirectory = stagedAppDirectory,
+            UseShellExecute = false,
+        };
+        foreach (var argument in PortableUpdateApplier.BuildArguments(targetDirectory, processId))
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(startInfo);
+        if (process is null)
+        {
+            throw new InvalidOperationException("The portable updater could not be started.");
+        }
+    }
+
+    /// <summary>Best-effort removal of staged portable updates left behind by a finished update.</summary>
+    public static void CleanUpPortableStaging(string? updateDirectory = null)
+    {
+        try
+        {
+            var root = string.IsNullOrWhiteSpace(updateDirectory) ? DefaultUpdateDirectory : updateDirectory;
+            if (!Directory.Exists(root))
+            {
+                return;
+            }
+
+            foreach (var versionDirectory in Directory.GetDirectories(root))
+            {
+                TryDeleteDirectory(Path.Combine(versionDirectory, PortableStagingDirectoryName));
+                foreach (var archive in Directory.GetFiles(versionDirectory, "OpaiTV-*-win-x64-self-contained.zip"))
+                {
+                    TryDelete(archive);
+                }
+            }
+        }
+        catch
+        {
+            // Leftover staging files only cost disk space; the next start retries.
         }
     }
 
@@ -384,12 +619,12 @@ public sealed partial class DesktopUpdateService : IDisposable
     }
 
     private async Task<string> DownloadChecksumAsync(
-        DesktopUpdateInfo update,
+        Uri checksumUri,
         CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
-        var checksumText = await _http.GetStringAsync(update.ChecksumUri, timeout.Token).ConfigureAwait(false);
+        var checksumText = await _http.GetStringAsync(checksumUri, timeout.Token).ConfigureAwait(false);
         if (!TryParseChecksum(checksumText, out var checksum))
         {
             throw new InvalidDataException("The release checksum file is invalid.");
@@ -471,6 +706,68 @@ public sealed partial class DesktopUpdateService : IDisposable
         catch
         {
             // A failed timestamp write should not turn a successful update check into an error.
+        }
+    }
+
+    private static string? FindStagedAppRoot(string staging)
+    {
+        if (File.Exists(Path.Combine(staging, AppExecutableName)))
+        {
+            return staging;
+        }
+
+        // Tolerate a zip that wraps everything in one top-level folder.
+        var directories = Directory.GetDirectories(staging);
+        return directories.Length == 1
+               && Directory.GetFiles(staging).Length == 0
+               && File.Exists(Path.Combine(directories[0], AppExecutableName))
+            ? directories[0]
+            : null;
+    }
+
+    private static Version? ReadStagedVersion(string appDirectory)
+    {
+        try
+        {
+            var assemblyPath = Path.Combine(appDirectory, AppAssemblyName);
+            if (File.Exists(assemblyPath))
+            {
+                var assemblyVersion = System.Reflection.AssemblyName.GetAssemblyName(assemblyPath).Version;
+                return assemblyVersion is null ? null : NormalizeVersion(assemblyVersion);
+            }
+
+            var fileVersion = FileVersionInfo.GetVersionInfo(Path.Combine(appDirectory, AppExecutableName));
+            return fileVersion.FileVersion is not null
+                   && Version.TryParse(
+                       $"{fileVersion.FileMajorPart}.{fileVersion.FileMinorPart}.{fileVersion.FileBuildPart}.{fileVersion.FilePrivatePart}",
+                       out var parsed)
+                ? NormalizeVersion(parsed)
+                : null;
+        }
+        catch (Exception exception) when (exception is IOException or BadImageFormatException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static string NormalizeWindowsPath(string path) =>
+        path.Trim().Replace('/', '\\').TrimEnd('\\');
+
+    private static string TrimDirectory(string path) =>
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+    private static void TryDeleteDirectory(string directory)
+    {
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        catch
+        {
+            // Files still in use (for example the helper that is just exiting) are removed next time.
         }
     }
 

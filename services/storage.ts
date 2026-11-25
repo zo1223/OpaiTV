@@ -45,6 +45,13 @@ export interface AppSettings {
     };
   };
   m3uUrl: string;
+  /** 弹幕设置(见 stores/danmakuStore);缺失时按默认值处理,开关默认关闭 */
+  danmakuEnabled?: boolean;
+  /** 自定义 danmu_api 服务器根地址;留空使用内置来源 */
+  danmakuServerUrl?: string;
+  danmakuOpacity?: number;
+  danmakuSpeed?: string;
+  danmakuFontSize?: string;
 }
 
 export interface LoginCredentials {

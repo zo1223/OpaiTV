@@ -36,6 +36,8 @@ public sealed class AppServices : IDisposable
                 cancellationToken));
         VodCache = new VodCacheService();
         Downloads = new VodDownloadManager(VodCache);
+        _danmakuHttp = DanmakuHttp.CreateDefaultClient();
+        Danmaku = new DanmakuService(new DanmakuHttp(_danmakuHttp));
         _settings = SettingsStore.Load();
         // 启动时先挂上磁盘里已有的 AI 额外源（订阅随后异步加载再合并）
         RebuildSources();
@@ -55,6 +57,10 @@ public sealed class AppServices : IDisposable
     public VodCacheService VodCache { get; }
     public VodDownloadManager Downloads { get; }
     public CatalogPlayabilityCache PlayabilityCache { get; } = new();
+
+    /// <summary>弹幕取数（内置直连腾讯视频、哔哩哔哩；可选自定义 danmu_api 服务器）。用独立的 HttpClient，不影响其他请求。</summary>
+    public DanmakuService Danmaku { get; }
+    private readonly HttpClient _danmakuHttp;
 
     public FavoriteStore Favorites { get; } = new();
     public PlayRecordStore PlayRecords { get; } = new();
@@ -114,6 +120,34 @@ public sealed class AppServices : IDisposable
     public void SetShowAdultContent(bool enabled)
     {
         Settings = _settings with { ShowAdultContent = enabled };
+        SettingsStore.Save(_settings);
+    }
+
+    /// <summary>
+    /// 弹幕设置：和成人内容开关一样立即生效并保存，不等“保存设置”。
+    /// 没给的项保持原值；落盘失败时抛出异常，本次运行内仍按新值生效。
+    /// </summary>
+    public void SetDanmakuSettings(
+        bool? enabled = null,
+        string? serverUrl = null,
+        double? opacity = null,
+        string? speed = null,
+        string? fontSize = null)
+    {
+        Settings = _settings with
+        {
+            DanmakuEnabled = enabled ?? _settings.DanmakuEnabled,
+            DanmakuServerUrl = serverUrl is null
+                ? _settings.DanmakuServerUrl
+                : DanmakuSettingsRules.NormalizeServerUrl(serverUrl),
+            DanmakuOpacity = opacity is null
+                ? _settings.DanmakuOpacity
+                : DanmakuSettingsRules.NormalizeOpacity(opacity.Value),
+            DanmakuSpeed = speed is null ? _settings.DanmakuSpeed : DanmakuSettingsRules.NormalizeSpeed(speed),
+            DanmakuFontSize = fontSize is null
+                ? _settings.DanmakuFontSize
+                : DanmakuSettingsRules.NormalizeFontSize(fontSize),
+        };
         SettingsStore.Save(_settings);
     }
 
@@ -414,5 +448,6 @@ public sealed class AppServices : IDisposable
 
         _libVlc?.Dispose();
         Http.Dispose();
+        _danmakuHttp.Dispose();
     }
 }

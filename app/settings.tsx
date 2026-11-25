@@ -13,6 +13,7 @@ import { LiveStreamSection } from "@/components/settings/LiveStreamSection";
 import { VideoSourceSubscriptionSection } from "@/components/settings/VideoSourceSubscriptionSection";
 import { AddVideoSourceSection, AddVideoSourceSectionRef } from "@/components/settings/AddVideoSourceSection";
 import { AdultContentSection } from "@/components/settings/AdultContentSection";
+import { DanmakuSection, DanmakuSectionRef } from "@/components/settings/DanmakuSection";
 import { RemoteInputSection } from "@/components/settings/RemoteInputSection";
 import { SettingsSection } from "@/components/settings/SettingsSection";
 import { UpdateSection } from "@/components/settings/UpdateSection";
@@ -139,6 +140,7 @@ export default function SettingsScreen() {
   const videoSourceSubscriptionSectionRef = useRef<any>(null);
   const liveStreamSectionRef = useRef<any>(null);
   const addVideoSourceSectionRef = useRef<AddVideoSourceSectionRef>(null);
+  const danmakuSectionRef = useRef<DanmakuSectionRef>(null);
 
   useEffect(() => {
     loadSettings();
@@ -163,6 +165,9 @@ export default function SettingsScreen() {
       setVideoSourceSubscriptionUrl(message);
     } else if (currentSection === "addVideoSource" && addVideoSourceSectionRef.current) {
       addVideoSourceSectionRef.current.setInputValue(message);
+    } else if (currentSection === "danmaku" && danmakuSectionRef.current) {
+      // 弹幕服务器地址:立即保存,不走"保存设置"
+      danmakuSectionRef.current.setInputValue(message);
     } else if (currentSection === "livestream" && liveStreamSectionRef.current) {
       // Live Stream Section
       setM3uUrl(message);
@@ -323,13 +328,25 @@ export default function SettingsScreen() {
       ),
       key: "autoSkipAds",
     },
+    {
+      component: (
+        <DanmakuSection
+          ref={danmakuSectionRef}
+          onFocus={() => {
+            setCurrentFocusIndex(6);
+            setCurrentSection("danmaku");
+          }}
+        />
+      ),
+      key: "danmaku",
+    },
     deviceType !== "mobile" && {
       component: (
         <LiveStreamSection
           ref={liveStreamSectionRef}
           onChanged={markAsChanged}
           onFocus={() => {
-            setCurrentFocusIndex(6);
+            setCurrentFocusIndex(7);
             setCurrentSection("livestream");
           }}
         />

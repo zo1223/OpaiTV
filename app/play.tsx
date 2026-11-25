@@ -9,6 +9,7 @@ import { EpisodeSelectionModal } from "@/components/EpisodeSelectionModal";
 import { SourceSelectionModal } from "@/components/SourceSelectionModal";
 import { SpeedSelectionModal } from "@/components/SpeedSelectionModal";
 import { SeekingBar } from "@/components/SeekingBar";
+import { DanmakuOverlay } from "@/components/DanmakuOverlay";
 // import { NextEpisodeOverlay } from "@/components/NextEpisodeOverlay";
 import VideoLoadingAnimation from "@/components/VideoLoadingAnimation";
 import useDetailStore from "@/stores/detailStore";
@@ -227,6 +228,9 @@ export default function PlayScreen() {
         ) : (
           <LoadingContainer style={dynamicStyles.loadingContainer} currentEpisode={currentEpisode} />
         )}
+
+        {/* 弹幕层:盖在画面上、控制条之下;默认关闭,不接收触摸 */}
+        {currentEpisode?.url ? <DanmakuOverlay /> : null}
 
         {showControls && deviceType === "tv" && (
           <PlayerControls showControls={showControls} setShowControls={setShowControls} />

@@ -49,6 +49,7 @@ public partial class SettingsView : UserControl, INavigationAware
         M3uBox.Text = settings.M3uUrl;
         AutoSkipToggle.IsChecked = settings.AutoSkipAds;
         AdultContentToggle.IsChecked = settings.ShowAdultContent;
+        ShowDanmakuSettings(settings);
         AddSourceBox.Text = "";
         AddSourceAdultCheck.IsChecked = false;
         AddSourceStatus.Text = "";
@@ -127,9 +128,14 @@ public partial class SettingsView : UserControl, INavigationAware
 
     private async Task DownloadAndInstallUpdateAsync(DesktopUpdateInfo update)
     {
+        // 免安装版（解压即用）不跑安装包，而是原地覆盖当前目录；安装版保持原有安装包流程。
+        var portable = DesktopUpdateService.CurrentInstallKind == DesktopInstallKind.Portable;
+        var appDirectory = DesktopUpdateService.CurrentAppDirectory;
         var confirmation = MessageBox.Show(
             Window.GetWindow(this),
-            $"将下载 OpaiTV {update.VersionText}（{DesktopUpdateService.FormatFileSize(update.InstallerSize)}）。\n\n下载完成后软件会自动退出、安装并重新启动。是否继续？",
+            portable
+                ? $"将下载 OpaiTV {update.VersionText} 免安装包，并原地更新当前目录：\n{appDirectory}\n\n下载完成后软件会自动退出、替换文件并重新启动。是否继续？"
+                : $"将下载 OpaiTV {update.VersionText}（{DesktopUpdateService.FormatFileSize(update.InstallerSize)}）。\n\n下载完成后软件会自动退出、安装并重新启动。是否继续？",
             "安装更新",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question);
@@ -141,14 +147,33 @@ public partial class SettingsView : UserControl, INavigationAware
         SetUpdateBusy(true);
         UpdateProgressBar.Value = 0;
         UpdateProgressBar.Visibility = Visibility.Visible;
-        UpdateStatusText.Text = "正在下载安装包…";
+        var packageLabel = portable ? "更新包" : "安装包";
+        UpdateStatusText.Text = $"正在下载{packageLabel}…";
         try
         {
             var progress = new Progress<int>(value =>
             {
                 UpdateProgressBar.Value = value;
-                UpdateStatusText.Text = $"正在下载安装包… {value}%";
+                UpdateStatusText.Text = $"正在下载{packageLabel}… {value}%";
             });
+            if (portable)
+            {
+                DesktopUpdateService.EnsureDirectoryWritable(appDirectory);
+                var updates = _host.Services.Updates;
+                var archivePath = await updates.DownloadAndVerifyPortableAsync(update, progress);
+
+                UpdateStatusText.Text = "正在解压更新包…";
+                var stagedDirectory = await Task.Run(() => updates.StagePortableUpdate(archivePath, update));
+
+                UpdateStatusText.Text = "正在备份视频源配置…";
+                _ = DesktopUpdateService.BackupUserConfiguration(update.VersionText);
+
+                UpdateStatusText.Text = "正在替换程序文件并重新启动…";
+                DesktopUpdateService.LaunchPortableUpdater(stagedDirectory, appDirectory, Environment.ProcessId);
+                Application.Current.Shutdown();
+                return;
+            }
+
             var installerPath = await _host.Services.Updates.DownloadAndVerifyAsync(update, progress);
 
             UpdateStatusText.Text = "正在备份视频源配置…";
@@ -157,6 +182,10 @@ public partial class SettingsView : UserControl, INavigationAware
             UpdateStatusText.Text = "正在启动安装程序…";
             DesktopUpdateService.LaunchInstaller(installerPath);
             Application.Current.Shutdown();
+        }
+        catch (UnauthorizedAccessException) when (portable)
+        {
+            UpdateStatusText.Text = "当前程序目录不可写，无法原地更新；请把程序移到可写目录后重试";
         }
         catch (Win32Exception exception) when (exception.NativeErrorCode == 1223)
         {
@@ -168,11 +197,11 @@ public partial class SettingsView : UserControl, INavigationAware
         }
         catch (InvalidDataException)
         {
-            UpdateStatusText.Text = "安装包校验失败，未执行更新";
+            UpdateStatusText.Text = $"{packageLabel}校验失败，未执行更新";
         }
         catch (HttpRequestException)
         {
-            UpdateStatusText.Text = "安装包下载失败，请检查网络后重试";
+            UpdateStatusText.Text = $"{packageLabel}下载失败，请检查网络后重试";
         }
         catch
         {
@@ -441,6 +470,9 @@ public partial class SettingsView : UserControl, INavigationAware
     }
 
     // 成人内容(18+)开关：立即生效并保存，不需要再点“保存设置”
+    private bool _danmakuSaveFailed;
+    private bool _danmakuServerInvalid;
+
     private void AdultContentToggle_Changed(object sender, RoutedEventArgs e)
     {
         if (!_loaded)
@@ -459,6 +491,157 @@ public partial class SettingsView : UserControl, INavigationAware
         }
 
         RenderVideoSourceState();
+    }
+
+    // ---------- 弹幕：每一项改了立即生效并保存，不需要再点“保存设置” ----------
+
+    private void ShowDanmakuSettings(DesktopSettings settings)
+    {
+        DanmakuToggle.IsChecked = settings.DanmakuEnabled;
+        SelectByTag(
+            DanmakuOpacityBox,
+            DanmakuSettingsRules.OpacityOptions
+                .OrderBy(option => Math.Abs(option - settings.DanmakuOpacity))
+                .First()
+                .ToString(System.Globalization.CultureInfo.InvariantCulture));
+        SelectByTag(DanmakuSpeedBox, DanmakuSettingsRules.NormalizeSpeed(settings.DanmakuSpeed));
+        SelectByTag(DanmakuFontSizeBox, DanmakuSettingsRules.NormalizeFontSize(settings.DanmakuFontSize));
+        DanmakuServerBox.Text = settings.DanmakuServerUrl ?? "";
+        _danmakuSaveFailed = false;
+        _danmakuServerInvalid = false;
+        RenderDanmakuState();
+    }
+
+    private static void SelectByTag(ComboBox box, string tag)
+    {
+        foreach (var item in box.Items.OfType<ComboBoxItem>())
+        {
+            if (item.Tag as string == tag)
+            {
+                box.SelectedItem = item;
+                return;
+            }
+        }
+    }
+
+    private static string? SelectedTag(ComboBox box) => (box.SelectedItem as ComboBoxItem)?.Tag as string;
+
+    private void RenderDanmakuState()
+    {
+        var settings = _host.Services.Settings;
+        DanmakuOptionsPanel.Visibility = settings.DanmakuEnabled ? Visibility.Visible : Visibility.Collapsed;
+        DanmakuStatus.Foreground = (System.Windows.Media.Brush)FindResource(
+            _danmakuSaveFailed ? "DangerBrush" : "MutedTextBrush");
+        DanmakuStatus.Text = (settings.DanmakuEnabled
+                ? "已开启：播放在线视频时按片名和集数自动匹配弹幕，匹配不到就不显示"
+                : "已关闭")
+            + (_danmakuSaveFailed ? "。本次已生效，但写入设置文件失败，重启后可能恢复原状" : "");
+        DanmakuServerHint.Foreground = (System.Windows.Media.Brush)FindResource(
+            _danmakuServerInvalid ? "DangerBrush" : "MutedTextBrush");
+        DanmakuServerHint.Text = _danmakuServerInvalid
+            ? "地址无效，请填写 http(s) 地址；留空则使用内置来源"
+            : string.IsNullOrEmpty(settings.DanmakuServerUrl)
+                ? "当前使用内置来源（腾讯视频、哔哩哔哩的公开弹幕），不需要任何配置"
+                : "优先使用这个服务器；它匹配不到或访问失败时自动改用内置来源";
+    }
+
+    private void SaveDanmakuSettings(
+        bool? enabled = null,
+        string? serverUrl = null,
+        double? opacity = null,
+        string? speed = null,
+        string? fontSize = null)
+    {
+        try
+        {
+            _host.Services.SetDanmakuSettings(enabled, serverUrl, opacity, speed, fontSize);
+            _danmakuSaveFailed = false;
+        }
+        catch
+        {
+            _danmakuSaveFailed = true;
+        }
+
+        RenderDanmakuState();
+    }
+
+    private void DanmakuToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loaded)
+        {
+            SaveDanmakuSettings(enabled: DanmakuToggle.IsChecked == true);
+        }
+    }
+
+    private void DanmakuOption_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_loaded)
+        {
+            return;
+        }
+
+        if (ReferenceEquals(sender, DanmakuOpacityBox))
+        {
+            if (double.TryParse(
+                    SelectedTag(DanmakuOpacityBox),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var opacity))
+            {
+                SaveDanmakuSettings(opacity: opacity);
+            }
+        }
+        else if (ReferenceEquals(sender, DanmakuSpeedBox))
+        {
+            SaveDanmakuSettings(speed: SelectedTag(DanmakuSpeedBox));
+        }
+        else if (ReferenceEquals(sender, DanmakuFontSizeBox))
+        {
+            SaveDanmakuSettings(fontSize: SelectedTag(DanmakuFontSizeBox));
+        }
+    }
+
+    private void DanmakuServerBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            CommitDanmakuServerUrl();
+        }
+    }
+
+    private void DanmakuServerBox_LostFocus(object sender, RoutedEventArgs e) => CommitDanmakuServerUrl();
+
+    private void CommitDanmakuServerUrl()
+    {
+        if (!_loaded)
+        {
+            return;
+        }
+
+        var text = DanmakuServerBox.Text ?? "";
+        var normalized = DanmakuSettingsRules.NormalizeServerUrl(text);
+        // 填了内容却不是 http(s) 地址：不保存，提示一下
+        _danmakuServerInvalid = text.Trim().Length > 0 && normalized.Length == 0;
+        if (_danmakuServerInvalid)
+        {
+            RenderDanmakuState();
+            return;
+        }
+
+        if (DanmakuServerBox.Text != normalized)
+        {
+            DanmakuServerBox.Text = normalized;
+        }
+
+        if (normalized != (_host.Services.Settings.DanmakuServerUrl ?? ""))
+        {
+            SaveDanmakuSettings(serverUrl: normalized);
+        }
+        else
+        {
+            RenderDanmakuState();
+        }
     }
 
     /// <summary>

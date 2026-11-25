@@ -179,6 +179,10 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
     private DispatcherTimer? _adBadgeTimer;
     private int _playSeq;
 
+    /// <summary>弹幕层当前对应的“影片 + 集 + 服务器地址”；null 表示没有在显示或匹配弹幕。</summary>
+    private string? _danmakuKey;
+    private CancellationTokenSource? _danmakuCts;
+
     public PlayerView(IAppHost host)
     {
         InitializeComponent();
@@ -373,6 +377,8 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             return;
         }
 
+        // 从设置页回来：弹幕开关、服务器地址、样式可能改过
+        RefreshDanmaku();
         AttachNativeShortcutHook();
         if (_usingLocalEngine)
         {
@@ -461,6 +467,8 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
         _episodeIndex = index;
         var playSeq = ++_playSeq;
+        DanmakuLayer.ResetClock();
+        RefreshDanmaku();
         DisarmStartupWatchdog();
         _awaitingVideoOutput = false;
         _playbackConfirmed = false;
@@ -937,6 +945,13 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             return;
         }
 
+        // LibVLC 正常播放中也会不断报 Buffering（随后的进度上报又改回 Playing），所以 Buffering 不算暂停；
+        // 真卡住时进度上报会断，弹幕时钟自己会停。
+        if (state != PlaybackState.Buffering)
+        {
+            DanmakuLayer.SetPlaying(state == PlaybackState.Playing);
+        }
+
         if (state == PlaybackState.Error)
         {
             FailPlayback("LibVLC 播放失败，请重试或返回详情页更换线路");
@@ -989,6 +1004,7 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         }
 
         _currentTimeMs = time;
+        DanmakuLayer.SyncPosition(DanmakuTimeMapping.ContentSeconds(time, _adRanges));
         if (_resumeContext is not null
             && !_resumePositionReached
             && time >= Math.Max(0, EffectiveResumeTargetMs() - 3000))
@@ -1166,6 +1182,8 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             _controller?.Stop();
         }
 
+        // 停止后播放器不再报状态，弹幕跟着停
+        DanmakuLayer.SetPlaying(false);
         HideLoadingNotice();
         PlayPauseButton.Content = PlayGlyph;
     }
@@ -1589,13 +1607,17 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         var target = (long)(sliderValue / 1000 * _lengthMs);
         if (_usingLocalEngine && _localEngine is not null)
         {
-            _localEngine.TrySeek(target);
+            if (_localEngine.TrySeek(target))
+            {
+                SeekDanmaku(target);
+            }
+
             return;
         }
 
-        if (_controller is not null)
+        if (_controller is not null && _controller.TrySeek(target))
         {
-            _controller.Time = target;
+            SeekDanmaku(target);
         }
     }
 
@@ -1742,16 +1764,124 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
         if (_usingLocalEngine && _localEngine is not null)
         {
-            _localEngine.TrySeekBy(deltaMs);
+            if (_localEngine.TrySeekBy(deltaMs))
+            {
+                SeekDanmaku(Math.Clamp(_currentTimeMs + deltaMs, 0, _lengthMs));
+            }
+
             return;
         }
 
         if (_controller is not null)
         {
             var target = Math.Clamp(_currentTimeMs + deltaMs, 0, _lengthMs);
-            _controller.Time = target;
+            if (_controller.TrySeek(target))
+            {
+                SeekDanmaku(target);
+            }
         }
     }
+
+    // ---------- 弹幕 ----------
+
+    /// <summary>
+    /// 按当前影片、集数和弹幕设置决定弹幕层显示什么。开播、换集、换源、从设置页回来时调用；条件没变就什么都不做。
+    /// 弹幕开关关闭（默认）时不发任何请求。匹配不到或取数失败时弹幕层保持空白，不提示、不影响播放。
+    /// 本地媒体库的文件不匹配弹幕：标题是用户自己的文件名，不发给第三方。
+    /// </summary>
+    private void RefreshDanmaku()
+    {
+        var settings = _host.Services.Settings;
+        var isLocal = string.Equals(_sourceKey, "local", StringComparison.OrdinalIgnoreCase);
+        if (_disposed
+            || !settings.DanmakuEnabled
+            || isLocal
+            || string.IsNullOrWhiteSpace(_title)
+            || _episodeIndex < 0
+            || _episodeIndex >= _episodes.Count)
+        {
+            StopDanmaku();
+            return;
+        }
+
+        DanmakuLayer.ApplyStyle(settings.DanmakuOpacity, settings.DanmakuSpeed, settings.DanmakuFontSize);
+        var label = _episodeIndex < _episodeLabels.Count ? _episodeLabels[_episodeIndex] : null;
+        var query = new DanmakuQuery(
+            _title,
+            _episodeIndex,
+            DanmakuTitle.EpisodeNumberFromLabel(label, _episodeIndex),
+            _episodes.Count);
+        var serverUrl = settings.DanmakuServerUrl ?? "";
+        var key = string.Join(
+            "\n",
+            query.Title,
+            query.EpisodeIndex,
+            query.EpisodeNumber,
+            query.EpisodeCount,
+            serverUrl);
+        if (key == _danmakuKey)
+        {
+            return;
+        }
+
+        StopDanmaku();
+        _danmakuKey = key;
+        _danmakuCts = new CancellationTokenSource();
+        _ = LoadDanmakuAsync(query, serverUrl, key, _danmakuCts.Token);
+    }
+
+    private async Task LoadDanmakuAsync(DanmakuQuery query, string serverUrl, string key, CancellationToken ct)
+    {
+        DanmakuTrack? track = null;
+        try
+        {
+            track = await _host.Services.Danmaku.ResolveAsync(query, serverUrl, ct).ConfigureAwait(true);
+        }
+        catch
+        {
+            // ResolveAsync 本身不抛异常，这里只是兜底
+        }
+
+        if (_disposed || ct.IsCancellationRequested || key != _danmakuKey)
+        {
+            return;
+        }
+
+        if (track is null)
+        {
+            // 没匹配到或来源暂时不可用：这一集不显示弹幕；下次开播或回到播放页时再试
+            _danmakuKey = null;
+            return;
+        }
+
+        DanmakuLayer.SetTrack(track);
+    }
+
+    private void StopDanmaku()
+    {
+        _danmakuKey = null;
+        var cts = _danmakuCts;
+        _danmakuCts = null;
+        if (cts is not null)
+        {
+            try
+            {
+                cts.Cancel();
+            }
+            catch
+            {
+                // 取消回调里的异常与播放无关
+            }
+
+            cts.Dispose();
+        }
+
+        DanmakuLayer.SetTrack(null);
+    }
+
+    /// <summary>用户主动跳转了进度：LibVLC 暂停时不上报进度，所以这里直接告诉弹幕层。</summary>
+    private void SeekDanmaku(long positionMs) =>
+        DanmakuLayer.Seek(DanmakuTimeMapping.ContentSeconds(positionMs, _adRanges));
 
     private void Overlay_MouseDown(object sender, MouseButtonEventArgs e)
     {
@@ -1905,6 +2035,7 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
         }
 
         CancelSourceSwitchScan();
+        StopDanmaku();
         _disposed = true;
         DetachNativeShortcutHook();
         _playSeq++;

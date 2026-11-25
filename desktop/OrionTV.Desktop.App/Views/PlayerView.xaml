@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
              xmlns:local="clr-namespace:OrionTV.Desktop.App.LocalPlayback"
+             xmlns:controls="clr-namespace:OrionTV.Desktop.App.Controls"
              Focusable="True"
              PreviewKeyDown="OnPreviewKeyDown">
     <Grid x:Name="PlayerRoot" Background="{StaticResource VideoBrush}" ClipToBounds="True">
@@ -16,6 +17,9 @@
             <Grid x:Name="OverlayRoot" Background="#01000000"
                   MouseLeftButtonDown="Overlay_MouseDown"
                   MouseWheel="Overlay_MouseWheel">
+
+                <!-- 弹幕层：盖在画面上、其他 overlay 之下；不接收鼠标。弹幕开关关闭或没有匹配到时是空的 -->
+                <controls:DanmakuOverlay x:Name="DanmakuLayer" />
 
                 <!-- 加载 / 缓冲 -->
                 <Border x:Name="LoadingOverlay" Background="{StaticResource VideoBrush}" Visibility="Collapsed">
