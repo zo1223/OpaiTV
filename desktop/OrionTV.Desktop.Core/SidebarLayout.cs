@@ -41,6 +41,20 @@ public static class SidebarLayout
         };
     }
 
+    /// <summary>只有隐藏档在左边缘留一条拉出把手；展开、仅图标两档不出现。</summary>
+    public static bool ShowsPullHandle(SidebarMode mode) => mode == SidebarMode.Hidden;
+
+    /// <summary>
+    /// 点把手从隐藏档恢复到哪一档：回到隐藏前的那档（展开或仅图标）。
+    /// 不知道隐藏前是哪档时（启动时读到的就是隐藏档），取切换顺序里隐藏的前一档，即仅图标。
+    /// 结果永远不是隐藏档，保证点了把手一定看得见侧栏。
+    /// </summary>
+    public static SidebarMode RestoreFromHidden(SidebarMode? beforeHidden) => beforeHidden switch
+    {
+        SidebarMode.Expanded => SidebarMode.Expanded,
+        _ => SidebarMode.Compact,
+    };
+
     public static string ToggleToolTip(SidebarMode mode) => mode switch
     {
         SidebarMode.Expanded => "收起侧栏（仅图标）",

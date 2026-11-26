@@ -153,6 +153,9 @@ public sealed class AppServices : IDisposable
     public PlayRecordStore PlayRecords { get; } = new();
     /// <summary>搜索记录（标签云），只存本机。</summary>
     public SearchHistoryStore SearchHistory { get; } = new();
+
+    /// <summary>顶栏搜索框与搜索页输入框共用的关键词（只在内存里，不落盘）。</summary>
+    public SearchQueryState SearchQuery { get; } = new();
     public LocalMediaStore LocalMedia { get; } = new();
     private DesktopSettings _settings;
 

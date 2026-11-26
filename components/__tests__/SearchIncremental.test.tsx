@@ -124,13 +124,19 @@ describe("SearchScreen incremental cross-source search", () => {
     expect(texts()).toEqual(expect.arrayContaining(["已搜完 2/2 个源，共 1 条", "A源 失败", "三体"]));
   });
 
-  it("renders search results as direct-play cards", async () => {
+  it("renders search results as detail-first cards, not direct-play cards", async () => {
     submit("三体");
     await act(async () => {
       mockRuns[0].onUpdate(snapshot([["A源", "done", 1]], [item("三体", "A源")]));
       mockRuns[0].finish();
     });
-    expect(mockCardProps[mockCardProps.length - 1]).toMatchObject({ title: "三体", directPlay: true });
+    // 点一下先进详情页:卡片不带 directPlay(也不带续播用的 progress),VideoCard 默认就是进 /detail
+    expect(mockCardProps.length).toBeGreaterThan(0);
+    for (const props of mockCardProps) {
+      expect(props.directPlay).toBeUndefined();
+      expect(props.progress).toBeUndefined();
+    }
+    expect(mockCardProps[mockCardProps.length - 1]).toMatchObject({ title: "三体" });
   });
 
   it("ignores late updates from a superseded search", async () => {

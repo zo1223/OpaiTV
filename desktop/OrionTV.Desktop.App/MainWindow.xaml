@@ -18,7 +18,7 @@
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
-        <!-- 顶部标题栏（CineFlow 式）：侧栏开关 + 品牌 + 大搜索入口 + 操作按钮。全屏时隐藏。
+        <!-- 顶部标题栏（CineFlow 式）：侧栏开关 + 品牌 + 搜索输入框 + 操作按钮。全屏时隐藏。
              这里的按钮都是已有入口的快捷方式（与侧栏项走同一个处理函数），不新增功能。 -->
         <Border x:Name="TopBar" Grid.Row="0" Grid.ColumnSpan="2" Height="68">
             <Border.Background>
@@ -69,14 +69,32 @@
                     </StackPanel>
                 </StackPanel>
 
-                <Button x:Name="TopSearchButton"
+                <!-- 顶栏搜索：真输入框（CineFlow 式）。回车或点放大镜即搜索：跳到搜索页并带上关键词；
+                     与搜索页输入框共用同一查询状态（Services.SearchQuery），两处始终显示同一关键词。 -->
+                <Border x:Name="TopSearchPill"
                         Grid.Column="1"
                         Style="{StaticResource TopSearchPillStyle}"
-                        Content="搜索电影、剧集…"
                         MaxWidth="620"
-                        Margin="36,0,36,0"
-                        ToolTip="搜索"
-                        Click="TopSearch_Click" />
+                        Margin="36,0,36,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="TopSearchButton"
+                                Grid.Column="0"
+                                Style="{StaticResource TopSearchIconButtonStyle}"
+                                ToolTip="搜索"
+                                Click="TopSearch_Click" />
+                        <TextBox x:Name="TopSearchBox"
+                                 Grid.Column="1"
+                                 Style="{StaticResource TopSearchTextBoxStyle}"
+                                 Tag="搜索电影、剧集…"
+                                 ToolTip="输入关键词，按回车搜索"
+                                 KeyDown="TopSearchBox_KeyDown"
+                                 TextChanged="TopSearchBox_TextChanged" />
+                    </Grid>
+                </Border>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button x:Name="TopFavoritesButton" Style="{StaticResource IconButtonStyle}" Content="&#xEB51;" ToolTip="收藏" Click="TopFavorites_Click" />
@@ -106,6 +124,10 @@
                 Background="{StaticResource PanelBrush}"
                 BorderBrush="{StaticResource GlassBorderBrush}"
                 BorderThickness="1">
+            <!-- 被左边缘把手拉出时从屏外滑入，只动这个位移，不触发布局 -->
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="SidebarShift" />
+            </Border.RenderTransform>
             <DockPanel>
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="0,12">
@@ -148,6 +170,16 @@
                     <TranslateTransform x:Name="ContentShift" />
                 </ContentControl.RenderTransform>
             </ContentControl>
+            <!-- 侧栏隐藏档的拉出把手：贴左边缘、竖直居中，只在隐藏档出现（见 MainWindow.ApplySidebarMode）；
+                 点一下侧栏滑出并回到隐藏前的那档。盖在页面内容之上，在播放页与收藏面板之下。 -->
+            <Button x:Name="SidebarPullHandle"
+                    Panel.ZIndex="5"
+                    Style="{StaticResource SidebarPullHandleStyle}"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Center"
+                    ToolTip="展开侧栏"
+                    Visibility="Collapsed"
+                    Click="SidebarPullHandle_Click" />
             <!-- 播放页独立常驻；切到侧栏其他栏目时只隐藏，不卸载播放器原生宿主。 -->
             <ContentControl x:Name="PlayerHost" Visibility="Collapsed" Panel.ZIndex="10" />
             <!-- 收藏侧滑面板：盖在内容区之上，从右侧滑入。 -->

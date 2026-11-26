@@ -61,7 +61,7 @@ describe("VideoCard direct play and recommendation reason", () => {
     });
   });
 
-  it.each(cards)("%s search result starts playback from the first episode without opening the detail page", async (_n, Component, Touchable) => {
+  it.each(cards)("%s directPlay card starts playback from the first episode without opening the detail page", async (_n, Component, Touchable) => {
     await press(Component, Touchable, { directPlay: true });
     expect(mockPush).toHaveBeenCalledTimes(1);
     expect(mockPush).toHaveBeenCalledWith({
@@ -70,7 +70,7 @@ describe("VideoCard direct play and recommendation reason", () => {
     });
   });
 
-  it.each(cards)("%s search result resumes from the saved play record", async (_n, Component, Touchable) => {
+  it.each(cards)("%s directPlay card resumes from the saved play record", async (_n, Component, Touchable) => {
     (PlayRecordManager.get as jest.Mock).mockResolvedValue({ index: 3, play_time: 95.5 });
     await press(Component, Touchable, { directPlay: true });
     expect(PlayRecordManager.get).toHaveBeenCalledWith("alpha", "42");
@@ -89,7 +89,7 @@ describe("VideoCard direct play and recommendation reason", () => {
     });
   });
 
-  it.each(cards)("%s card without directPlay keeps opening the detail page", async (_n, Component, Touchable) => {
+  it.each(cards)("%s card without directPlay (search results included) opens the detail page", async (_n, Component, Touchable) => {
     await press(Component, Touchable, {});
     expect(mockPush).toHaveBeenCalledWith({ pathname: "/detail", params: { source: "alpha", id: "42", q: "三体" } });
   });

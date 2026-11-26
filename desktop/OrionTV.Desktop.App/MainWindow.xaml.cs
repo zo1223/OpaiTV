@@ -28,6 +28,7 @@ public partial class MainWindow : Window, IAppHost
         Services = new AppServices();
         Services.AdultVisibilityChanged += OnAdultVisibilityChanged;
         Services.Updates.AvailableUpdateChanged += OnAvailableUpdateChanged;
+        Services.SearchQuery.Changed += OnSearchQueryChanged;
         FavoritesPanel.EntryClicked += OnFavoritesPanelEntryClicked;
         FavoritesPanel.RemoveRequested += OnFavoritesPanelRemoveRequested;
         FavoritesPanel.ViewAllRequested += OnFavoritesPanelViewAllRequested;
@@ -210,6 +211,8 @@ public partial class MainWindow : Window, IAppHost
         System.IO.Path.Combine(DesktopPaths.DataDirectory, "ui_sidebar.txt");
 
     private SidebarMode _sidebarMode = LoadSidebarMode();
+    // 进入隐藏档之前的那一档：点左边缘把手时回到它（启动时就是隐藏档则未知，见 SidebarLayout.RestoreFromHidden）
+    private SidebarMode? _sidebarBeforeHidden;
 
     private static SidebarMode LoadSidebarMode()
     {
@@ -225,9 +228,26 @@ public partial class MainWindow : Window, IAppHost
         }
     }
 
-    private void SidebarToggle_Click(object sender, RoutedEventArgs e)
+    private void SidebarToggle_Click(object sender, RoutedEventArgs e) =>
+        SetSidebarMode(SidebarLayout.Next(_sidebarMode), slideIn: false);
+
+    /// <summary>隐藏档左边缘的把手：点一下，侧栏滑出并回到隐藏前的那档。</summary>
+    private void SidebarPullHandle_Click(object sender, RoutedEventArgs e)
     {
-        _sidebarMode = SidebarLayout.Next(_sidebarMode);
+        if (_sidebarMode == SidebarMode.Hidden)
+        {
+            SetSidebarMode(SidebarLayout.RestoreFromHidden(_sidebarBeforeHidden), slideIn: true);
+        }
+    }
+
+    private void SetSidebarMode(SidebarMode mode, bool slideIn)
+    {
+        if (mode == SidebarMode.Hidden && _sidebarMode != SidebarMode.Hidden)
+        {
+            _sidebarBeforeHidden = _sidebarMode;
+        }
+
+        _sidebarMode = mode;
         try
         {
             System.IO.Directory.CreateDirectory(DesktopPaths.DataDirectory);
@@ -238,10 +258,10 @@ public partial class MainWindow : Window, IAppHost
             // 记不住折叠状态不影响使用
         }
 
-        ApplySidebarMode(animate: true);
+        ApplySidebarMode(animate: true, slideIn);
     }
 
-    private void ApplySidebarMode(bool animate)
+    private void ApplySidebarMode(bool animate, bool slideIn = false)
     {
         if (IsFullscreen)
         {
@@ -261,14 +281,73 @@ public partial class MainWindow : Window, IAppHost
         Sidebar.Visibility = hidden ? Visibility.Collapsed : Visibility.Visible;
         SidebarColumn.Width = new GridLength(SidebarLayout.Width(_sidebarMode));
         SidebarToggle.ToolTip = SidebarLayout.ToggleToolTip(_sidebarMode);
+        // 隐藏档在左边缘留一条拉出把手，其余两档不出现
+        SidebarPullHandle.Visibility = SidebarLayout.ShowsPullHandle(_sidebarMode) ? Visibility.Visible : Visibility.Collapsed;
         if (animate && !hidden)
         {
             Motion.FadeIn(Sidebar, 180);
+            if (slideIn)
+            {
+                Motion.SlideInFromLeft(SidebarShift, SidebarLayout.Width(_sidebarMode), 220);
+            }
+        }
+        else if (animate)
+        {
+            Motion.FadeIn(SidebarPullHandle, 180);
         }
     }
 
-    // 顶部栏按钮：与侧栏对应项走同一条路
-    private void TopSearch_Click(object sender, RoutedEventArgs e) => Navigate(AppPage.Search);
+    // ---- 顶栏搜索框：真输入框，与搜索页输入框共用同一查询状态（Services.SearchQuery）----
+
+    private void TopSearchBox_TextChanged(object sender, TextChangedEventArgs e) =>
+        Services.SearchQuery.Set(TopSearchBox.Text);
+
+    // 关键词在搜索页那边改了（打字、点搜索记录）：顶栏跟着显示同一个词
+    private void OnSearchQueryChanged(string text)
+    {
+        if (TopSearchBox.Text != text)
+        {
+            TopSearchBox.Text = text;
+            TopSearchBox.CaretIndex = text.Length;
+        }
+    }
+
+    private void TopSearchBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            SubmitTopSearch();
+        }
+    }
+
+    private void TopSearch_Click(object sender, RoutedEventArgs e) => SubmitTopSearch();
+
+    /// <summary>
+    /// 顶栏回车 / 点放大镜：跳到搜索页（与点侧栏“搜索”同一条路），有关键词就直接搜；没有关键词只打开搜索页。
+    /// 搜索本身仍由搜索页的 SearchAsync 完成，这里不碰搜索逻辑。
+    /// </summary>
+    private void SubmitTopSearch()
+    {
+        var query = Services.SearchQuery.SubmittedQuery;
+        Navigate(AppPage.Search);
+        // 搜索分区上还叠着详情页时退回它的根页面（搜索页），结果才看得见
+        while (_activeSection == AppPage.Search
+            && _sectionStates.TryGetValue(AppPage.Search, out var section)
+            && section.BackStack.Count > 0)
+        {
+            GoBack();
+        }
+
+        if (query.Length > 0 && _current is SearchView search)
+        {
+            search.SubmitSharedQuery();
+        }
+
+        // 新建搜索页时它会把焦点拿到自己的输入框；从顶栏发起的搜索让焦点留在顶栏，可以接着改词
+        TopSearchBox.Focus();
+        TopSearchBox.CaretIndex = TopSearchBox.Text.Length;
+    }
 
     private void TopFavorites_Click(object sender, RoutedEventArgs e) => ShowFavoritesPanel();
 
@@ -422,6 +501,7 @@ public partial class MainWindow : Window, IAppHost
             _prevResizeMode = ResizeMode;
 
             Sidebar.Visibility = Visibility.Collapsed;
+            SidebarPullHandle.Visibility = Visibility.Collapsed;
             SidebarColumn.Width = new GridLength(0);
             TopBar.Visibility = Visibility.Collapsed;
             WindowStyle = WindowStyle.None;

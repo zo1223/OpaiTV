@@ -215,6 +215,7 @@ export default function SearchScreen() {
     showRemoteModal('search');
   };
 
+  // 搜索结果点一下先进详情页(不传 directPlay),在详情页里再点播放
   const renderItem = ({ item }: { item: SearchResult; index: number }) => (
     <VideoCard
       id={item.id.toString()}
@@ -223,7 +224,6 @@ export default function SearchScreen() {
       poster={item.poster}
       year={item.year}
       sourceName={item.source_name}
-      directPlay
       api={api}
     />
   );

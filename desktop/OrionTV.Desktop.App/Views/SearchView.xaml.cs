@@ -26,10 +26,30 @@ public partial class SearchView : UserControl, INavigationAware, IKeyboardFocusT
         InitializeComponent();
         _host = host;
         Header.BackRequested += (_, _) => _host.GoBack();
-        Grid.CardClicked += OnCardClicked;
-        // 点卡片直接起播；详情页入口保留在右键菜单里
+        // 左键点卡片先进详情页，在详情页里再点播放；右键菜单“查看详情”走同一条路
+        Grid.CardClicked += OpenDetail;
         Grid.RemoveMenuText = "查看详情";
         Grid.CardRemoveRequested += OpenDetail;
+        // 与顶栏搜索框共用同一查询状态：先带上已有关键词，再跟随之后的变化
+        SearchBox.Text = _host.Services.SearchQuery.Text;
+        _host.Services.SearchQuery.Changed += OnSharedQueryChanged;
+    }
+
+    // 关键词在顶栏那边改了：本页输入框跟着显示同一个词
+    private void OnSharedQueryChanged(string text)
+    {
+        if (SearchBox.Text != text)
+        {
+            SearchBox.Text = text;
+            SearchBox.CaretIndex = text.Length;
+        }
+    }
+
+    /// <summary>顶栏搜索框回车 / 点放大镜：按共用关键词直接搜，与在本页输入后回车走同一条路。</summary>
+    public void SubmitSharedQuery()
+    {
+        OnSharedQueryChanged(_host.Services.SearchQuery.Text);
+        _ = SearchAsync();
     }
 
     public void OnNavigatedTo(object? parameter)
@@ -41,6 +61,8 @@ public partial class SearchView : UserControl, INavigationAware, IKeyboardFocusT
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
+        // 构造期间（InitializeComponent 之内）_host 还没赋值；那时也没有文字可同步
+        _host?.Services.SearchQuery.Set(SearchBox.Text);
         if (_hasSearched && string.IsNullOrWhiteSpace(SearchBox.Text))
         {
             _hasSearched = false;
@@ -275,30 +297,6 @@ public partial class SearchView : UserControl, INavigationAware, IKeyboardFocusT
             item.CandidateSources,
             item.PlayableSources));
 
-    /// <summary>
-    /// 点任意一条结果直接起播：有观看记录的线路按记录续播，没有就从第一条有剧集的线路的第一集开始。
-    /// 取不到可播剧集时退回详情页。
-    /// </summary>
-    private async void OnCardClicked(CatalogItem item)
-    {
-        try
-        {
-            // 选线逻辑与首页横幅共用，见 DirectPlay（从这里原样搬过去的）
-            var play = await DirectPlay.ResolveAsync(_host.Services, item);
-            if (play is not null)
-            {
-                _host.Navigate(AppPage.Player, play);
-                return;
-            }
-        }
-        catch
-        {
-            // 起播准备失败时退回详情页
-        }
-
-        OpenDetail(item);
-    }
-
     public void Dispose()
     {
         if (_disposed)
@@ -307,6 +305,7 @@ public partial class SearchView : UserControl, INavigationAware, IKeyboardFocusT
         }
 
         _disposed = true;
+        _host.Services.SearchQuery.Changed -= OnSharedQueryChanged;
         _cts?.Cancel();
         _cts?.Dispose();
         _cts = null;

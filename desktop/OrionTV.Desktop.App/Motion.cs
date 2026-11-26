@@ -63,6 +63,23 @@ public static class Motion
             });
     }
 
+    /// <summary>从左侧屏外滑入到位（侧栏被把手拉出时用）。动效关闭时不动，本来就在原位。</summary>
+    public static void SlideInFromLeft(TranslateTransform shift, double distance, int durationMs)
+    {
+        if (!Enabled || durationMs <= 0 || distance <= 0)
+        {
+            return;
+        }
+
+        shift.BeginAnimation(
+            TranslateTransform.XProperty,
+            new DoubleAnimation(-distance, 0, TimeSpan.FromMilliseconds(durationMs))
+            {
+                EasingFunction = EaseOut,
+                FillBehavior = FillBehavior.Stop,
+            });
+    }
+
     /// <summary>把一个 double 属性缓动到目标值并停在那里（悬浮姿态用）。</summary>
     public static void EaseTo(IAnimatable target, DependencyProperty property, double to, int durationMs)
     {

@@ -74,7 +74,7 @@ const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
           params: { source, id, episodeIndex: episodeIndex - 1, title, position: playTime * 1000 },
         });
       } else if (directPlay && source !== "douban") {
-        // 搜索结果:直接起播,不先进详情页
+        // directPlay 卡片:直接起播,不先进详情页(搜索结果已不再传 directPlay)
         void resolveDirectPlayParams(source, id, title).then((params) => {
           router.push({ pathname: "/play", params: { ...params } });
         });

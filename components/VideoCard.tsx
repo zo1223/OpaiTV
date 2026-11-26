@@ -27,7 +27,7 @@ interface VideoCardProps extends React.ComponentProps<typeof TouchableOpacity> {
   onRecordDeleted?: () => void;
   /** 推荐理由等一行说明,显示在标题下方 */
   reason?: string;
-  /** 点击直接起播(搜索结果):有观看记录接着看,没有从第一集开始;不先进详情页 */
+  /** 点击直接起播:有观看记录接着看,没有从第一集开始;不先进详情页。搜索结果不再使用(改回先进详情页),目前没有页面传它 */
   directPlay?: boolean;
   api: API;
 }

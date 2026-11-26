@@ -509,32 +509,107 @@
             </Setter>
         </Style>
 
-        <!-- 顶部标题栏的大搜索入口（胶囊形，点击进入搜索页） -->
-        <Style x:Key="TopSearchPillStyle" TargetType="Button">
+        <!-- 顶部标题栏的搜索胶囊：真输入框（回车或点放大镜搜索）。外壳 + 放大镜按钮 + 无边框输入框 -->
+        <Style x:Key="TopSearchPillStyle" TargetType="Border">
             <Setter Property="Height" Value="42" />
+            <Setter Property="CornerRadius" Value="21" />
+            <Setter Property="Padding" Value="6,0,16,0" />
+            <Setter Property="Background" Value="{StaticResource GlassBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource GlassBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="BorderBrush" Value="#806FDCA8" />
+                    <Setter Property="Background" Value="#14FFFFFF" />
+                </Trigger>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                    <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="TopSearchIconButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="38" />
+            <Setter Property="Height" Value="34" />
             <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Root" Background="Transparent" CornerRadius="17">
+                            <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="15"
+                                       Foreground="{StaticResource PrimaryBrush}"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,1,0,0" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#266FDCA8" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="TopSearchTextBoxStyle" TargetType="TextBox">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="CaretBrush" Value="{StaticResource TextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
             <Setter Property="FontSize" Value="14" />
-            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Grid Background="Transparent">
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          Margin="4,0,0,0"
+                                          VerticalAlignment="Center" />
+                            <TextBlock x:Name="Watermark"
+                                       Text="{TemplateBinding Tag}"
+                                       Foreground="{StaticResource MutedTextBrush}"
+                                       Margin="6,0,0,0"
+                                       VerticalAlignment="Center"
+                                       IsHitTestVisible="False"
+                                       Visibility="{Binding Text, RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource EmptyToVis}}" />
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 侧栏隐藏档留在左边缘的拉出把手（CineFlow favorites-pull-handle 式）：42×126、右缘圆角、半透明面板底 -->
+        <Style x:Key="SidebarPullHandleStyle" TargetType="Button">
+            <Setter Property="Width" Value="42" />
+            <Setter Property="Height" Value="126" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Foreground" Value="{StaticResource SoftTextBrush}" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="Root"
-                                Background="{StaticResource GlassBrush}"
+                                Background="#E6151828"
                                 BorderBrush="{StaticResource GlassBorderBrush}"
-                                BorderThickness="1"
-                                CornerRadius="21"
-                                Padding="18,0">
-                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="15"
-                                           Foreground="{StaticResource PrimaryBrush}" VerticalAlignment="Center" Margin="0,1,12,0" />
-                                <ContentPresenter VerticalAlignment="Center" TextElement.Foreground="{TemplateBinding Foreground}" />
+                                BorderThickness="0,1,1,1"
+                                CornerRadius="0,18,18,0">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock Text="›" FontSize="26" FontWeight="SemiBold"
+                                           Foreground="{StaticResource PrimaryBrush}"
+                                           HorizontalAlignment="Center" Margin="0,-8,0,6" />
+                                <TextBlock Text="导" FontSize="12" Foreground="{TemplateBinding Foreground}" HorizontalAlignment="Center" />
+                                <TextBlock Text="航" FontSize="12" Foreground="{TemplateBinding Foreground}" HorizontalAlignment="Center" Margin="0,3,0,0" />
                             </StackPanel>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#F51B1F33" />
                                 <Setter TargetName="Root" Property="BorderBrush" Value="#806FDCA8" />
-                                <Setter TargetName="Root" Property="Background" Value="#14FFFFFF" />
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource PrimaryBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
