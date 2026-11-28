@@ -131,6 +131,7 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
         _activeJobs = _host.Services.Downloads.GetJobs()
             .Where(job => job.Status is VodDownloadJobStatus.Queued
                 or VodDownloadJobStatus.Running
+                or VodDownloadJobStatus.Merging
                 or VodDownloadJobStatus.Completed
                 or VodDownloadJobStatus.Failed
                 or VodDownloadJobStatus.Cancelled)
@@ -181,7 +182,7 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
         DecryptMergeAllButton.Content = count > 0 ? $"解密合并全部 ({count})" : "解密合并全部";
         DecryptMergeAllButton.IsEnabled = count > 0 && _decryptingDirectories.Count == 0;
         DecryptMergeAllButton.ToolTip = count > 0
-            ? $"将列表中 {count} 个已下载完成的 AES-128 缓存解密并合并为单文件"
+            ? $"将列表中 {count} 个已下载完成、尚未合并的缓存合并为单文件（AES-128 加密的先解密）"
             : "当前没有需要解密合并的已下载缓存";
     }
 
@@ -587,12 +588,13 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
         {
             Id = job.Id;
             Title = job.Title;
-            IsActive = job.Status is VodDownloadJobStatus.Queued or VodDownloadJobStatus.Running;
+            IsActive = VodDownloadManager.IsActiveStatus(job.Status);
             CanCancel = IsActive;
             StatusLabel = job.Status switch
             {
                 VodDownloadJobStatus.Queued => "排队中",
                 VodDownloadJobStatus.Running => "下载中",
+                VodDownloadJobStatus.Merging => "合并中",
                 VodDownloadJobStatus.Completed => "已完成",
                 VodDownloadJobStatus.Failed => "失败",
                 VodDownloadJobStatus.Cancelled => "已取消",
@@ -602,6 +604,8 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
             {
                 VodDownloadJobStatus.Running or VodDownloadJobStatus.Queued =>
                     $"{job.Percent}% · {job.CompletedSegments}/{Math.Max(job.TotalSegments, job.CompletedSegments)} 段 · {FormatSize(job.DownloadedBytes)} · {FormatSpeed(job.BytesPerSecond)}",
+                VodDownloadJobStatus.Merging =>
+                    $"已下完，正在合并为单文件 {job.Percent}% · {FormatSize(job.DownloadedBytes)}",
                 VodDownloadJobStatus.Completed =>
                     $"完成 · {FormatSize(job.DownloadedBytes)}",
                 VodDownloadJobStatus.Failed =>
@@ -638,13 +642,18 @@ public partial class LocalVideoView : UserControl, INavigationAware, IDisposable
             var state = entry.IsComplete
                 ? "整集已完成"
                 : $"已下载 {entry.CompletedSegments}/{Math.Max(entry.TotalSegments, entry.CompletedSegments)} 段";
+            // MergeSupported=false 只表示“没有边下边合并”：可能是加密源，也可能只是分片后缀不是 .ts（如 .jpeg）。
             var merged = !string.IsNullOrWhiteSpace(entry.MergedFilePath)
                 ? (entry.IsComplete ? " · 单文件 TS" : $" · 单文件已合并 {entry.MergedSegments} 段")
                 : entry.CanDecryptMerge
-                    ? " · AES 加密，可一键解密合并"
+                    ? (entry.IsAesEncrypted ? " · AES 加密，可一键解密合并" : " · 分片未合并，可一键合并为单文件")
                     : entry.MergeSupported
                         ? ""
-                        : " · 加密源（需解密后才能合成单文件）";
+                        : !entry.IsComplete
+                            ? (entry.IsAesEncrypted ? " · 加密源（下完后自动解密合并）" : " · 下完后自动合并为单文件")
+                            : (entry.IsAesEncrypted
+                                ? " · 加密源（无法解密合并，按分片播放）"
+                                : " · 分片不是 TS 或加密方式不支持，无法合成单文件");
             Summary = $"{state}{merged} · {entry.SizeBytes / 1024d / 1024d:0.0} MB · {entry.CreatedAt:yyyy-MM-dd HH:mm}";
         }
 

@@ -45,15 +45,10 @@ public static class SidebarLayout
     public static bool ShowsPullHandle(SidebarMode mode) => mode == SidebarMode.Hidden;
 
     /// <summary>
-    /// 点把手从隐藏档恢复到哪一档：回到隐藏前的那档（展开或仅图标）。
-    /// 不知道隐藏前是哪档时（启动时读到的就是隐藏档），取切换顺序里隐藏的前一档，即仅图标。
-    /// 结果永远不是隐藏档，保证点了把手一定看得见侧栏。
+    /// 点把手从隐藏档恢复到哪一档：一律回到展开档（带文字的完整栏目），与三横线从隐藏档按一下的结果一致。
+    /// 不回“隐藏前的那档”：切换顺序是展开 → 仅图标 → 隐藏，隐藏前永远是仅图标，那样把手就只能拉出图标栏。
     /// </summary>
-    public static SidebarMode RestoreFromHidden(SidebarMode? beforeHidden) => beforeHidden switch
-    {
-        SidebarMode.Expanded => SidebarMode.Expanded,
-        _ => SidebarMode.Compact,
-    };
+    public static SidebarMode RestoreFromHidden() => SidebarMode.Expanded;
 
     public static string ToggleToolTip(SidebarMode mode) => mode switch
     {

@@ -35,9 +35,13 @@ public sealed record VodCacheEntry(
     bool MergeSupported = true,
     string SourceUrl = "",
     bool CanResumeDownload = false,
-    /// <summary>已下完且带 AES-128 密钥，可一键解密合并为 merged.ts。</summary>
+    /// <summary>
+    /// 已下完、还没有 merged.ts、且能合并成单文件：AES-128 加密源，或没有密钥但分片后缀不是 .ts 的 TS 源（如 .jpeg）。
+    /// </summary>
     bool CanDecryptMerge = false,
-    string Poster = "");
+    string Poster = "",
+    /// <summary>清单带 AES-128 密钥（只影响界面文案）。</summary>
+    bool IsAesEncrypted = false);
 
 internal sealed record VodCacheBatchDecryptProgress(
     int EntryIndex,
@@ -165,6 +169,8 @@ public sealed class VodCacheService : IDisposable
 
     private readonly ConcurrentDictionary<string, VodCacheSession> _sessions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _decryptMergeGates = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>下载完成后正在自动合并的缓存目录 → 合并任务。合并期间不在缓存列表里出现，避免边合并边被点开播放。</summary>
+    private readonly ConcurrentDictionary<string, Task> _autoMerges = new(StringComparer.OrdinalIgnoreCase);
     private readonly HttpClient _http;
     private readonly SemaphoreSlim _segmentDownloadGate = new(
         MaxConcurrentSegmentDownloadsTotal,
@@ -374,7 +380,16 @@ public sealed class VodCacheService : IDisposable
         }
     }
 
-    public async Task CloseAsync(VodCacheSession? session, bool deleteFiles, bool continueDownload)
+    /// <param name="mergeProgress">
+    /// 下载完成后自动解密合并（见 <see cref="AutoMergeCompletedSessionAsync"/>）的进度 0..1；没有这一步时不会被调用。
+    /// </param>
+    /// <param name="mergeCancellation">只取消自动解密合并这一步；取消后缓存保持“已下完、未合并”，可以再手动合并。</param>
+    public async Task CloseAsync(
+        VodCacheSession? session,
+        bool deleteFiles,
+        bool continueDownload,
+        IProgress<double>? mergeProgress = null,
+        CancellationToken mergeCancellation = default)
     {
         if (session is null)
         {
@@ -429,6 +444,8 @@ public sealed class VodCacheService : IDisposable
                 DeleteMergedSegmentFiles(session);
                 _sessions.TryRemove(session.Id, out _);
             }
+
+            await AutoMergeCompletedSessionAsync(session, mergeProgress, mergeCancellation).ConfigureAwait(false);
         }
         else if (session.Progress.IsComplete)
         {
@@ -446,6 +463,8 @@ public sealed class VodCacheService : IDisposable
                 DeleteMergedSegmentFiles(session);
                 _sessions.TryRemove(session.Id, out _);
             }
+
+            await AutoMergeCompletedSessionAsync(session, mergeProgress, mergeCancellation).ConfigureAwait(false);
         }
         else
         {
@@ -462,6 +481,100 @@ public sealed class VodCacheService : IDisposable
         }
     }
 
+    /// <summary>
+    /// 下载完成后的自动解密合并。
+    /// <para>
+    /// 边下边合并（<see cref="AppendSegmentsToMergedAsync"/>）只覆盖“没有密钥、分片后缀是 .ts”的源；
+    /// AES-128 加密源、以及分片后缀不是 .ts 的源（把 TS 伪装成 .jpeg/.png 的图床分片）整集下完后仍是一堆小分片。
+    /// 这里在会话从活动表移除之后补上这一步，走的是和“解密合并”按钮同一条路径。
+    /// </para>
+    /// 合并不了（解出来不是 TS、fMP4、不支持的加密方式、密钥缺失）或被取消时不抛异常：缓存原样保留，仍可按清单播放或手动重试。
+    /// </summary>
+    private Task AutoMergeCompletedSessionAsync(
+        VodCacheSession session,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (_disposed || session.MergeSupported || !session.Progress.IsComplete)
+        {
+            return Task.CompletedTask;
+        }
+
+        string directory;
+        try
+        {
+            directory = Path.GetFullPath(session.Directory);
+        }
+        catch
+        {
+            return Task.CompletedTask;
+        }
+
+        // 同一目录只跑一个自动合并；先登记再放行，这样缓存列表立刻把它当作“处理中”。
+        var registered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var run = RunAutoMergeAsync(registered.Task, session, directory, progress, cancellationToken);
+        if (!_autoMerges.TryAdd(directory, run))
+        {
+            registered.TrySetResult(false);
+            return _autoMerges.TryGetValue(directory, out var existing) ? existing : Task.CompletedTask;
+        }
+
+        registered.TrySetResult(true);
+        return run;
+    }
+
+    private async Task RunAutoMergeAsync(
+        Task<bool> registered,
+        VodCacheSession session,
+        string directory,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (!await registered.ConfigureAwait(false))
+        {
+            // 没登记上：同目录已有自动合并在跑。
+            return;
+        }
+
+        try
+        {
+            if (!HlsAesDecryptMerger.LooksDecryptable(directory))
+            {
+                VodCacheLog.Info($"auto-merge-skipped id={session.Id} title={session.Title} reason=not-mergeable dir={directory}");
+                return;
+            }
+
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken);
+            VodCacheLog.Info($"auto-merge-start id={session.Id} title={session.Title} dir={directory}");
+            var mergedPath = await DecryptAndMergeAsync(directory, progress, linked.Token).ConfigureAwait(false);
+            VodCacheLog.Info($"auto-merge-done id={session.Id} title={session.Title} path={mergedPath}");
+        }
+        catch (OperationCanceledException)
+        {
+            VodCacheLog.Info($"auto-merge-cancelled id={session.Id} title={session.Title} dir={directory}");
+        }
+        catch (Exception error)
+        {
+            // 下载本身是成功的：缓存保持“已下完、未合并”，界面上仍可手动重试并看到具体原因。
+            VodCacheLog.Error($"auto-merge-failed id={session.Id} title={session.Title} dir={directory}", error);
+        }
+        finally
+        {
+            _autoMerges.TryRemove(directory, out _);
+        }
+    }
+
+    /// <summary>后台完成的会话（没有调用方在等）：自动合并放到线程池里跑，只受服务生命周期约束。</summary>
+    private void QueueAutoMergeCompletedSession(VodCacheSession session)
+    {
+        if (_disposed || session.MergeSupported || !session.Progress.IsComplete)
+        {
+            return;
+        }
+
+        _ = Task.Run(() => AutoMergeCompletedSessionAsync(session, null, CancellationToken.None));
+    }
+
     public IReadOnlyList<VodCacheEntry> GetEntries(string cacheDirectory)
     {
         var root = VodCacheSettings.ResolveDirectory(cacheDirectory);
@@ -474,7 +587,7 @@ public sealed class VodCacheService : IDisposable
         var result = new List<VodCacheEntry>();
         foreach (var directory in EnumerateCacheDirectories(root))
         {
-            if (active.Contains(directory))
+            if (active.Contains(directory) || IsAutoMerging(directory))
             {
                 continue;
             }
@@ -533,6 +646,7 @@ public sealed class VodCacheService : IDisposable
             var canDecryptMerge = isComplete
                 && !hasMerged
                 && HlsAesDecryptMerger.LooksDecryptable(directory);
+            var isAesEncrypted = !hasMerged && HlsAesDecryptMerger.HasAes128Key(directory);
 
             result.Add(new VodCacheEntry(
                 directory,
@@ -549,14 +663,27 @@ public sealed class VodCacheService : IDisposable
                 metadata?.SourceUrl ?? "",
                 canResume,
                 canDecryptMerge,
-                metadata?.Poster ?? ""));
+                metadata?.Poster ?? "",
+                isAesEncrypted));
         }
 
         return result.OrderByDescending(entry => entry.CreatedAt).ToList();
     }
 
+    private bool IsAutoMerging(string directory)
+    {
+        try
+        {
+            return !_autoMerges.IsEmpty && _autoMerges.ContainsKey(Path.GetFullPath(directory));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>
-    /// 已完成且含 AES-128 的缓存可一键解密合并为 merged.ts。
+    /// 已下完、还没合并的缓存能否一键合并为 merged.ts：AES-128 加密源，或没有密钥但分片内容是 TS 的源（分片后缀不限）。
     /// </summary>
     public bool CanDecryptMerge(string directory) =>
         !string.IsNullOrWhiteSpace(directory)
@@ -564,7 +691,7 @@ public sealed class VodCacheService : IDisposable
         && HlsAesDecryptMerger.LooksDecryptable(directory);
 
     /// <summary>
-    /// 解密 AES-128 分片并合并为 merged.ts，成功后清理小分片并更新 cache.json。
+    /// 把已下完的分片合并为 merged.ts（AES-128 分片先解密），成功后清理小分片并更新 cache.json。
     /// 返回合并后的文件路径。
     /// </summary>
     public async Task<string> DecryptAndMergeAsync(
@@ -662,11 +789,17 @@ public sealed class VodCacheService : IDisposable
             throw new InvalidOperationException("CACHE_NOT_DECRYPTABLE");
         }
 
+        // 没下完的缓存，清单只列到已落盘的那一片：合并出来是半集，却会被标成“已完成”，之后也无法续传。
+        var metadata = ReadMetadata(directory);
+        if (metadata is { IsComplete: false })
+        {
+            throw new InvalidOperationException("CACHE_NOT_COMPLETE");
+        }
+
         VodCacheLog.Info($"decrypt-merge-start dir={directory}");
         var (mergedPath, lengths) = await HlsAesDecryptMerger.DecryptAndMergeAsync(directory, progress, cancellationToken)
             .ConfigureAwait(false);
 
-        var metadata = ReadMetadata(directory);
         var completed = metadata?.CompletedSegments ?? CountExistingSegments(directory);
         var total = metadata?.TotalSegments ?? completed;
         var mergedSegments = lengths.Length;
@@ -782,7 +915,7 @@ public sealed class VodCacheService : IDisposable
             throw new InvalidOperationException("CACHE_ENTRY_OUTSIDE_ROOT");
         }
 
-        if (_sessions.Values.Any(session => PathsEqual(session.Directory, target)))
+        if (_sessions.Values.Any(session => PathsEqual(session.Directory, target)) || IsAutoMerging(target))
         {
             throw new InvalidOperationException("CACHE_ENTRY_IS_ACTIVE");
         }
@@ -819,7 +952,7 @@ public sealed class VodCacheService : IDisposable
             .ToArray();
         foreach (var directory in cacheDirectories)
         {
-            if (active.Contains(directory))
+            if (active.Contains(directory) || IsAutoMerging(directory))
             {
                 continue;
             }
@@ -1448,6 +1581,10 @@ public sealed class VodCacheService : IDisposable
         }
     }
 
+    /// <summary>
+    /// 能否边下边合并。这里只凭清单判断（加密、分片后缀），拿不到分片内容；
+    /// 判为不能的源（加密源、后缀不是 .ts 的源）整集下完后由 <see cref="AutoMergeCompletedSessionAsync"/> 按内容再合并一次。
+    /// </summary>
     private static bool CanMergeSegments(VodCacheSession session)
     {
         // 有 EXT-X-KEY 的加密流不能直接二进制拼接。
@@ -1506,6 +1643,7 @@ public sealed class VodCacheService : IDisposable
                     {
                         DeleteMergedSegmentFiles(session);
                         _sessions.TryRemove(session.Id, out _);
+                        QueueAutoMergeCompletedSession(session);
                         continue;
                     }
 
@@ -1554,6 +1692,8 @@ public sealed class VodCacheService : IDisposable
             DeleteMergedSegmentFiles(session);
             _sessions.TryRemove(session.Id, out _);
         }
+
+        QueueAutoMergeCompletedSession(session);
     }
 
     private static void DeleteMergedSegmentFiles(VodCacheSession session)
@@ -2674,6 +2814,8 @@ public sealed class VodCacheService : IDisposable
             session.Cancellation.Cancel();
         }
         try { Task.WhenAll(_sessions.Values.Select(session => session.DownloadTask)).GetAwaiter().GetResult(); } catch { }
+        // 正在进行的自动合并已随 _lifetime 取消：稍等它退出并删掉半成品，但不让退出卡在磁盘 IO 上。
+        try { Task.WhenAll(_autoMerges.Values.ToArray()).Wait(TimeSpan.FromSeconds(5)); } catch { }
         foreach (var session in _sessions.Values.Where(session => session.KeepFilesOnServiceDispose))
         {
             DeleteMergedSegmentFiles(session);

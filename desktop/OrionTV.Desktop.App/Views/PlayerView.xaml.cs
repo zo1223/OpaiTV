@@ -1693,8 +1693,11 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
             return;
         }
 
+        // 用户自己拖了进度：续播位置不再往回拉；之后的进度就是用户要的位置，照常保存
+        _controller?.CancelStartSeek();
         if (_controller is not null && _controller.TrySeek(target))
         {
+            _resumePositionReached = true;
             SeekDanmaku(target);
         }
     }
@@ -1858,9 +1861,12 @@ public partial class PlayerView : UserControl, INavigationAware, IDisposable
 
         if (_controller is not null)
         {
+            // 用户自己跳了进度：续播位置不再往回拉；之后的进度就是用户要的位置，照常保存
+            _controller.CancelStartSeek();
             var target = Math.Clamp(_currentTimeMs + deltaMs, 0, _lengthMs);
             if (_controller.TrySeek(target))
             {
+                _resumePositionReached = true;
                 SeekDanmaku(target);
             }
         }

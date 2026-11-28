@@ -171,7 +171,7 @@
                 </ContentControl.RenderTransform>
             </ContentControl>
             <!-- 侧栏隐藏档的拉出把手：贴左边缘、竖直居中，只在隐藏档出现（见 MainWindow.ApplySidebarMode）；
-                 点一下侧栏滑出并回到隐藏前的那档。盖在页面内容之上，在播放页与收藏面板之下。 -->
+                 点一下侧栏滑出并回到展开档（带文字的完整栏目）。盖在页面内容之上，在播放页与收藏面板之下。 -->
             <Button x:Name="SidebarPullHandle"
                     Panel.ZIndex="5"
                     Style="{StaticResource SidebarPullHandleStyle}"

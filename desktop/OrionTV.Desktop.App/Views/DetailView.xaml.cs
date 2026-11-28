@@ -859,7 +859,7 @@ public partial class DetailView : UserControl, INavigationAware, IKeyboardFocusT
         DecryptMergeAllButton.Content = count > 0 ? $"解密合并全部 ({count})" : "解密合并全部";
         DecryptMergeAllButton.IsEnabled = count > 0 && _decryptingDirectories.Count == 0;
         DecryptMergeAllButton.ToolTip = count > 0
-            ? $"将当前影片 {count} 集已下载完成的 AES-128 缓存解密并合并为单文件"
+            ? $"将当前影片 {count} 集已下载完成、尚未合并的缓存合并为单文件（AES-128 加密的先解密）"
             : "当前没有需要解密合并的已下载剧集";
     }
 
@@ -881,10 +881,15 @@ public partial class DetailView : UserControl, INavigationAware, IKeyboardFocusT
         var activeJob = _host.Services.Downloads.FindActiveByTitle(cacheTitle);
         if (activeJob is not null)
         {
+            var merging = activeJob.Status == VodDownloadJobStatus.Merging;
             button.Style = (Style)FindResource("SecondaryButtonStyle");
-            button.Content = $"第{index + 1}集 · {activeJob.Percent}%";
+            button.Content = merging
+                ? $"第{index + 1}集 · 合并 {activeJob.Percent}%"
+                : $"第{index + 1}集 · {activeJob.Percent}%";
             button.IsEnabled = true;
-            button.ToolTip = "再次点击可取消后台下载";
+            button.ToolTip = merging
+                ? "已下完，正在自动合并为单文件；再次点击可停止合并（已下分片保留，可稍后手动合并）"
+                : "再次点击可取消后台下载";
             button.Tag = new DownloadButtonTag(index, Decrypt: false);
             return;
         }
@@ -904,7 +909,9 @@ public partial class DetailView : UserControl, INavigationAware, IKeyboardFocusT
                 button.IsEnabled = !decrypting;
                 button.ToolTip = decrypting
                     ? "正在解密合并"
-                    : "已下载完成（AES 加密）；点击解密合并为单个文件";
+                    : completedEntry.IsAesEncrypted
+                        ? "已下载完成（AES 加密）；点击解密合并为单个文件"
+                        : "已下载完成但分片尚未合并；点击合并为单个文件";
                 button.Tag = new DownloadButtonTag(index, Decrypt: true);
                 return;
             }
@@ -1356,7 +1363,9 @@ public partial class DetailView : UserControl, INavigationAware, IKeyboardFocusT
             {
                 var speed = FormatSpeed(job.BytesPerSecond);
                 var size = FormatSize(job.DownloadedBytes);
-                return $"{job.Title} {job.Percent}% · {size} · {speed}";
+                return job.Status == VodDownloadJobStatus.Merging
+                    ? $"{job.Title} 已下完，合并中 {job.Percent}% · {size}"
+                    : $"{job.Title} {job.Percent}% · {size} · {speed}";
             });
             DownloadStatusText.Text = "后台下载中（离开本页可继续）：" + string.Join("  |  ", parts);
             return;

@@ -57,43 +57,33 @@ public class SidebarLayoutTests
         Assert.False(SidebarLayout.ShowsPullHandle(SidebarMode.Compact));
     }
 
-    [Theory]
-    [InlineData(SidebarMode.Expanded, SidebarMode.Expanded)]
-    [InlineData(SidebarMode.Compact, SidebarMode.Compact)]
-    public void Pull_handle_restores_the_mode_before_hidden(SidebarMode before, SidebarMode expected)
+    [Fact]
+    public void Pull_handle_restores_to_expanded_with_labels()
     {
-        Assert.Equal(expected, SidebarLayout.RestoreFromHidden(before));
-    }
-
-    [Theory]
-    [InlineData(null)]
-    [InlineData(SidebarMode.Hidden)]
-    public void Pull_handle_never_restores_to_hidden_when_previous_mode_is_unknown(SidebarMode? before)
-    {
-        // 启动时读到的就是隐藏档：取切换顺序里隐藏的前一档
-        var restored = SidebarLayout.RestoreFromHidden(before);
-        Assert.Equal(SidebarMode.Compact, restored);
-        Assert.Equal(SidebarMode.Hidden, SidebarLayout.Next(restored));
+        // 把手拉出来的是带文字的完整栏目，不是仅图标档，更不是隐藏档
+        var restored = SidebarLayout.RestoreFromHidden();
+        Assert.Equal(SidebarMode.Expanded, restored);
+        Assert.Equal(SidebarLayout.ExpandedWidth, SidebarLayout.Width(restored));
+        Assert.False(SidebarLayout.ShowsPullHandle(restored));
     }
 
     [Fact]
-    public void Toggle_into_hidden_then_pull_handle_returns_to_the_previous_mode()
+    public void Pull_handle_and_toggle_agree_when_leaving_hidden()
     {
-        // 三横线：展开 → 仅图标 → 隐藏；把手：回到隐藏前的仅图标档
+        // 从隐藏档出来只有两个入口：把手、三横线。两者都回到展开档
+        Assert.Equal(SidebarLayout.Next(SidebarMode.Hidden), SidebarLayout.RestoreFromHidden());
+    }
+
+    [Fact]
+    public void Toggle_into_hidden_then_pull_handle_returns_to_expanded_not_compact()
+    {
+        // 三横线：展开 → 仅图标 → 隐藏（隐藏前是仅图标档）；把手：仍然回到展开档
         var mode = SidebarMode.Expanded;
-        SidebarMode? beforeHidden = null;
-        for (var i = 0; i < 2; i++)
-        {
-            var next = SidebarLayout.Next(mode);
-            if (next == SidebarMode.Hidden)
-            {
-                beforeHidden = mode;
-            }
-
-            mode = next;
-        }
-
+        mode = SidebarLayout.Next(mode);
+        Assert.Equal(SidebarMode.Compact, mode);
+        mode = SidebarLayout.Next(mode);
         Assert.Equal(SidebarMode.Hidden, mode);
-        Assert.Equal(SidebarMode.Compact, SidebarLayout.RestoreFromHidden(beforeHidden));
+
+        Assert.Equal(SidebarMode.Expanded, SidebarLayout.RestoreFromHidden());
     }
 }

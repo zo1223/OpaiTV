@@ -656,6 +656,497 @@ public sealed class VodCacheServiceTests
         }
     }
 
+
+    // ---- 第十七轮：加密源 / 分片后缀不是 .ts 的源，下载完自动解密合并；已下好未合并的也能解 ----
+
+    /// <summary>图床伪装：分片后缀是 .jpeg，内容是一小段假 JPEG 头 + 真正的 TS 数据。</summary>
+    private static readonly byte[] FakeJpegHeader =
+    [
+        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
+        0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08,
+        0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
+        0xFF, 0xD9,
+    ];
+
+    private static byte[] DisguiseAsJpeg(byte[] transportStream) =>
+        [.. FakeJpegHeader, .. transportStream];
+
+    private const string JpegSegmentPlaylist =
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n" +
+        "#EXTINF:6.0,\nseg1.jpeg\n" +
+        "#EXTINF:6.0,\nseg2.jpeg\n" +
+        "#EXTINF:6.0,\nseg3.jpeg\n#EXT-X-ENDLIST\n";
+
+    private const string Aes128Playlist =
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n" +
+        "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n" +
+        "#EXTINF:6.0,\nseg1.ts\n" +
+        "#EXTINF:6.0,\nseg2.ts\n" +
+        "#EXTINF:6.0,\nseg3.ts\n#EXT-X-ENDLIST\n";
+
+    private static readonly byte[] DownloadKey = Enumerable.Range(1, 16).Select(index => (byte)(index * 7)).ToArray();
+
+    /// <summary>清单没声明 IV 时，第 n 片（从 1 数）用媒体序号 n-1 做 IV。</summary>
+    private static byte[] EncryptedDownloadSegment(int number)
+    {
+        var iv = new byte[16];
+        iv[15] = (byte)(number - 1);
+        return EncryptAes128Cbc(RestartingTsSegment(number), DownloadKey, iv);
+    }
+
+    /// <summary>
+    /// 按用户反馈的目录原样造一个“已下完、没合并”的缓存：只有 cache.json、offline.m3u8 和 segment_XXXXX.jpeg，
+    /// 清单里没有密钥，cache.json 里 MergeSupported=false（v1.3.29 因为分片后缀不是 .ts 写下的）。
+    /// </summary>
+    private static async Task<string> CreateJpegSegmentCacheAsync(
+        string root,
+        string directoryName,
+        string title,
+        IReadOnlyList<byte[]> segmentFiles,
+        string extraPlaylistTags = "",
+        bool isComplete = true,
+        int? totalSegments = null)
+    {
+        var directory = Path.Combine(root, directoryName);
+        Directory.CreateDirectory(directory);
+        var playlist = new StringBuilder(
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n" + extraPlaylistTags);
+        for (var index = 0; index < segmentFiles.Count; index++)
+        {
+            await File.WriteAllBytesAsync(Path.Combine(directory, $"segment_{index:D5}.jpeg"), segmentFiles[index]);
+            playlist.Append($"#EXTINF:6.0,\nsegment_{index:D5}.jpeg\n");
+        }
+
+        playlist.Append("#EXT-X-ENDLIST\n");
+        await File.WriteAllTextAsync(Path.Combine(directory, "offline.m3u8"), playlist.ToString());
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, "cache.json"),
+            JsonSerializer.Serialize(new
+            {
+                Title = title,
+                SourceUrl = $"http://example/{directoryName}/index.m3u8",
+                CreatedAt = DateTimeOffset.UtcNow,
+                IsComplete = isComplete,
+                CompletedSegments = segmentFiles.Count,
+                TotalSegments = totalSegments ?? segmentFiles.Count,
+                MergedSegments = 0,
+                MergedFileName = (string?)null,
+                MergeSupported = false,
+                MergedSegmentLengths = Array.Empty<long>(),
+            }));
+        return directory;
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AlreadyDownloadedJpegSegmentCacheWithoutKeyIsOfferedForMergeAndMergesIntoSingleFile(bool fakeImageHeader)
+    {
+        // 用户反馈（2026-11-27，v1.3.29）：第 4、5 集显示“整集已完成 · 加密源（需解密后才能合成单文件）”，
+        // 目录里只有 cache.json、offline.m3u8 和 segment_XXXXX.jpeg，“解密合并全部”是灰的。
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-jpeg-existing-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var plains = Enumerable.Range(1, 4).Select(RestartingTsSegment).ToArray();
+            var files = plains.Select(plain => fakeImageHeader ? DisguiseAsJpeg(plain) : plain).ToArray();
+            var fourth = await CreateJpegSegmentCacheAsync(root, "ep4", "Rings 第4集", files);
+            var fifth = await CreateJpegSegmentCacheAsync(root, "ep5", "Rings 第5集", files);
+
+            using var service = new VodCacheService();
+            var entries = service.GetEntries(root);
+            Assert.Equal(2, entries.Count);
+            Assert.All(entries, entry =>
+            {
+                Assert.True(entry.IsComplete);
+                Assert.False(entry.MergeSupported);
+                Assert.Null(entry.MergedFilePath);
+                // 按钮可用的条件：列表里至少有一项 CanDecryptMerge。
+                Assert.True(entry.CanDecryptMerge);
+                Assert.False(entry.IsAesEncrypted);
+            });
+            Assert.True(service.CanDecryptMerge(fourth));
+
+            // “解密合并全部”走的就是这个入口。
+            var result = await service.DecryptAndMergeManyAsync(entries);
+            Assert.Empty(result.Failures);
+            Assert.Equal(2, result.SucceededEntries.Count);
+
+            foreach (var directory in new[] { fourth, fifth })
+            {
+                var merged = await File.ReadAllBytesAsync(Path.Combine(directory, VodCacheSession.MergedFileName));
+                // 假图片头被去掉、每片的时间戳接成一条：与“时间戳连续的同样内容”逐字节相同。
+                Assert.Equal(ContinuousTsSegments(4), merged);
+                Assert.Equal(24.0, TsFixture.ProbedDurationSeconds(merged), 3);
+                TsFixture.AssertMonotonic(merged);
+                Assert.Empty(Directory.EnumerateFiles(directory, "segment_*"));
+                Assert.Empty(Directory.EnumerateFiles(directory, "*.decrypting"));
+
+                using var document = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(directory, "cache.json")));
+                Assert.True(document.RootElement.GetProperty("IsComplete").GetBoolean());
+                Assert.True(document.RootElement.GetProperty("MergeSupported").GetBoolean());
+                Assert.Equal(4, document.RootElement.GetProperty("MergedSegments").GetInt32());
+                Assert.Equal(
+                    plains.Select(plain => plain.LongLength),
+                    document.RootElement.GetProperty("MergedSegmentLengths").EnumerateArray().Select(item => item.GetInt64()));
+            }
+
+            var after = service.GetEntries(root);
+            Assert.Equal(2, after.Count);
+            Assert.All(after, entry =>
+            {
+                Assert.True(entry.IsComplete);
+                Assert.False(entry.CanDecryptMerge);
+                Assert.EndsWith(VodCacheSession.MergedFileName, entry.MergedFilePath);
+                Assert.Equal(entry.MergedFilePath, entry.PlaylistPath);
+            });
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task UnmergeableCompletedCachesAreNotOfferedForMergeAndStayUntouched()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-unmergeable-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var notTs = Enumerable.Range(0, 4096).Select(index => (byte)(index % 251)).ToArray();
+            "\0\0\0\u0018styp"u8.CopyTo(notTs);
+            var ts = new[] { RestartingTsSegment(1), RestartingTsSegment(2) };
+
+            // 分片内容不是 TS。
+            var garbage = await CreateJpegSegmentCacheAsync(root, "garbage", "Garbage 第1集", [notTs, notTs]);
+            // fMP4：有 init 段。
+            var fmp4 = await CreateJpegSegmentCacheAsync(
+                root, "fmp4", "Fmp4 第1集", ts, extraPlaylistTags: "#EXT-X-MAP:URI=\"asset_000.mp4\"\n");
+            // 不支持的加密方式。
+            var sampleAes = await CreateJpegSegmentCacheAsync(
+                root, "sample-aes", "SampleAes 第1集", ts, extraPlaylistTags: "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"asset_000.key\"\n");
+            // 没下完：清单只列到已落盘的分片，合并出来是半集。
+            var partial = await CreateJpegSegmentCacheAsync(
+                root, "partial", "Partial 第1集", ts, isComplete: false, totalSegments: 5);
+
+            using var service = new VodCacheService();
+            var entries = service.GetEntries(root);
+            Assert.Equal(4, entries.Count);
+            Assert.All(entries, entry => Assert.False(entry.CanDecryptMerge));
+
+            foreach (var directory in new[] { garbage, fmp4, sampleAes })
+            {
+                var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.DecryptAndMergeAsync(directory));
+                Assert.Equal("CACHE_NOT_DECRYPTABLE", error.Message);
+            }
+
+            var partialError = await Assert.ThrowsAsync<InvalidOperationException>(() => service.DecryptAndMergeAsync(partial));
+            Assert.Equal("CACHE_NOT_COMPLETE", partialError.Message);
+
+            foreach (var directory in new[] { garbage, fmp4, sampleAes, partial })
+            {
+                Assert.Equal(2, Directory.EnumerateFiles(directory, "segment_*.jpeg").Count());
+                Assert.Empty(Directory.EnumerateFiles(directory, "merged.ts*"));
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task DecryptMergeStopsOnALaterNonTransportStreamSegmentOfAKeylessCacheAndKeepsEverything()
+    {
+        // 第一片是 TS（所以按钮可用），后面混进一片错误页：不能拼出坏文件，更不能删原始分片。
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-jpeg-badmid-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var errorPage = Encoding.UTF8.GetBytes("<html><body>403 Forbidden</body></html>" + new string(' ', 2048));
+            var files = new[] { DisguiseAsJpeg(RestartingTsSegment(1)), errorPage, DisguiseAsJpeg(RestartingTsSegment(3)) };
+            var directory = await CreateJpegSegmentCacheAsync(root, "ep", "BadMid 第1集", files);
+
+            using var service = new VodCacheService();
+            Assert.True(service.CanDecryptMerge(directory));
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() => service.DecryptAndMergeAsync(directory));
+            Assert.Contains("DECRYPTED_SEGMENT_NOT_MPEGTS segment_00001.jpeg", error.Message);
+
+            for (var index = 0; index < files.Length; index++)
+            {
+                Assert.Equal(files[index], await File.ReadAllBytesAsync(Path.Combine(directory, $"segment_{index:D5}.jpeg")));
+            }
+
+            Assert.Empty(Directory.EnumerateFiles(directory, "merged.ts*"));
+            Assert.True(Assert.Single(service.GetEntries(root)).IsComplete);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadOfJpegDisguisedSegmentsAutoMergesIntoSingleFileWhenItCompletes()
+    {
+        await using var upstream = new FakeHlsServer(
+            segmentBody: number => DisguiseAsJpeg(RestartingTsSegment(number)),
+            playlistBody: JpegSegmentPlaylist);
+        using var service = new VodCacheService();
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-jpeg-download-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var session = await service.StartAsync(upstream.PlaylistUrl, "Jpeg Show 第4集", root, 15);
+            Assert.NotNull(session);
+            await session!.DownloadTask.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.True(session.Progress.IsComplete);
+
+            // 下载阶段与 v1.3.29 相同：后缀跟随源地址，不做边下边合并。
+            Assert.Equal(3, Directory.EnumerateFiles(session.Directory, "segment_*.jpeg").Count());
+            Assert.False(File.Exists(session.MergedFilePath));
+
+            var ratios = new ConcurrentQueue<double>();
+            await service.CloseAsync(
+                session,
+                deleteFiles: false,
+                continueDownload: false,
+                new InlineProgress<double>(ratios.Enqueue));
+
+            var merged = await File.ReadAllBytesAsync(session.MergedFilePath);
+            Assert.Equal(ContinuousTsSegments(3), merged);
+            Assert.Equal(18.0, TsFixture.ProbedDurationSeconds(merged), 3);
+            Assert.Empty(Directory.EnumerateFiles(session.Directory, "segment_*"));
+            Assert.Equal(1.0, ratios.Last(), 3);
+            Assert.Equal(3, ratios.Count);
+
+            var entry = Assert.Single(service.GetEntries(root));
+            Assert.True(entry.IsComplete);
+            Assert.False(entry.CanDecryptMerge);
+            Assert.Equal(session.MergedFilePath, entry.MergedFilePath);
+            Assert.Equal(session.MergedFilePath, service.FindCompletedPlaybackPath(root, upstream.PlaylistUrl, "Jpeg Show 第4集"));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadOfAes128SourceAutoDecryptsAndMergesIntoSingleFileWhenItCompletes()
+    {
+        await using var upstream = new FakeHlsServer(
+            segmentBody: EncryptedDownloadSegment,
+            playlistBody: Aes128Playlist,
+            keyBody: DownloadKey);
+        using var service = new VodCacheService();
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-aes-download-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var session = await service.StartAsync(upstream.PlaylistUrl, "Aes Show 第3集", root, 15);
+            Assert.NotNull(session);
+            await session!.DownloadTask.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.True(session.Progress.IsComplete);
+            Assert.False(File.Exists(session.MergedFilePath));
+            Assert.Single(Directory.EnumerateFiles(session.Directory, "asset_*"));
+
+            await service.CloseAsync(session, deleteFiles: false, continueDownload: false);
+
+            var merged = await File.ReadAllBytesAsync(session.MergedFilePath);
+            Assert.Equal(ContinuousTsSegments(3), merged);
+            Assert.Empty(Directory.EnumerateFiles(session.Directory, "segment_*"));
+            Assert.Empty(Directory.EnumerateFiles(session.Directory, "asset_*"));
+
+            var entry = Assert.Single(service.GetEntries(root));
+            Assert.True(entry.IsComplete);
+            Assert.False(entry.CanDecryptMerge);
+            Assert.Equal(session.MergedFilePath, entry.MergedFilePath);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task AutoMergeFailureLeavesTheCompletedDownloadIntactAndRetryable()
+    {
+        // 服务器给的密钥解不开分片（换了密钥、密钥接口返回错误页）：自动合并失败不能影响已经下完的缓存。
+        var wrongKey = Enumerable.Repeat((byte)0x5A, 16).ToArray();
+        await using var upstream = new FakeHlsServer(
+            segmentBody: EncryptedDownloadSegment,
+            playlistBody: Aes128Playlist,
+            keyBody: wrongKey);
+        using var service = new VodCacheService();
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-aes-wrongkey-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var session = await service.StartAsync(upstream.PlaylistUrl, "WrongKey Show 第1集", root, 15);
+            Assert.NotNull(session);
+            await session!.DownloadTask.WaitAsync(TimeSpan.FromSeconds(15));
+
+            // 不抛异常：下载本身成功了。
+            await service.CloseAsync(session, deleteFiles: false, continueDownload: false);
+
+            Assert.Equal(3, Directory.EnumerateFiles(session.Directory, "segment_*.ts").Count());
+            Assert.Single(Directory.EnumerateFiles(session.Directory, "asset_*"));
+            Assert.Empty(Directory.EnumerateFiles(session.Directory, "merged.ts*"));
+            var entry = Assert.Single(service.GetEntries(root));
+            Assert.True(entry.IsComplete);
+            Assert.True(entry.CanDecryptMerge);
+            Assert.True(entry.IsAesEncrypted);
+            Assert.EndsWith("offline.m3u8", entry.PlaylistPath);
+
+            // 换回正确的密钥后，手动入口能解出来。
+            await File.WriteAllBytesAsync(Directory.EnumerateFiles(session.Directory, "asset_*").Single(), DownloadKey);
+            var mergedPath = await service.DecryptAndMergeAsync(session.Directory);
+            Assert.Equal(ContinuousTsSegments(3), await File.ReadAllBytesAsync(mergedPath));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task CancelledAutoMergeLeavesTheCompletedDownloadMergeableLater()
+    {
+        await using var upstream = new FakeHlsServer(
+            segmentBody: number => DisguiseAsJpeg(RestartingTsSegment(number)),
+            playlistBody: JpegSegmentPlaylist);
+        using var service = new VodCacheService();
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-jpeg-cancelmerge-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var session = await service.StartAsync(upstream.PlaylistUrl, "Cancel Show 第1集", root, 15);
+            Assert.NotNull(session);
+            await session!.DownloadTask.WaitAsync(TimeSpan.FromSeconds(15));
+
+            using var mergeCancellation = new CancellationTokenSource();
+            mergeCancellation.Cancel();
+            await service.CloseAsync(
+                session,
+                deleteFiles: false,
+                continueDownload: false,
+                mergeProgress: null,
+                mergeCancellation.Token);
+
+            Assert.Equal(3, Directory.EnumerateFiles(session.Directory, "segment_*.jpeg").Count());
+            Assert.Empty(Directory.EnumerateFiles(session.Directory, "merged.ts*"));
+            var entry = Assert.Single(service.GetEntries(root));
+            Assert.True(entry.IsComplete);
+            Assert.True(entry.CanDecryptMerge);
+
+            var result = await service.DecryptAndMergeManyAsync([entry]);
+            Assert.Empty(result.Failures);
+            Assert.Equal(ContinuousTsSegments(3), await File.ReadAllBytesAsync(session.MergedFilePath));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task DetachedDownloadOfJpegSegmentsAutoMergesAfterBackgroundCompletion()
+    {
+        await using var upstream = new FakeHlsServer(
+            delayThirdSegment: true,
+            segmentBody: number => DisguiseAsJpeg(RestartingTsSegment(number)),
+            playlistBody: JpegSegmentPlaylist);
+        using var service = new VodCacheService();
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-jpeg-detached-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var session = await service.StartAsync(upstream.PlaylistUrl, "Detached Jpeg 第1集", root, 15);
+            Assert.NotNull(session);
+            _ = await session!.Ready.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await service.CloseAsync(session, deleteFiles: false, continueDownload: true);
+            await session.DownloadTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+            // 合并在后台跑：合并期间这个目录不出现在缓存列表里，完成后以单文件出现。
+            var entry = await WaitForAsync(
+                () => service.GetEntries(root).SingleOrDefault(item => item.MergedFilePath is not null),
+                TimeSpan.FromSeconds(10));
+            Assert.True(entry.IsComplete);
+            Assert.Equal(ContinuousTsSegments(3), await File.ReadAllBytesAsync(session.MergedFilePath));
+            Assert.Empty(Directory.EnumerateFiles(session.Directory, "segment_*"));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DownloadManagerShowsMergingThenCompletedAndLeavesASingleFile(bool encrypted)
+    {
+        await using var upstream = encrypted
+            ? new FakeHlsServer(segmentBody: EncryptedDownloadSegment, playlistBody: Aes128Playlist, keyBody: DownloadKey)
+            : new FakeHlsServer(
+                segmentBody: number => DisguiseAsJpeg(RestartingTsSegment(number)),
+                playlistBody: JpegSegmentPlaylist);
+        using var service = new VodCacheService();
+        using var manager = new VodDownloadManager(service);
+        var root = Path.Combine(Path.GetTempPath(), "orion-vod-manager-merge-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var seen = new ConcurrentQueue<(VodDownloadJobStatus Status, int Percent)>();
+            manager.Changed += (_, _) =>
+            {
+                foreach (var snapshot in manager.GetJobs())
+                {
+                    seen.Enqueue((snapshot.Status, snapshot.Percent));
+                }
+            };
+
+            var job = await manager.StartAsync(upstream.PlaylistUrl, "Manager Show 第5集", root);
+            var done = await WaitForAsync(
+                () => manager.GetJobs().FirstOrDefault(item =>
+                    item.Id == job.Id && item.Status is VodDownloadJobStatus.Completed or VodDownloadJobStatus.Failed),
+                TimeSpan.FromSeconds(20));
+            Assert.Equal(VodDownloadJobStatus.Completed, done.Status);
+            Assert.Equal(100, done.Percent);
+
+            var statuses = seen.Select(item => item.Status).ToList();
+            Assert.Contains(VodDownloadJobStatus.Merging, statuses);
+            // 合并中算“进行中”：同一集不能再开一个下载，也不会从详情页被当成可重下。
+            Assert.True(VodDownloadManager.IsActiveStatus(VodDownloadJobStatus.Merging));
+            Assert.True(statuses.IndexOf(VodDownloadJobStatus.Merging) < statuses.LastIndexOf(VodDownloadJobStatus.Completed));
+            Assert.Contains(seen, item => item.Status == VodDownloadJobStatus.Merging && item.Percent == 100);
+
+            var entry = Assert.Single(service.GetEntries(root));
+            Assert.True(entry.IsComplete);
+            Assert.False(entry.CanDecryptMerge);
+            Assert.NotNull(entry.MergedFilePath);
+            Assert.Equal(ContinuousTsSegments(3), await File.ReadAllBytesAsync(entry.MergedFilePath!));
+            Assert.Empty(Directory.EnumerateFiles(entry.Directory, "segment_*"));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    private static async Task<T> WaitForAsync<T>(Func<T?> probe, TimeSpan timeout)
+        where T : class
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            if (probe() is { } value)
+            {
+                return value;
+            }
+
+            Assert.True(DateTime.UtcNow < deadline, "timed out waiting for condition");
+            await Task.Delay(25);
+        }
+    }
+
     private static byte[] EncryptAes128Cbc(byte[] plain, byte[] key, byte[] iv)
     {
         using var aes = System.Security.Cryptography.Aes.Create();
@@ -1264,6 +1755,8 @@ public sealed class VodCacheServiceTests
         private readonly int _secondSegmentBadResponses;
         private readonly byte[] _badSegmentBody;
         private readonly Func<int, byte[]>? _segmentBody;
+        private readonly string? _playlistBody;
+        private readonly byte[]? _keyBody;
         private readonly ConcurrentDictionary<string, int> _requestCounts = new(StringComparer.Ordinal);
         private int _playlistFailuresRemaining;
         private int _activeSegmentRequests;
@@ -1276,9 +1769,13 @@ public sealed class VodCacheServiceTests
             bool stallSecondSegmentBodyOnce = false,
             int secondSegmentBadResponses = 0,
             string badSegmentBody = "",
-            Func<int, byte[]>? segmentBody = null)
+            Func<int, byte[]>? segmentBody = null,
+            string? playlistBody = null,
+            byte[]? keyBody = null)
         {
             _segmentBody = segmentBody;
+            _playlistBody = playlistBody;
+            _keyBody = keyBody;
             _secondSegmentBadResponses = secondSegmentBadResponses;
             _badSegmentBody = Encoding.UTF8.GetBytes(badSegmentBody);
             _delayThirdSegment = delayThirdSegment;
@@ -1354,9 +1851,14 @@ public sealed class VodCacheServiceTests
                     type = "text/plain";
                     status = "502 Bad Gateway";
                 }
+                else if (path == "/key.bin" && _keyBody is not null)
+                {
+                    body = _keyBody;
+                    type = "application/octet-stream";
+                }
                 else if (path == "/playlist.m3u8" || path == "/cdn/media.m3u8")
                 {
-                    body = Encoding.UTF8.GetBytes(
+                    body = Encoding.UTF8.GetBytes(_playlistBody ??
                         "#EXTM3U\n#EXT-X-TARGETDURATION:8\n" +
                         "#EXTINF:8,\nseg1.ts\n" +
                         "#EXTINF:8,\nseg2.ts\n" +

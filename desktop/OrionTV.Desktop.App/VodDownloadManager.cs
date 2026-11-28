@@ -7,6 +7,8 @@ public enum VodDownloadJobStatus
 {
     Queued,
     Running,
+    /// <summary>分片已全部下完，正在自动解密合并为单文件（加密源、分片后缀不是 .ts 的源）。此时 Percent 是合并进度。</summary>
+    Merging,
     Completed,
     Failed,
     Cancelled,
@@ -54,7 +56,11 @@ public sealed class VodDownloadManager : IDisposable
     }
 
     public IReadOnlyList<VodDownloadJobSnapshot> GetActiveJobs() =>
-        GetJobs().Where(job => job.Status is VodDownloadJobStatus.Queued or VodDownloadJobStatus.Running).ToList();
+        GetJobs().Where(job => IsActiveStatus(job.Status)).ToList();
+
+    /// <summary>还占着缓存目录的任务：排队、下载中、下完后合并中。</summary>
+    public static bool IsActiveStatus(VodDownloadJobStatus status) =>
+        status is VodDownloadJobStatus.Queued or VodDownloadJobStatus.Running or VodDownloadJobStatus.Merging;
 
     public VodDownloadJobSnapshot? FindActiveByTitle(string title) =>
         GetActiveJobs().FirstOrDefault(job =>
@@ -78,7 +84,7 @@ public sealed class VodDownloadManager : IDisposable
         // 同标题已在下载：复用任务，避免重复目录。
         foreach (var existing in _jobs.Values)
         {
-            if (existing.Status is VodDownloadJobStatus.Queued or VodDownloadJobStatus.Running
+            if (IsActiveStatus(existing.Status)
                 && string.Equals(existing.Title, title, StringComparison.OrdinalIgnoreCase))
             {
                 return existing.ToSnapshot();
@@ -128,6 +134,9 @@ public sealed class VodDownloadManager : IDisposable
         {
         }
 
+        // 已经下完、正在自动合并时：只停合并，缓存保持“已下完、未合并”。
+        job.CancelMerge();
+
         try
         {
             await job.Runner.ConfigureAwait(false);
@@ -161,26 +170,34 @@ public sealed class VodDownloadManager : IDisposable
         var progress = job.Session.Progress;
         try
         {
-            // 始终保留文件；完成后从会话表移除并合并可合并源。
-            await _cache.CloseAsync(job.Session, deleteFiles: false, continueDownload: false)
+            // 始终保留文件；完成后从会话表移除并合并成单文件。
+            // 边下边合并覆盖不到的源（加密源、分片后缀不是 .ts 的源）在这里自动解密合并，期间任务显示为“合并中”。
+            var mergeProgress = new MergeProgress(ratio => OnMergeProgress(job, ratio));
+            await _cache.CloseAsync(
+                    job.Session,
+                    deleteFiles: false,
+                    continueDownload: false,
+                    mergeProgress,
+                    job.MergeCancellation.Token)
                 .ConfigureAwait(false);
         }
         catch
         {
         }
 
-        if (job.UserCancelled)
+        if (progress.IsComplete)
         {
-            job.Status = VodDownloadJobStatus.Cancelled;
-            job.Error = null;
-        }
-        else if (progress.IsComplete)
-        {
+            // 分片已经全部下完：即使随后的自动合并被用户停掉，下载本身也是完成的。
             job.Status = VodDownloadJobStatus.Completed;
             job.Percent = 100;
             job.CompletedSegments = progress.CompletedSegments;
             job.TotalSegments = progress.TotalSegments;
             job.DownloadedBytes = progress.DownloadedBytes;
+            job.Error = null;
+        }
+        else if (job.UserCancelled)
+        {
+            job.Status = VodDownloadJobStatus.Cancelled;
             job.Error = null;
         }
         else
@@ -246,6 +263,23 @@ public sealed class VodDownloadManager : IDisposable
         RaiseChanged();
     }
 
+    private void OnMergeProgress(Job job, double ratio)
+    {
+        var percent = Math.Clamp((int)Math.Round(ratio * 100), 0, 100);
+        if (job.Status == VodDownloadJobStatus.Merging && job.Percent == percent)
+        {
+            // 每合并一片回调一次，只在百分比变化时通知界面。
+            return;
+        }
+
+        job.Status = VodDownloadJobStatus.Merging;
+        job.Percent = percent;
+        job.BytesPerSecond = 0;
+        job.Error = null;
+        job.UpdatedAt = DateTimeOffset.Now;
+        RaiseChanged();
+    }
+
     private static int FormatPercent(VodCacheProgress progress)
     {
         double ratio;
@@ -293,7 +327,14 @@ public sealed class VodDownloadManager : IDisposable
             catch
             {
             }
+
+            job.CancelMerge();
         }
+    }
+
+    private sealed class MergeProgress(Action<double> report) : IProgress<double>
+    {
+        public void Report(double value) => report(value);
     }
 
     private sealed class Job
@@ -327,9 +368,22 @@ public sealed class VodDownloadManager : IDisposable
         internal DateTimeOffset StartedAt { get; }
         internal DateTimeOffset UpdatedAt { get; set; }
         internal bool UserCancelled { get; set; }
+        /// <summary>只管下载完成后的自动合并；下载本身由 Session.Cancellation 取消。</summary>
+        internal CancellationTokenSource MergeCancellation { get; } = new();
         internal object SpeedGate { get; } = new();
         internal DateTimeOffset LastSampleAt { get; set; }
         internal long LastSampleBytes { get; set; }
+
+        internal void CancelMerge()
+        {
+            try
+            {
+                MergeCancellation.Cancel();
+            }
+            catch
+            {
+            }
+        }
 
         internal VodDownloadJobSnapshot ToSnapshot() =>
             new(

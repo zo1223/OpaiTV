@@ -391,6 +391,20 @@ public static class PlaybackMediaOptions
         return options;
     }
 
+    /// <summary>
+    /// 起播位置（续播）对应的 LibVLC 媒体选项：播放器在打开媒体时就跳到这个位置，不依赖起播之后再补 seek。
+    /// 位置不大于 0（从头播）时返回 null，不追加任何选项。
+    /// </summary>
+    public static string? StartTimeOption(long startMs) => startMs > 0
+        ? $":start-time={(startMs / 1000d).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}"
+        : null;
+
+    /// <summary>
+    /// 把起播位置改回从头。起播之后追加到同一个媒体上：选项按追加顺序生效，所以之后对这个媒体的再次播放
+    /// （停止后再点播放、播完重播）仍然从头开始，和没有起播位置选项时一样。
+    /// </summary>
+    public const string ResetStartTimeOption = ":start-time=0";
+
     public static string? TryBuildHttpReferrer(Uri uri)
     {
         if (uri.Scheme is not ("http" or "https"))

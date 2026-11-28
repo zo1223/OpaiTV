@@ -6,8 +6,9 @@ using System.Text.RegularExpressions;
 namespace OrionTV.Desktop.App;
 
 /// <summary>
-/// 将已下载完成的 AES-128 HLS 缓存解密并合并为单个 merged.ts。
-/// 通用流程：读 offline.m3u8 → 取 key/IV → 逐片 AES-CBC 解密 → 接到同一条时间轴上 → 拼成单文件。
+/// 将已下载完成、但没有边下边合并的 HLS 缓存合并为单个 merged.ts：
+/// AES-128 加密源先逐片解密；没有密钥、只是分片后缀不是 .ts 的源（例如把 TS 伪装成 .jpeg/.png 的图床分片）直接按内容合并。
+/// 通用流程：读 offline.m3u8 → 取 key/IV → 逐片 AES-CBC 解密（明文分片跳过）→ 去掉分片头部的伪装数据 → 接到同一条时间轴上 → 拼成单文件。
 /// </summary>
 internal static class HlsAesDecryptMerger
 {
@@ -21,6 +22,8 @@ internal static class HlsAesDecryptMerger
     private static readonly Regex AttrRegex = new(
         @"([A-Z0-9-]+)=(""(?:[^""]|"""")*""|[^,]*)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private const int SegmentProbeBytes = 64 * 1024;
+    private const int StandardTsPacketLength = 188;
 
     internal sealed record DecryptPlan(
         IReadOnlyList<DecryptSegment> Segments,
@@ -31,6 +34,14 @@ internal static class HlsAesDecryptMerger
         byte[] Key,
         byte[] Iv);
 
+    /// <summary>
+    /// 这个缓存目录能否由本类合并成 merged.ts（还没有成品、清单在、分片在）：
+    /// <list type="bullet">
+    /// <item>清单带 AES-128 密钥：可以（解密后再判断是不是 TS）。</item>
+    /// <item>清单没有密钥：第一片的内容必须是 MPEG-TS。分片后缀不作数——有的源把 TS 分片挂在图床上，后缀是 .jpeg/.png。</item>
+    /// <item>fMP4（#EXT-X-MAP）或其它加密方式（如 SAMPLE-AES）：不行。</item>
+    /// </list>
+    /// </summary>
     internal static bool LooksDecryptable(string directory)
     {
         try
@@ -42,20 +53,102 @@ internal static class HlsAesDecryptMerger
                 return false;
             }
 
-            var text = File.ReadAllText(playlist);
-            if (!text.Contains("#EXT-X-KEY", StringComparison.OrdinalIgnoreCase)
-                || !text.Contains("AES-128", StringComparison.OrdinalIgnoreCase))
+            var hasAes = false;
+            var hasUnsupportedKey = false;
+            string? firstSegment = null;
+            foreach (var raw in File.ReadLines(playlist))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0)
+                {
+                    continue;
+                }
+
+                if (line.StartsWith("#EXT-X-MAP", StringComparison.OrdinalIgnoreCase))
+                {
+                    // fMP4 需要 init 段，不能按 TS 拼接。
+                    return false;
+                }
+
+                var keyMatch = KeyLineRegex.Match(line);
+                if (keyMatch.Success)
+                {
+                    var method = ParseAttributes(keyMatch.Groups[1].Value)
+                        .GetValueOrDefault("METHOD", "NONE")
+                        .Trim()
+                        .ToUpperInvariant();
+                    if (method == "AES-128")
+                    {
+                        hasAes = true;
+                    }
+                    else if (method is not ("NONE" or ""))
+                    {
+                        hasUnsupportedKey = true;
+                    }
+
+                    continue;
+                }
+
+                if (line[0] != '#')
+                {
+                    firstSegment ??= LocalFileNameOf(line);
+                }
+            }
+
+            if (hasUnsupportedKey)
             {
                 return false;
             }
 
-            // 至少有一片已落盘。
-            return Directory.EnumerateFiles(directory, "segment_*", SearchOption.TopDirectoryOnly).Any();
+            if (hasAes)
+            {
+                // 至少有一片已落盘。
+                return Directory.EnumerateFiles(directory, "segment_*", SearchOption.TopDirectoryOnly).Any();
+            }
+
+            return !string.IsNullOrWhiteSpace(firstSegment)
+                && SegmentFileLooksLikeTs(Path.Combine(directory, firstSegment));
         }
         catch
         {
             return false;
         }
+    }
+
+    /// <summary>清单里是否带 AES-128 密钥（只用于界面文案：区分“解密合并”和“合并”）。</summary>
+    internal static bool HasAes128Key(string directory)
+    {
+        try
+        {
+            var playlist = Path.Combine(directory, "offline.m3u8");
+            return File.Exists(playlist)
+                && File.ReadLines(playlist).Any(line =>
+                {
+                    var keyMatch = KeyLineRegex.Match(line.Trim());
+                    return keyMatch.Success
+                        && string.Equals(
+                            ParseAttributes(keyMatch.Groups[1].Value).GetValueOrDefault("METHOD", "").Trim(),
+                            "AES-128",
+                            StringComparison.OrdinalIgnoreCase);
+                });
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool SegmentFileLooksLikeTs(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        var head = new byte[(int)Math.Min(stream.Length, SegmentProbeBytes)];
+        stream.ReadExactly(head);
+        return head.Length > 0 && FindMergeableTsStart(head) >= 0;
     }
 
     internal static DecryptPlan BuildPlan(string directory)
@@ -146,9 +239,8 @@ internal static class HlsAesDecryptMerger
                 continue;
             }
 
-            // 媒体 URI：offline 清单里是相对文件名 segment_xxxxx.ts
-            var fileName = line.Split('?', 2)[0].Trim();
-            fileName = Path.GetFileName(fileName.Replace('\\', '/'));
+            // 媒体 URI：offline 清单里是相对文件名 segment_xxxxx.ts（后缀跟随源地址，也可能是 .jpeg 之类）
+            var fileName = LocalFileNameOf(line);
             if (string.IsNullOrWhiteSpace(fileName))
             {
                 continue;
@@ -189,11 +281,8 @@ internal static class HlsAesDecryptMerger
         IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        // 没有密钥的清单也走这里：分片后缀不是 .ts 的明文源（伪装成图片的 TS）下载时不会边下边合并。
         var plan = BuildPlan(directory);
-        if (!plan.HasAes128 && plan.Segments.All(segment => segment.Key.Length == 0))
-        {
-            throw new InvalidOperationException("NOT_ENCRYPTED_OR_ALREADY_PLAIN");
-        }
 
         var mergedPath = Path.Combine(directory, VodCacheSession.MergedFileName);
         var tempPath = mergedPath + ".decrypting";
@@ -203,6 +292,7 @@ internal static class HlsAesDecryptMerger
         var lengths = new long[total];
         // 分片之间时间戳可能重新起算（#EXT-X-DISCONTINUITY、逐片切片）；原样拼接后播放器只能读到一小段时长。
         var timeline = new MpegTsTimelineStitcher();
+        long disguisedBytes = 0;
         try
         {
             await using var output = new FileStream(
@@ -230,14 +320,19 @@ internal static class HlsAesDecryptMerger
 
                 // 解密结果必须是 MPEG-TS 才能拼成 merged.ts：密钥不对解出的乱码、fMP4 分片（需要 init 段）
                 // 一旦拼进去，成品无法播放，而原始分片随后会被清理。这里中止，保留原缓存（仍可按清单播放）。
-                if (!LooksLikeMergeableTs(plain))
+                var tsStart = FindMergeableTsStart(plain);
+                if (tsStart < 0)
                 {
                     throw new InvalidDataException($"DECRYPTED_SEGMENT_NOT_MPEGTS {segment.FileName} bytes={plain.Length}");
                 }
 
-                timeline.Restamp(plain);
-                await output.WriteAsync(plain, cancellationToken).ConfigureAwait(false);
-                lengths[index] = plain.LongLength;
+                // 分片头部的伪装数据（假图片头）不写进成品：留在文件开头会让播放器把 merged.ts 当成图片，
+                // 留在中间则是每片一段垃圾数据。
+                var payload = plain.AsMemory(tsStart);
+                disguisedBytes += tsStart;
+                timeline.Restamp(payload.Span);
+                await output.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
+                lengths[index] = payload.Length;
                 progress?.Report((index + 1) / (double)total);
             }
 
@@ -256,22 +351,38 @@ internal static class HlsAesDecryptMerger
         }
 
         File.Move(tempPath, mergedPath);
-        if (timeline.Discontinuities > 0)
+        if (timeline.Discontinuities > 0 || disguisedBytes > 0)
         {
             VodCacheLog.Info(
-                $"decrypt-merge-timeline dir={directory} segs={total} discontinuities={timeline.Discontinuities}");
+                $"decrypt-merge-timeline dir={directory} segs={total} aes={plan.HasAes128} discontinuities={timeline.Discontinuities} strippedHeaderBytes={disguisedBytes}");
         }
 
         return (mergedPath, lengths);
     }
 
     /// <summary>
-    /// 明文分片是否可以拼进 merged.ts。不足以判断的极短分片（凑不满探测所需的包数）放行，
-    /// 其余必须能找到按包长对齐的 TS 同步字节（允许头部带少量伪装数据）。
+    /// 明文分片里可以拼进 merged.ts 的数据从哪个偏移开始；不是 MPEG-TS 返回 -1。
+    /// 不足以判断的极短分片（凑不满探测所需的包数）整片放行；
+    /// 其余必须能找到按包长对齐的 TS 同步字节，同步字节之前的伪装数据（假图片头）不算在内。
+    /// 192/204 字节包的同步字节之前本来就有附加字节，这两种包长不裁头，保持原样。
     /// </summary>
-    private static bool LooksLikeMergeableTs(ReadOnlySpan<byte> plain) =>
-        plain.Length < MpegTsTimelineStitcher.MinProbeBytes
-        || MpegTsTimelineStitcher.TryFindFraming(plain, out _, out _);
+    internal static int FindMergeableTsStart(ReadOnlySpan<byte> plain)
+    {
+        if (plain.Length < MpegTsTimelineStitcher.MinProbeBytes)
+        {
+            return 0;
+        }
+
+        if (!MpegTsTimelineStitcher.TryFindFraming(plain, out var start, out var packetSize))
+        {
+            return -1;
+        }
+
+        return packetSize == StandardTsPacketLength ? start : 0;
+    }
+
+    private static string LocalFileNameOf(string playlistLine) =>
+        Path.GetFileName(playlistLine.Split('?', 2)[0].Trim().Replace('\\', '/'));
 
     internal static byte[] DecryptAes128Cbc(byte[] cipher, byte[] key, byte[] iv)
     {

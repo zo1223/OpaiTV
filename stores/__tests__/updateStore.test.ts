@@ -41,16 +41,16 @@ describe("update badge state", () => {
     });
   });
 
-  it("the test assumes the app is still on 1.3.29", () => {
-    expect(current).toBe("1.3.29");
-    expect(newer).toBe("1.3.30");
+  it("the test assumes the app is still on 1.3.30", () => {
+    expect(current).toBe("1.3.30");
+    expect(newer).toBe("1.3.31");
   });
 
   it("is a pure function of updateAvailable, remoteVersion and skipVersion", () => {
-    expect(shouldShowUpdateBadge({ updateAvailable: true, remoteVersion: "1.3.29", skipVersion: null })).toBe(true);
-    expect(shouldShowUpdateBadge({ updateAvailable: true, remoteVersion: "1.3.29", skipVersion: "1.3.28" })).toBe(true);
-    expect(shouldShowUpdateBadge({ updateAvailable: true, remoteVersion: "1.3.29", skipVersion: "1.3.29" })).toBe(false);
-    expect(shouldShowUpdateBadge({ updateAvailable: false, remoteVersion: "1.3.29", skipVersion: null })).toBe(false);
+    expect(shouldShowUpdateBadge({ updateAvailable: true, remoteVersion: "1.3.30", skipVersion: null })).toBe(true);
+    expect(shouldShowUpdateBadge({ updateAvailable: true, remoteVersion: "1.3.30", skipVersion: "1.3.29" })).toBe(true);
+    expect(shouldShowUpdateBadge({ updateAvailable: true, remoteVersion: "1.3.30", skipVersion: "1.3.30" })).toBe(false);
+    expect(shouldShowUpdateBadge({ updateAvailable: false, remoteVersion: "1.3.30", skipVersion: null })).toBe(false);
     expect(shouldShowUpdateBadge({ updateAvailable: true, remoteVersion: "", skipVersion: null })).toBe(false);
   });
 

@@ -30,10 +30,8 @@ public sealed class PlaybackController : IDisposable
     private readonly object _sync = new();
 
     private Media? _currentMedia;
-    private long _pendingSeekMs;
-    private int _pendingSeekGeneration;
-    private int _pendingSeekAttempts;
-    private DateTimeOffset _lastPendingSeekAttemptAt;
+    private readonly PlaybackStartSeekTracker _startSeek = new();
+    private bool _applyingStartSeek;
     private int _generation;
     private int _activeMediaGeneration;
     private int _volume = 100;
@@ -58,7 +56,6 @@ public sealed class PlaybackController : IDisposable
         _player.Playing += (_, _) => Post(() =>
         {
             ApplyAudioState();
-            ApplyPendingSeek();
             SetState(PlaybackState.Playing);
         });
         _player.Paused += (_, _) => Post(() => SetState(PlaybackState.Paused));
@@ -68,21 +65,28 @@ public sealed class PlaybackController : IDisposable
             SetState(PlaybackState.Ended);
             EndReached?.Invoke(this, EventArgs.Empty);
         });
-        _player.TimeChanged += (_, e) => Post(() =>
+        _player.TimeChanged += (_, e) =>
         {
-            if (e.Time > 0 && State is PlaybackState.Opening or PlaybackState.Buffering)
+            var generation = Volatile.Read(ref _activeMediaGeneration);
+            Post(() =>
             {
-                SetState(PlaybackState.Playing);
-            }
+                if (_applyingStartSeek || generation != _generation)
+                {
+                    // 补起播 seek 时 LibVLC 会同步回报一次“目标值”（seek 此刻还没执行，也可能随后被拒绝），不是进度；
+                    // 上一个媒体迟到的进度也不是当前媒体的进度。两者都不能算数，也不往外报。
+                    return;
+                }
 
-            ConfirmOrRetryPendingSeek(e.Time);
-            TimeChanged?.Invoke(this, e.Time);
-        });
-        _player.LengthChanged += (_, e) => Post(() =>
-        {
-            LengthChanged?.Invoke(this, e.Length);
-            ApplyPendingSeek();
-        });
+                if (e.Time > 0 && State is PlaybackState.Opening or PlaybackState.Buffering)
+                {
+                    SetState(PlaybackState.Playing);
+                }
+
+                ApplyStartSeekIfNeeded(e.Time);
+                TimeChanged?.Invoke(this, e.Time);
+            });
+        };
+        _player.LengthChanged += (_, e) => Post(() => LengthChanged?.Invoke(this, e.Length));
         _player.Vout += (_, e) =>
         {
             var generation = Volatile.Read(ref _activeMediaGeneration);
@@ -155,10 +159,7 @@ public sealed class PlaybackController : IDisposable
         }
 
         var generation = ++_generation;
-        _pendingSeekMs = startMs;
-        _pendingSeekGeneration = generation;
-        _pendingSeekAttempts = 0;
-        _lastPendingSeekAttemptAt = DateTimeOffset.MinValue;
+        _startSeek.Arm(startMs);
         SetVideoOutput(false);
         SetState(PlaybackState.Opening);
 
@@ -182,9 +183,23 @@ public sealed class PlaybackController : IDisposable
                         media.AddOption(option);
                     }
 
+                    // 续播：起播位置随媒体一起交给播放器，由它在打开媒体时直接跳过去，不依赖起播之后再补 seek
+                    // （起播后的 seek 可能被解复用器拒绝，LibVLC 不会报错）。
+                    var startTimeOption = PlaybackMediaOptions.StartTimeOption(startMs);
+                    if (startTimeOption is not null)
+                    {
+                        media.AddOption(startTimeOption);
+                    }
+
                     var previous = _currentMedia;
                     _currentMedia = media;
                     _player.Play(media);
+                    if (startTimeOption is not null)
+                    {
+                        // 起播位置只管这一次起播：之后对同一个媒体再次播放（停止后再点播放）仍从头开始，与原来一致。
+                        media.AddOption(PlaybackMediaOptions.ResetStartTimeOption);
+                    }
+
                     previous?.Dispose();
                 }
                 catch
@@ -227,6 +242,7 @@ public sealed class PlaybackController : IDisposable
     {
         // 作废仍在排队的 SwitchTo 与未消费的续播 seek:Stop 之后不得再开播旧请求。
         var generation = ++_generation;
+        _startSeek.Cancel();
         Volatile.Write(ref _activeMediaGeneration, generation);
         SetVideoOutput(false);
         Task.Run(() =>
@@ -241,33 +257,29 @@ public sealed class PlaybackController : IDisposable
         });
     }
 
-    private void ApplyPendingSeek()
+    /// <summary>用户自己跳了进度：不再把播放器拉回起播位置。</summary>
+    public void CancelStartSeek() => _startSeek.Cancel();
+
+    /// <summary>
+    /// 起播位置已随媒体选项交给 LibVLC（:start-time）；这里用播放器报上来的真实进度确认它落实了没有。
+    /// 进度说明播放器正在别处播放（起播位置没被采纳）时补 seek，被拒绝就按间隔重试，
+    /// 由 <see cref="PlaybackStartSeekTracker"/> 决定。
+    /// </summary>
+    private void ApplyStartSeekIfNeeded(long currentTimeMs)
     {
-        if (_pendingSeekGeneration != _generation)
+        if (_startSeek.OnProgress(currentTimeMs, _player.Length, DateTimeOffset.UtcNow) is not { } target)
         {
-            // 旧媒体迟到的 Playing 事件,不得消费新媒体的续播位置。
             return;
         }
 
-        if (_pendingSeekMs > 0)
+        _applyingStartSeek = true;
+        try
         {
-            var length = _player.Length;
-            if (length <= 0 || _pendingSeekAttempts >= 3)
-            {
-                return;
-            }
-
-            var now = DateTimeOffset.UtcNow;
-            if (_pendingSeekAttempts > 0
-                && now - _lastPendingSeekAttemptAt < TimeSpan.FromMilliseconds(500))
-            {
-                return;
-            }
-
-            var target = Math.Clamp(_pendingSeekMs, 0, Math.Max(0, length - 1000));
             _player.Time = target;
-            _pendingSeekAttempts++;
-            _lastPendingSeekAttemptAt = now;
+        }
+        finally
+        {
+            _applyingStartSeek = false;
         }
     }
 
@@ -275,29 +287,6 @@ public sealed class PlaybackController : IDisposable
     {
         _player.Volume = _volume;
         _player.Mute = _mute;
-    }
-
-    private void ConfirmOrRetryPendingSeek(long currentTimeMs)
-    {
-        if (_pendingSeekGeneration != _generation || _pendingSeekMs <= 0)
-        {
-            return;
-        }
-
-        var length = _player.Length;
-        if (length <= 0)
-        {
-            return;
-        }
-
-        var target = Math.Clamp(_pendingSeekMs, 0, Math.Max(0, length - 1000));
-        if (currentTimeMs >= Math.Max(0, target - 3000))
-        {
-            _pendingSeekMs = 0;
-            return;
-        }
-
-        ApplyPendingSeek();
     }
 
     private void SetState(PlaybackState state)

@@ -211,8 +211,6 @@ public partial class MainWindow : Window, IAppHost
         System.IO.Path.Combine(DesktopPaths.DataDirectory, "ui_sidebar.txt");
 
     private SidebarMode _sidebarMode = LoadSidebarMode();
-    // 进入隐藏档之前的那一档：点左边缘把手时回到它（启动时就是隐藏档则未知，见 SidebarLayout.RestoreFromHidden）
-    private SidebarMode? _sidebarBeforeHidden;
 
     private static SidebarMode LoadSidebarMode()
     {
@@ -231,22 +229,17 @@ public partial class MainWindow : Window, IAppHost
     private void SidebarToggle_Click(object sender, RoutedEventArgs e) =>
         SetSidebarMode(SidebarLayout.Next(_sidebarMode), slideIn: false);
 
-    /// <summary>隐藏档左边缘的把手：点一下，侧栏滑出并回到隐藏前的那档。</summary>
+    /// <summary>隐藏档左边缘的把手：点一下，侧栏滑出并回到展开档（带文字的完整栏目）。</summary>
     private void SidebarPullHandle_Click(object sender, RoutedEventArgs e)
     {
         if (_sidebarMode == SidebarMode.Hidden)
         {
-            SetSidebarMode(SidebarLayout.RestoreFromHidden(_sidebarBeforeHidden), slideIn: true);
+            SetSidebarMode(SidebarLayout.RestoreFromHidden(), slideIn: true);
         }
     }
 
     private void SetSidebarMode(SidebarMode mode, bool slideIn)
     {
-        if (mode == SidebarMode.Hidden && _sidebarMode != SidebarMode.Hidden)
-        {
-            _sidebarBeforeHidden = _sidebarMode;
-        }
-
         _sidebarMode = mode;
         try
         {
